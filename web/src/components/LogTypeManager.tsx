@@ -1,21 +1,22 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Shield, Monitor, AppWindow, Network, FileText, Plus, Edit3, Trash2, X, Save, AlertCircle, Eye, Link2, Database, GitBranch, CheckCircle } from 'lucide-react';
+import { Shield, Monitor, AppWindow, Network, FileText, Plus, Edit3, Trash2, X, Save, AlertCircle, Eye, Link2, Database, GitBranch, CheckCircle, Loader2 } from 'lucide-react';
+import { logTypesApi, dataSourcesApi } from '../services/api';
 
 interface LogType {
-  id: string;
+  id: number;
   name: string;
   description: string;
-  icon: string;
+  category: string;
   sourceCount: number;
   pipelineCount: number;
   color: string;
-  pipelineId?: string;
+  pipelineId?: number;
   pipelineName?: string;
 }
 
 interface ParsePipeline {
-  id: string;
+  id: number;
   name: string;
   parser: string;
 }
@@ -30,23 +31,52 @@ const colorOptions = [
   { name: '灰色', value: 'text-slate-600 bg-slate-50 border-slate-200' }
 ];
 
-const mockLogTypes: LogType[] = [
-  { id: 'lt-001', name: '安全日志', description: '防火墙、IDS/IPS、WAF等安全设备日志', icon: 'Shield', sourceCount: 12, pipelineCount: 5, color: 'text-rose-600 bg-rose-50 border-rose-200', pipelineId: 'p3', pipelineName: 'CEF安全事件' },
-  { id: 'lt-002', name: '系统日志', description: '操作系统、服务器系统日志', icon: 'Monitor', sourceCount: 8, pipelineCount: 3, color: 'text-blue-600 bg-blue-50 border-blue-200', pipelineId: 'p2', pipelineName: 'Syslog RFC5424' },
-  { id: 'lt-003', name: '应用日志', description: '业务应用、中间件日志', icon: 'AppWindow', sourceCount: 15, pipelineCount: 7, color: 'text-emerald-600 bg-emerald-50 border-emerald-200', pipelineId: 'p1', pipelineName: 'JSON标准解析' },
-  { id: 'lt-004', name: '网络日志', description: '路由器、交换机、DNS日志', icon: 'Network', sourceCount: 6, pipelineCount: 2, color: 'text-amber-600 bg-amber-50 border-amber-200' },
-  { id: 'lt-005', name: '审计日志', description: '用户操作、权限变更审计日志', icon: 'FileText', sourceCount: 4, pipelineCount: 2, color: 'text-purple-600 bg-purple-50 border-purple-200' }
-];
+export default function LogTypeManager() {
+  const [logTypes, setLogTypes] = useState<LogType[]>([]);
+  const [pipelines, setPipelines] = useState<ParsePipeline[]>([]);
+  const [sources, setSources] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
 
-const mockPipelines: ParsePipeline[] = [
-  { id: 'p1', name: 'JSON标准解析', parser: 'json' },
-  { id: 'p2', name: 'Syslog RFC5424', parser: 'syslog' },
-  { id: 'p3', name: 'CEF安全事件', parser: 'cef' },
-  { id: 'p4', name: 'Grok自定义', parser: 'grok' },
-  { id: 'p5', name: '智能识别', parser: 'auto' }
-];
+  // 从API获取数据
+  const fetchData = async () => {
+    try {
+      setLoading(true);
+      const [logTypesRes, dataSourcesRes] = await Promise.allSettled([
+        logTypesApi.getLogTypes({ page_size: 100 }),
+        dataSourcesApi.getDataSources({ page_size: 100 })
+      ]);
 
-const mockSources = ['Kafka-安全日志', 'Syslog-网络设备', 'S3-审计日志'];
+      if (logTypesRes.status === 'fulfilled' && logTypesRes.value.success) {
+        const items = Array.isArray(logTypesRes.value.data) ? logTypesRes.value.data : logTypesRes.value.data?.items || [];
+        setLogTypes(items.map((item: any, index: number) => ({
+          id: item.id,
+          name: item.name || item.type_name,
+          description: item.description || '',
+          category: item.category || 'other',
+          sourceCount: 0,
+          pipelineCount: 0,
+          color: colorOptions[index % colorOptions.length].value,
+          pipelineId: item.pipeline_id,
+          pipelineName: item.pipeline_name
+        })));
+      }
+
+      if (dataSourcesRes.status === 'fulfilled' && dataSourcesRes.value.success) {
+        const items = Array.isArray(dataSourcesRes.value.data) ? dataSourcesRes.value.data : dataSourcesRes.value.data?.items || [];
+        setSources(items.map((item: any) => `${item.source_type || 'Unknown'}-${item.name || '未命名'}`));
+      }
+    } catch (error) {
+      console.error('获取日志类型失败:', error);
+      setLogTypes([]);
+      setSources([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchData();
+  }, []);
 
 export default function LogTypeManager() {
   const [logTypes, setLogTypes] = useState<LogType[]>(mockLogTypes);

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Server, Plus, Play, Pause, Trash2, Edit3, Eye, X,
@@ -6,18 +6,69 @@ import {
   CheckCircle, AlertCircle, ChevronRight, Zap, Cable,
   MessageSquare, Globe, Cloud, Terminal, Webhook, Radio,
   Settings2, TrendingUp, MoreHorizontal, GitBranch, Link2,
-  FileText, HardDrive, Cpu, Wifi, Lock, Shield, FolderOpen
+  FileText, HardDrive, Cpu, Wifi, Lock, Shield, FolderOpen, Loader2
 } from 'lucide-react';
-import type { DataSource } from '../data/mockData';
+import { dataSourcesApi } from '../services/api';
+
+interface DataSource {
+  id: number;
+  name: string;
+  type: string;
+  status: string;
+  host?: string;
+  port?: number;
+  description?: string;
+  created_at?: string;
+}
 
 interface DataSourceManagerProps {
-  dataSources: DataSource[];
-  onAddSource: () => void;
-  onEditSource: (source: DataSource) => void;
-  onDeleteSource: (source: DataSource) => void;
-  onToggleStatus: (source: DataSource) => void;
-  onViewDetail: (source: DataSource) => void;
+  dataSources?: DataSource[];
+  onAddSource?: () => void;
+  onEditSource?: (source: DataSource) => void;
+  onDeleteSource?: (source: DataSource) => void;
+  onToggleStatus?: (source: DataSource) => void;
+  onViewDetail?: (source: DataSource) => void;
 }
+
+export default function DataSourceManager(props: DataSourceManagerProps) {
+  const [dataSources, setDataSources] = useState<DataSource[]>(props.dataSources || []);
+  const [loading, setLoading] = useState(!props.dataSources);
+  const [localProps] = useState(props);
+
+  // 如果没有传入dataSources，则从API获取
+  useEffect(() => {
+    if (props.dataSources) {
+      setDataSources(props.dataSources);
+      return;
+    }
+
+    const fetchData = async () => {
+      try {
+        setLoading(true);
+        const res = await dataSourcesApi.getDataSources({ page_size: 100 });
+        if (res.success && res.data) {
+          const items = Array.isArray(res.data) ? res.data : res.data.items || [];
+          setDataSources(items.map((item: any) => ({
+            id: item.id,
+            name: item.name || item.source_name,
+            type: item.type || item.source_type,
+            status: item.status || 'active',
+            host: item.host,
+            port: item.port,
+            description: item.description,
+            created_at: item.created_at
+          })));
+        }
+      } catch (error) {
+        console.error('获取数据源失败:', error);
+        setDataSources([]);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchData();
+  }, [props.dataSources]);
 
 const getStatusColor = (status: string) => {
   switch (status) {

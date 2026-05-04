@@ -7,15 +7,23 @@ import {
   User,
   Settings,
   LogOut,
-  Menu,
   Moon,
   Sun,
   CheckCircle,
   AlertTriangle,
-  Info
+  Info,
+  Loader2
 } from 'lucide-react';
-import { notifications } from '../data/mockData';
-import { authApi } from '../services/api';
+import { authApi, notificationsApi } from '../services/api';
+
+interface Notification {
+  id: number;
+  title: string;
+  message: string;
+  type: string;
+  read: boolean;
+  created_at?: string;
+}
 
 interface HeaderProps {
   onMenuClick: () => void;
@@ -35,7 +43,9 @@ const pageTitles: Record<string, string> = {
   '/detection/ai': 'AI 分析中心',
   '/data/ingestion': '日志配置',
   '/data/formats': '数据格式',
-  '/data/parsing': '解析规则'
+  '/data/parsing': '解析规则',
+  '/profile': '个人中心',
+  '/settings': '系统设置'
 };
 
 const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
@@ -43,8 +53,34 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
   const navigate = useNavigate();
   const [showNotifications, setShowNotifications] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [loadingNotifications, setLoadingNotifications] = useState(false);
   const notificationRef = React.useRef<HTMLDivElement>(null);
   const userMenuRef = React.useRef<HTMLDivElement>(null);
+
+  // 获取通知列表
+  const fetchNotifications = async () => {
+    try {
+      setLoadingNotifications(true);
+      const res = await notificationsApi.getNotifications();
+      if (res.success && res.data) {
+        const items = Array.isArray(res.data) ? res.data : res.data.items || [];
+        setNotifications(items);
+      }
+    } catch (error) {
+      console.error('获取通知失败:', error);
+      setNotifications([]);
+    } finally {
+      setLoadingNotifications(false);
+    }
+  };
+
+  // 初始加载和定时刷新通知
+  useEffect(() => {
+    fetchNotifications();
+    const interval = setInterval(fetchNotifications, 60000);
+    return () => clearInterval(interval);
+  }, []);
 
   const handleLogout = async () => {
     try {
@@ -65,6 +101,17 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
   const handleSettings = () => {
     setShowUserMenu(false);
     navigate('/settings');
+  };
+
+  const handleMarkAsRead = async (id: number) => {
+    try {
+      await notificationsApi.markAsRead(id);
+      setNotifications(notifications.map(n => 
+        n.id === id ? { ...n, read: true } : n
+      ));
+    } catch (error) {
+      console.error('标记已读失败:', error);
+    }
   };
 
   useEffect(() => {
@@ -161,21 +208,41 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
                 exit={{ opacity: 0, y: 10 }}
                 className="absolute right-0 top-full mt-2 w-80 bg-card-bg border border-border-color rounded-card shadow-card-hover z-50"
               >
-                <div className="p-3 border-b border-border-color bg-card-bg/50">
+                <div className="p-3 border-b border-border-color bg-card-bg/50 flex justify-between items-center">
                   <span className="text-sm font-medium text-text-primary">通知中心</span>
+                  {unreadCount > 0 && (
+                    <button 
+                      onClick={() => notificationsApi.markAllAsRead()}
+                      className="text-xs text-primary hover:underline"
+                    >
+                      全部已读
+                    </button>
+                  )}
                 </div>
                 <div className="max-h-64 overflow-y-auto">
-                  {notifications.map((n) => (
-                    <div key={n.id} className="p-3 hover:bg-primary/5 cursor-pointer border-b border-border-color/50 last:border-0 transition-colors">
-                      <div className="flex items-start gap-3">
-                        {getNotificationIcon(n.type)}
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm text-text-primary truncate">{n.title}</p>
-                          <p className="text-xs text-text-muted mt-1">{n.message}</p>
+                  {loadingNotifications ? (
+                    <div className="p-4 flex justify-center">
+                      <Loader2 className="w-5 h-5 text-primary animate-spin" />
+                    </div>
+                  ) : notifications.length === 0 ? (
+                    <div className="p-4 text-center text-text-muted text-sm">暂无通知</div>
+                  ) : (
+                    notifications.map((n) => (
+                      <div 
+                        key={n.id} 
+                        className={`p-3 hover:bg-primary/5 cursor-pointer border-b border-border-color/50 last:border-0 transition-colors ${!n.read ? 'bg-primary/5' : ''}`}
+                        onClick={() => handleMarkAsRead(n.id)}
+                      >
+                        <div className="flex items-start gap-3">
+                          {getNotificationIcon(n.type)}
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm text-text-primary truncate">{n.title}</p>
+                            <p className="text-xs text-text-muted mt-1">{n.message}</p>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    ))
+                  )}
                 </div>
               </motion.div>
             )}

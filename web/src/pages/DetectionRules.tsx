@@ -1,16 +1,25 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, Search, Edit2, Trash2, Play, Power, X, Save, Code, FileText, Clock, AlertTriangle, Database, Link2, Server, CheckCircle, ChevronRight, Globe, MessageSquare, Terminal, Cloud, Lock, FolderOpen, Wifi } from 'lucide-react';
-import type { DetectionRule, DataSource } from '../types';
-import { mockDataSources } from '../data/mockData';
+import { Plus, Search, Edit2, Trash2, Play, Power, X, Save, Code, FileText, Clock, AlertTriangle, Database, Link2, Server, CheckCircle, ChevronRight, Globe, MessageSquare, Terminal, Cloud, Lock, FolderOpen, Wifi, Loader2 } from 'lucide-react';
+import { rulesApi, dataSourcesApi } from '../services/api';
 
-const mockRules: DetectionRule[] = [
-  { id: 'RULE-001', name: '暴力破解检测', type: 'single', status: 'enabled', hitCount: 156, lastHitTime: '2026-04-27T10:30:00Z', description: '检测短时间内多次登录失败', dataSourceIds: ['ds-001', 'ds-002'] },
-  { id: 'RULE-002', name: '横向移动检测', type: 'correlation', status: 'enabled', hitCount: 23, lastHitTime: '2026-04-27T09:15:00Z', description: '关联分析多台主机间的异常访问', dataSourceIds: ['ds-001'] },
-  { id: 'RULE-003', name: '数据外泄检测', type: 'sequence', status: 'enabled', hitCount: 8, lastHitTime: '2026-04-26T18:00:00Z', description: '检测敏感数据的异常传输行为', dataSourceIds: ['ds-003'] },
-  { id: 'RULE-004', name: '异常登录时间', type: 'single', status: 'disabled', hitCount: 45, lastHitTime: '2026-04-25T14:00:00Z', description: '检测非工作时间的登录行为', dataSourceIds: [] },
-  { id: 'RULE-005', name: '高危命令执行', type: 'single', status: 'enabled', hitCount: 12, lastHitTime: '2026-04-27T08:30:00Z', description: '检测系统高危命令的执行', dataSourceIds: ['ds-002'] }
-];
+interface DetectionRule {
+  id: number | string;
+  name: string;
+  type: string;
+  status: string;
+  hitCount?: number;
+  lastHitTime?: string;
+  description?: string;
+  dataSourceIds?: (string | number)[];
+}
+
+interface DataSource {
+  id: number | string;
+  name: string;
+  type: string;
+  status: string;
+}
 
 const protocolIcons: Record<string, React.ElementType> = {
   kafka: MessageSquare,
@@ -49,11 +58,56 @@ const severityOptions = [
 ];
 
 export default function DetectionRules() {
-  const [rules, setRules] = useState<DetectionRule[]>(mockRules);
+  const [rules, setRules] = useState<DetectionRule[]>([]);
+  const [dataSources, setDataSources] = useState<DataSource[]>([]);
+  const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState<string>('all');
   const [showForm, setShowForm] = useState(false);
   const [editingRule, setEditingRule] = useState<DetectionRule | null>(null);
+
+  // 获取数据
+  const fetchData = async () => {
+    try {
+      setLoading(true);
+      const [rulesRes, dsRes] = await Promise.allSettled([
+        rulesApi.getRules({ page_size: 100 }),
+        dataSourcesApi.getDataSources({ page_size: 100 })
+      ]);
+
+      if (rulesRes.status === 'fulfilled' && rulesRes.value.success) {
+        const items = Array.isArray(rulesRes.value.data) ? rulesRes.value.data : rulesRes.value.data?.items || [];
+        setRules(items.map((item: any) => ({
+          id: item.id,
+          name: item.name || item.rule_name,
+          type: item.type || 'single',
+          status: item.status === 'active' ? 'enabled' : item.status,
+          hitCount: item.hit_count || 0,
+          lastHitTime: item.last_hit_time || item.updated_at,
+          description: item.description || item.detail,
+          dataSourceIds: item.data_source_ids || []
+        })));
+      }
+
+      if (dsRes.status === 'fulfilled' && dsRes.value.success) {
+        const items = Array.isArray(dsRes.value.data) ? dsRes.value.data : dsRes.value.data?.items || [];
+        setDataSources(items.map((item: any) => ({
+          id: item.id,
+          name: item.name || item.source_name,
+          type: item.type || item.source_type,
+          status: item.status || 'active'
+        })));
+      }
+    } catch (error) {
+      console.error('获取数据失败:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchData();
+  }, []);
   const [formData, setFormData] = useState<Partial<DetectionRule>>({
     name: '',
     type: 'single',

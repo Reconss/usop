@@ -1,52 +1,146 @@
 import React, { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import {
   AlertCircle,
   Activity,
   ShieldAlert,
   Server,
-  TrendingUp,
-  TrendingDown,
-  Minus,
   RefreshCw,
   Loader2
 } from 'lucide-react';
-import {
-  dashboardMetrics,
-  eventTrendData,
-  eventTypeDistribution,
-  attackSources,
-  riskAssets
-} from '../data/mockData';
+import { dashboardApi } from '../services/api';
 import MetricCard from '../components/MetricCard';
 import EventTrendChart from '../components/EventTrendChart';
 import EventTypeChart from '../components/EventTypeChart';
 import AttackSourceChart from '../components/AttackSourceChart';
 import RiskAssetList from '../components/RiskAssetList';
 
+// 默认数据（API失败时显示）
+const defaultMetrics = {
+  todayAlerts: 0,
+  pendingEvents: 0,
+  totalAssets: 0,
+  highRiskAssets: 0,
+  alertsTrend: 0,
+  pendingTrend: 0,
+  assetsTrend: 0,
+  healthTrend: 0
+};
+
+const defaultTrendData = {
+  timestamps: ['00:00', '04:00', '08:00', '12:00', '16:00', '20:00', '23:59'],
+  critical: [0, 0, 0, 0, 0, 0, 0],
+  high: [0, 0, 0, 0, 0, 0, 0],
+  medium: [0, 0, 0, 0, 0, 0, 0],
+  low: [0, 0, 0, 0, 0, 0, 0]
+};
+
+const defaultDistribution = [
+  { name: '无数据', value: 1, color: '#6366f1' }
+];
+
+const defaultAttackSources = [
+  { ip: '-', country: '-', count: 0 }
+];
+
+const defaultRiskAssets = [
+  { id: '-', name: '暂无数据', type: '-', riskScore: 0, lastSeen: '-' }
+];
+
 const Dashboard: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdate, setLastUpdate] = useState(new Date());
+  
+  // 数据状态
+  const [metrics, setMetrics] = useState(defaultMetrics);
+  const [trendData, setTrendData] = useState(defaultTrendData);
+  const [distribution, setDistribution] = useState(defaultDistribution);
+  const [attackSources, setAttackSources] = useState(defaultAttackSources);
+  const [riskAssets, setRiskAssets] = useState(defaultRiskAssets);
+
+  const fetchData = async () => {
+    try {
+      // 并行获取多个API数据
+      const [metricsRes, trendRes, distributionRes, alertsRes, assetsRes] = await Promise.allSettled([
+        dashboardApi.getMetrics(),
+        dashboardApi.getAlertsTrend(7),
+        dashboardApi.getEventDistribution(),
+        dashboardApi.getTopAlerts(5),
+        assetsApi.getAssets({ page_size: 100 })
+      ]);
+
+      // 处理指标数据
+      if (metricsRes.status === 'fulfilled' && metricsRes.value.success) {
+        setMetrics(metricsRes.value.data);
+      }
+
+      // 处理趋势数据
+      if (trendRes.status === 'fulfilled' && trendRes.value.success) {
+        setTrendData(trendRes.value.data);
+      }
+
+      // 处理分布数据
+      if (distributionRes.status === 'fulfilled' && distributionRes.value.success) {
+        setDistribution(distributionRes.value.data);
+      }
+
+      // 处理攻击源数据（从告警中提取）
+      if (alertsRes.status === 'fulfilled' && alertsRes.value.success) {
+        const sources: Record<string, { ip: string; country: string; count: number }> = {};
+        alertsRes.value.data.items?.forEach((alert: any) => {
+          if (alert.source_ip) {
+            if (!sources[alert.source_ip]) {
+              sources[alert.source_ip] = { ip: alert.source_ip, country: 'CN', count: 0 };
+            }
+            sources[alert.source_ip].count++;
+          }
+        });
+        const topSources = Object.values(sources)
+          .sort((a, b) => b.count - a.count)
+          .slice(0, 5);
+        if (topSources.length > 0) setAttackSources(topSources);
+      }
+
+      // 处理风险资产数据
+      if (assetsRes.status === 'fulfilled' && assetsRes.value.success) {
+        const assets = assetsRes.value.data.items || [];
+        const riskyAssets = assets
+          .filter((a: any) => a.risk_score && a.risk_score > 70)
+          .sort((a: any, b: any) => b.risk_score - a.risk_score)
+          .slice(0, 5)
+          .map((a: any) => ({
+            id: String(a.id),
+            name: a.name || a.hostname || '-',
+            type: a.asset_type || a.type || 'unknown',
+            riskScore: a.risk_score || 0,
+            lastSeen: a.last_seen || a.updated_at || '-'
+          }));
+        if (riskyAssets.length > 0) setRiskAssets(riskyAssets);
+      }
+    } catch (error) {
+      console.error('Dashboard API Error:', error);
+    }
+  };
 
   useEffect(() => {
-    const timer = setTimeout(() => setLoading(false), 800);
+    fetchData();
+    const timer = setTimeout(() => setLoading(false), 500);
     return () => clearTimeout(timer);
   }, []);
 
-  const handleRefresh = () => {
+  const handleRefresh = async () => {
     setRefreshing(true);
-    setTimeout(() => {
-      setRefreshing(false);
-      setLastUpdate(new Date());
-    }, 1000);
+    await fetchData();
+    setRefreshing(false);
+    setLastUpdate(new Date());
   };
 
-  const metrics = [
-    { title: '今日告警数', value: dashboardMetrics.todayAlerts.toLocaleString(), trend: dashboardMetrics.alertsTrend, icon: AlertCircle, color: '#6366f1' },
-    { title: '待处理事件', value: dashboardMetrics.pendingEvents.toString(), trend: dashboardMetrics.pendingTrend, icon: Activity, color: '#f97316' },
-    { title: '资产数量', value: '1,234', trend: 5, icon: Server, color: '#10b981' },
-    { title: '高危资产', value: dashboardMetrics.highRiskAssets.toString(), trend: dashboardMetrics.assetsTrend, icon: ShieldAlert, color: '#ef4444' }
+  const metricCards = [
+    { title: '今日告警数', value: (metrics.todayAlerts || 0).toLocaleString(), trend: metrics.alertsTrend || 0, icon: AlertCircle, color: '#6366f1' },
+    { title: '待处理事件', value: (metrics.pendingEvents || 0).toString(), trend: metrics.pendingTrend || 0, icon: Activity, color: '#f97316' },
+    { title: '资产数量', value: (metrics.totalAssets || 0).toLocaleString(), trend: metrics.assetsTrend || 0, icon: Server, color: '#10b981' },
+    { title: '高危资产', value: (metrics.highRiskAssets || 0).toString(), trend: metrics.healthTrend || 0, icon: ShieldAlert, color: '#ef4444' }
   ];
 
   if (loading) {
@@ -80,7 +174,7 @@ const Dashboard: React.FC = () => {
       </div>
 
       <div className="grid grid-cols-4 gap-4">
-        {metrics.map((metric, index) => (
+        {metricCards.map((metric, index) => (
           <motion.div key={metric.title} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.1 }}>
             <MetricCard title={metric.title} value={metric.value} icon={metric.icon} color={metric.color} trend={metric.trend} />
           </motion.div>
@@ -91,13 +185,13 @@ const Dashboard: React.FC = () => {
         <motion.div className="col-span-2" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}>
           <div className="glass-card rounded-card p-5">
             <h2 className="text-card-title text-text-primary mb-4">事件趋势 (24小时)</h2>
-            <EventTrendChart data={eventTrendData} />
+            <EventTrendChart data={trendData} />
           </div>
         </motion.div>
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.5 }}>
           <div className="glass-card rounded-card p-5">
             <h2 className="text-card-title text-text-primary mb-4">事件类型分布</h2>
-            <EventTypeChart data={eventTypeDistribution} />
+            <EventTypeChart data={distribution} />
           </div>
         </motion.div>
       </div>
@@ -119,5 +213,8 @@ const Dashboard: React.FC = () => {
     </div>
   );
 };
+
+// 导入assetsApi
+import { assetsApi } from '../services/api';
 
 export default Dashboard;

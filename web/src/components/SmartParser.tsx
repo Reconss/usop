@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Plus, CheckCircle, XCircle, Sparkles, Braces, FileCode, Table,
@@ -9,10 +9,60 @@ import {
   RefreshCw, Shield, Activity, Brain, Siren, ShieldCheck,
   Clock, Calendar, FileSearch, BarChart3, Target,
   HardDrive, Upload, Download, ShieldAlert,
-  Globe, Lock, Server, Check, LayoutGrid, Filter
+  Globe, Lock, Server, Check, LayoutGrid, Filter, Loader2
 } from 'lucide-react';
-import { formatTemplates as mockFormatTemplates, logTypes as mockLogTypes, storageTables as mockStorageTables, mockDataSources, detectionRules } from '../data/mockData';
-import type { ParsePipeline, LogType, StorageTable, FormatTemplate, DetectionRule, SecurityEvent } from '../data/mockData';
+import { logTypesApi, dataSourcesApi, rulesApi } from '../services/api';
+
+interface ParsePipeline {
+  id?: number;
+  name: string;
+  parserType: string;
+  sourceType: string;
+  storageTarget: string;
+  status?: 'active' | 'paused' | 'stopped';
+}
+
+interface LogType {
+  id: number;
+  name: string;
+  category: string;
+  description?: string;
+}
+
+interface StorageTable {
+  id: number;
+  name: string;
+  columns: number;
+  rows: number;
+}
+
+interface FormatTemplate {
+  id: number;
+  name: string;
+  type: string;
+  fields: number;
+}
+
+interface DetectionRule {
+  id: number;
+  name: string;
+  type: string;
+  status: string;
+}
+
+interface DataSource {
+  id: number;
+  name: string;
+  type: string;
+  status: string;
+}
+
+// 默认数据
+const defaultFormatTemplates: FormatTemplate[] = [];
+const defaultLogTypes: LogType[] = [];
+const defaultStorageTables: StorageTable[] = [];
+const defaultDataSources: DataSource[] = [];
+const defaultDetectionRules: DetectionRule[] = [];
 
 const parserTypes = [
   { id: 'json', name: 'JSON', icon: Braces, color: 'from-blue-500 to-indigo-500', bgColor: 'bg-blue-50', textColor: 'text-blue-600', borderColor: 'border-blue-200', desc: 'JSON结构化数据解析' },
@@ -123,7 +173,7 @@ const severityConfig: Record<string, { color: string; bg: string; label: string 
   low: { color: 'text-blue-600', bg: 'bg-blue-50 border-blue-200', label: '低危' }
 };
 
-const mockPipelines: ParsePipeline[] = [
+const defaultPipelines: ParsePipeline[] = [
   { id: 'p1', name: 'JSON标准解析', priority: 1, parser: 'json', isActive: true, description: '标准JSON格式日志解析', fieldMappings: [{ sourceField: 'timestamp', targetField: 'ts', type: 'datetime' }], logTypeId: 'lt-003', logTypeName: '应用日志', storageTableId: 'st-001', storageTableName: 'alert_logs', mode: 'single', formatTemplateId: 'tpl-json', formatTemplateName: '通用JSON' },
   { id: 'p2', name: 'Syslog RFC5424', priority: 2, parser: 'syslog', isActive: true, description: 'Syslog RFC5424格式', logTypeId: 'lt-002', logTypeName: '系统日志', storageTableId: 'st-002', storageTableName: 'security_events', mode: 'single', formatTemplateId: 'tpl-syslog', formatTemplateName: 'Syslog RFC5424' },
   { id: 'p3', name: 'CEF安全事件', priority: 3, parser: 'cef', isActive: true, description: 'ArcSight CEF格式', logTypeId: 'lt-001', logTypeName: '安全日志', storageTableId: 'st-001', storageTableName: 'alert_logs', mode: 'single', formatTemplateId: 'tpl-cef', formatTemplateName: 'CEF标准格式' },
@@ -272,7 +322,14 @@ const parseWithConfig = (sample: string, parserType: string, config?: any): Arra
 };
 
 export default function SmartParser() {
-  const [pipelines, setPipelines] = useState<ParsePipeline[]>(mockPipelines);
+  const [pipelines, setPipelines] = useState<ParsePipeline[]>([]);
+  const [formatTemplates, setFormatTemplates] = useState<FormatTemplate[]>([]);
+  const [logTypes, setLogTypes] = useState<LogType[]>([]);
+  const [storageTables, setStorageTables] = useState<StorageTable[]>([]);
+  const [dataSources, setDataSources] = useState<DataSource[]>([]);
+  const [detectionRules, setDetectionRules] = useState<DetectionRule[]>([]);
+  const [loading, setLoading] = useState(true);
+
   const [activeFilter, setActiveFilter] = useState('all');
   const [showAddModal, setShowAddModal] = useState(false);
   const [showDetailModal, setShowDetailModal] = useState(false);
@@ -286,6 +343,55 @@ export default function SmartParser() {
   const [showTemplateSelector, setShowTemplateSelector] = useState(false);
   const [templateSearchQuery, setTemplateSearchQuery] = useState('');
   const [templateCategory, setTemplateCategory] = useState('all');
+
+  // 从API获取数据
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        setLoading(true);
+        const [logTypesRes, dataSourcesRes, rulesRes] = await Promise.allSettled([
+          logTypesApi.getLogTypes({ page_size: 100 }),
+          dataSourcesApi.getDataSources({ page_size: 100 }),
+          rulesApi.getRules({ page_size: 100 })
+        ]);
+
+        if (logTypesRes.status === 'fulfilled' && logTypesRes.value.success) {
+          const items = Array.isArray(logTypesRes.value.data) ? logTypesRes.value.data : logTypesRes.value.data?.items || [];
+          setLogTypes(items.map((item: any) => ({
+            id: item.id,
+            name: item.name || item.type_name,
+            category: item.category || 'other',
+            description: item.description
+          })));
+        }
+
+        if (dataSourcesRes.status === 'fulfilled' && dataSourcesRes.value.success) {
+          const items = Array.isArray(dataSourcesRes.value.data) ? dataSourcesRes.value.data : dataSourcesRes.value.data?.items || [];
+          setDataSources(items.map((item: any) => ({
+            id: item.id,
+            name: item.name || item.source_name,
+            type: item.type || item.source_type,
+            status: item.status || 'active'
+          })));
+        }
+
+        if (rulesRes.status === 'fulfilled' && rulesRes.value.success) {
+          const items = Array.isArray(rulesRes.value.data) ? rulesRes.value.data : rulesRes.value.data?.items || [];
+          setDetectionRules(items.map((item: any) => ({
+            id: item.id,
+            name: item.name || item.rule_name,
+            type: item.type || 'custom',
+            status: item.status || 'active'
+          })));
+        }
+      } catch (error) {
+        console.error('获取数据失败:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchData();
+  }, []);
 
   const [formData, setFormData] = useState({
     name: '',
@@ -339,13 +445,13 @@ export default function SmartParser() {
   }, [pipelines, activeFilter]);
 
   const filteredTemplates = useMemo(() => {
-    return mockFormatTemplates.filter(t => {
+    return formatTemplates.filter(t => {
       const matchesSearch = t.name.toLowerCase().includes(templateSearchQuery.toLowerCase()) ||
-                           t.description.toLowerCase().includes(templateSearchQuery.toLowerCase());
+                           (t.description || '').toLowerCase().includes(templateSearchQuery.toLowerCase());
       const matchesCategory = templateCategory === 'all' || t.category === templateCategory;
       return matchesSearch && matchesCategory;
     });
-  }, [templateSearchQuery, templateCategory]);
+  }, [templateSearchQuery, templateCategory, formatTemplates]);
 
   const getParserIcon = useCallback((parser: string) => {
     const found = parserTypes.find(p => p.id === parser);
@@ -447,11 +553,11 @@ export default function SmartParser() {
       description: formData.description,
       fieldMappings: selectedFields,
       logTypeId: formData.logTypeId,
-      logTypeName: mockLogTypes.find(l => l.id === formData.logTypeId)?.name,
+      logTypeName: logTypes.find(l => l.id === formData.logTypeId)?.name,
       storageTableId: formData.storageTableId,
-      storageTableName: mockStorageTables.find(s => s.id === formData.storageTableId)?.name,
+      storageTableName: storageTables.find(s => s.id === formData.storageTableId)?.name,
       formatTemplateId: formData.formatTemplateId,
-      formatTemplateName: mockFormatTemplates.find(f => f.id === formData.formatTemplateId)?.name,
+      formatTemplateName: formatTemplates.find(f => f.id === formData.formatTemplateId)?.name,
       mode: formData.mode,
       smartDetect: formData.smartDetect,
       selectedRules: formData.selectedRules,
@@ -489,9 +595,9 @@ export default function SmartParser() {
       ...p,
       ...formData,
       fieldMappings: selectedFields,
-      logTypeName: mockLogTypes.find(l => l.id === formData.logTypeId)?.name,
-      storageTableName: mockStorageTables.find(s => s.id === formData.storageTableId)?.name,
-      formatTemplateName: mockFormatTemplates.find(f => f.id === formData.formatTemplateId)?.name
+      logTypeName: logTypes.find(l => l.id === formData.logTypeId)?.name,
+      storageTableName: storageTables.find(s => s.id === formData.storageTableId)?.name,
+      formatTemplateName: formatTemplates.find(f => f.id === formData.formatTemplateId)?.name
     } : p));
     setEditingPipeline(null);
     setShowAddModal(false);
@@ -1132,10 +1238,10 @@ export default function SmartParser() {
                             <div className="space-y-3">
                               <div className="flex items-center gap-3">
                                 <span className="text-sm text-gray-700">
-                                  已选择: <span className="font-medium text-indigo-700">{mockFormatTemplates.find(f => f.id === formData.formatTemplateId)?.name}</span>
+                                  已选择: <span className="font-medium text-indigo-700">{formatTemplates.find(f => f.id === formData.formatTemplateId)?.name}</span>
                                 </span>
                                 <span className="px-2 py-0.5 text-xs bg-indigo-100 text-indigo-600 rounded font-medium">
-                                  {mockFormatTemplates.find(f => f.id === formData.formatTemplateId)?.parserType}
+                                  {formatTemplates.find(f => f.id === formData.formatTemplateId)?.type}
                                 </span>
                               </div>
                               <button
@@ -1241,9 +1347,9 @@ export default function SmartParser() {
                         </div>
 
                         <div className="space-y-2 max-h-48 overflow-auto">
-                          {mockFormatTemplates.map(template => {
-                            const isSelected = formData.linkedTemplates?.includes(template.id);
-                            const parserConfig = getParserConfig(template.parserType);
+                          {formatTemplates.map(template => {
+                            const isSelected = formData.linkedTemplates?.includes(String(template.id));
+                            const parserConfig = getParserConfig(template.type || 'json');
                             const storageTable = formData.templateStorageMap?.[template.id];
                             return (
                               <div
@@ -1293,7 +1399,7 @@ export default function SmartParser() {
                                         value={storageTable?.tableId || ''}
                                         onChange={e => {
                                           e.stopPropagation();
-                                          const table = mockStorageTables.find(t => t.id === e.target.value);
+                                          const table = storageTables.find(t => t.id === Number(e.target.value));
                                           setFormData(prev => ({
                                             ...prev,
                                             templateStorageMap: {
@@ -1305,7 +1411,7 @@ export default function SmartParser() {
                                         className="text-xs px-2 py-1 bg-white border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500"
                                       >
                                         <option value="">选择存储表</option>
-                                        {mockStorageTables.map(table => (
+                                        {storageTables.map(table => (
                                           <option key={table.id} value={table.id}>{table.name}</option>
                                         ))}
                                       </select>

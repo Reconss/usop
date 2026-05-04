@@ -6,10 +6,19 @@ import {
   Type, Hash, Calendar, Globe, ToggleLeft, Server, Database, Cloud, Cpu, HardDrive,
   Box, Layers, FileCode, Activity, Zap, Shield, Lock, Settings, Code2, Regex,
   Filter, LayoutGrid, List, ChevronRight, Star, Clock, TrendingUp, MoreHorizontal,
-  BookOpen, Variable, AlignLeft, Split, Columns, TestTube, RefreshCw
+  BookOpen, Variable, AlignLeft, Split, Columns, TestTube, RefreshCw, Loader2
 } from 'lucide-react';
-import { formatTemplates as presetTemplates } from '../data/mockData';
-import type { FormatTemplate } from '../data/mockData';
+import { logTypesApi } from '../services/api';
+
+interface FormatTemplate {
+  id: number;
+  name: string;
+  type: string;
+  category: string;
+  description?: string;
+  fields?: number;
+  parserType?: string;
+}
 
 interface ParserConfig {
   jsonPath?: string;
@@ -74,7 +83,8 @@ const getTypeIcon = (type: string) => typeOptions.find(t => t.id === type)?.icon
 const getTypeColor = (type: string) => typeOptions.find(t => t.id === type)?.color || 'bg-slate-100 text-slate-600 border-slate-200';
 
 export default function FormatTemplate() {
-  const [templates, setTemplates] = useState<FormatTemplate[]>(presetTemplates);
+  const [templates, setTemplates] = useState<FormatTemplate[]>([]);
+  const [loading, setLoading] = useState(true);
   const [activeCategory, setActiveCategory] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
@@ -89,6 +99,35 @@ export default function FormatTemplate() {
   const [detectedFields, setDetectedFields] = useState<{ name: string; type: string; value: any; selected: boolean; targetName?: string }[]>([]);
   const [fieldSearchQuery, setFieldSearchQuery] = useState('');
   const [fieldSortBy, setFieldSortBy] = useState<'name' | 'type'>('name');
+
+  // 从API获取数据
+  const fetchTemplates = async () => {
+    try {
+      setLoading(true);
+      const res = await logTypesApi.getLogTypes({ page_size: 100 });
+      if (res.success && res.data) {
+        const items = Array.isArray(res.data) ? res.data : res.data.items || [];
+        setTemplates(items.map((item: any) => ({
+          id: item.id,
+          name: item.name || item.type_name,
+          type: item.type || 'json',
+          category: item.category || 'application',
+          description: item.description,
+          fields: item.field_count || item.fields || 0,
+          parserType: item.parser_type || item.type || 'json'
+        })));
+      }
+    } catch (error) {
+      console.error('获取模板失败:', error);
+      setTemplates([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchTemplates();
+  }, []);
 
   const [formData, setFormData] = useState<FormatTemplate>({
     id: '',

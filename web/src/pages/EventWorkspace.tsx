@@ -1,12 +1,12 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Search, Filter, Download, CheckCircle, XCircle, AlertTriangle,
   MoreHorizontal, ChevronDown, Calendar, Shield, Clock, User,
   Edit2, Trash2, Plus, Paperclip, Upload, FileText, X, File, Image,
-  ArrowRight, RotateCcw, Eye, MessageSquare, History
+  ArrowRight, RotateCcw, Eye, MessageSquare, History, Loader2
 } from 'lucide-react';
-import { securityEvents } from '../data/mockData';
+import { alertsApi } from '../services/api';
 import type { SecurityEvent, Attachment } from '../types';
 
 const severityConfig = {
@@ -51,14 +51,49 @@ export default function EventWorkspace() {
   const [selectedEvents, setSelectedEvents] = useState<string[]>([]);
   const [detailEvent, setDetailEvent] = useState<SecurityEvent | null>(null);
   const [filterOpen, setFilterOpen] = useState(false);
-  const [events, setEvents] = useState<SecurityEvent[]>(securityEvents.map(e => ({ ...e, attachments: [] })));
+  const [events, setEvents] = useState<SecurityEvent[]>([]);
   const [showAddForm, setShowAddForm] = useState(false);
   const [newEvent, setNewEvent] = useState<Partial<SecurityEvent>>({
     title: '', severity: 'medium', status: 'new', eventType: '权限异常',
     sourceIp: '', affectedAssets: [], description: '', attachments: []
   });
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  // 获取告警列表
+  const fetchEvents = async () => {
+    try {
+      setLoading(true);
+      const res = await alertsApi.getAlerts({ page_size: 100 });
+      if (res.success && res.data) {
+        const items = Array.isArray(res.data) ? res.data : res.data.items || [];
+        // 转换为SecurityEvent格式
+        const mappedEvents: SecurityEvent[] = items.map((item: any) => ({
+          id: String(item.id || item.alert_code || item.id),
+          title: item.title || item.name || '未命名告警',
+          severity: item.severity || 'medium',
+          confidence: item.confidence || 80,
+          affectedAssets: item.affected_assets || item.assets || [],
+          sourceIp: item.source_ip || item.ip || '',
+          timestamp: item.created_at || item.timestamp || new Date().toISOString(),
+          status: item.status || 'new',
+          eventType: item.event_type || item.type || '其他',
+          description: item.description || item.message || '',
+          attachments: []
+        }));
+        setEvents(mappedEvents);
+      }
+    } catch (error) {
+      console.error('获取告警失败:', error);
+      setEvents([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchEvents();
+  }, []);
 
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
     setToast({ message, type });
@@ -73,9 +108,15 @@ export default function EventWorkspace() {
     setSelectedEvents(selectedEvents.length === events.length ? [] : events.map(e => e.id));
   };
 
-  const handleDelete = (id: string) => {
-    setEvents(prev => prev.filter(e => e.id !== id));
-    showToast('事件已删除');
+  const handleDelete = async (id: string) => {
+    try {
+      await alertsApi.deleteAlert(Number(id));
+      setEvents(prev => prev.filter(e => e.id !== id));
+      showToast('事件已删除');
+    } catch (error) {
+      console.error('删除失败:', error);
+      showToast('删除失败', 'error');
+    }
   };
 
   const handleStatusChange = (id: string, newStatus: SecurityEvent['status']) => {
