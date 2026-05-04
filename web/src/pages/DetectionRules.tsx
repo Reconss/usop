@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, Search, Edit2, Trash2, Play, Power, X, Save, Code, FileText, Clock, AlertTriangle, Database, Link2, Server, CheckCircle, ChevronRight, Globe, MessageSquare, Terminal, Cloud, Lock, FolderOpen, Wifi, Loader2 } from 'lucide-react';
+import { Plus, Search, Edit2, Trash2, Play, X, Code, FileText, Clock, AlertTriangle, Database, Server, CheckCircle, ChevronRight, Globe, MessageSquare, Terminal, Cloud, Lock, FolderOpen, Wifi } from 'lucide-react';
 import { rulesApi, dataSourcesApi } from '../services/api';
 
 interface DetectionRule {
@@ -19,6 +19,9 @@ interface DataSource {
   name: string;
   type: string;
   status: string;
+  protocol?: string;
+  totalEvents?: number;
+  parsePipelines?: number[];
 }
 
 const protocolIcons: Record<string, React.ElementType> = {
@@ -60,7 +63,6 @@ const severityOptions = [
 export default function DetectionRules() {
   const [rules, setRules] = useState<DetectionRule[]>([]);
   const [dataSources, setDataSources] = useState<DataSource[]>([]);
-  const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState<string>('all');
   const [showForm, setShowForm] = useState(false);
@@ -69,7 +71,6 @@ export default function DetectionRules() {
   // 获取数据
   const fetchData = async () => {
     try {
-      setLoading(true);
       const [rulesRes, dsRes] = await Promise.allSettled([
         rulesApi.getRules({ page_size: 100 }),
         dataSourcesApi.getDataSources({ page_size: 100 })
@@ -100,8 +101,6 @@ export default function DetectionRules() {
       }
     } catch (error) {
       console.error('获取数据失败:', error);
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -115,16 +114,15 @@ export default function DetectionRules() {
     status: 'disabled'
   });
   const [activeTab, setActiveTab] = useState<'basic' | 'condition' | 'action' | 'datasource'>('basic');
-  const [showDataSourceModal, setShowDataSourceModal] = useState(false);
   const [selectedDataSources, setSelectedDataSources] = useState<string[]>([]);
 
   const filteredRules = rules.filter(rule => {
-    const matchesSearch = rule.name.toLowerCase().includes(searchTerm.toLowerCase()) || rule.id.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesSearch = rule.name.toLowerCase().includes(searchTerm.toLowerCase()) || String(rule.id).toLowerCase().includes(searchTerm.toLowerCase());
     const matchesType = filterType === 'all' || rule.type === filterType;
     return matchesSearch && matchesType;
   });
 
-  const toggleStatus = (id: string) => {
+  const toggleStatus = (id: string | number) => {
     setRules(prev => prev.map(rule => rule.id === id ? { ...rule, status: rule.status === 'enabled' ? 'disabled' : 'enabled' } : rule));
   };
 
@@ -144,7 +142,7 @@ export default function DetectionRules() {
   const handleEdit = (rule: DetectionRule) => {
     setEditingRule(rule);
     setFormData({ ...rule });
-    setSelectedDataSources(rule.dataSourceIds || []);
+    setSelectedDataSources((rule.dataSourceIds || []).map(id => String(id)));
     setActiveTab('basic');
     setShowForm(true);
   };
@@ -173,7 +171,7 @@ export default function DetectionRules() {
     setShowForm(false);
   };
 
-  const handleDelete = (id: string) => {
+  const handleDelete = (id: string | number) => {
     setRules(prev => prev.filter(rule => rule.id !== id));
   };
 
@@ -423,18 +421,19 @@ export default function DetectionRules() {
                       </div>
 
                       <div className="space-y-2 max-h-80 overflow-auto">
-                        {mockDataSources.map((source) => {
-                          const ProtocolIcon = protocolIcons[source.protocol.toLowerCase()] || Server;
-                          const isSelected = selectedDataSources.includes(source.id);
+                        {dataSources.map((source) => {
+                          const ProtocolIcon = protocolIcons[source.type.toLowerCase()] || Server;
+                          const sourceId = String(source.id);
+                          const isSelected = selectedDataSources.includes(sourceId);
                           return (
                             <motion.div
                               key={source.id}
                               whileHover={{ scale: 1.01 }}
                               onClick={() => {
                                 if (isSelected) {
-                                  setSelectedDataSources(selectedDataSources.filter(id => id !== source.id));
+                                  setSelectedDataSources(selectedDataSources.filter(id => id !== sourceId));
                                 } else {
-                                  setSelectedDataSources([...selectedDataSources, source.id]);
+                                  setSelectedDataSources([...selectedDataSources, sourceId]);
                                 }
                               }}
                               className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
@@ -466,10 +465,10 @@ export default function DetectionRules() {
                                 <div className="flex items-center gap-3 mt-1 text-xs text-text-muted">
                                   <span className="flex items-center gap-1">
                                     <Database className="w-3 h-3" />
-                                    {source.protocol}
+                                    {source.protocol || source.type}
                                   </span>
-                                  <span>{(source.totalEvents / 1000000).toFixed(1)}M 事件</span>
-                                  <span>{source.parsePipelines.length} 个解析管道</span>
+                                  <span>{source.totalEvents ? `${(source.totalEvents / 1000000).toFixed(1)}M 事件` : '0 事件'}</span>
+                                  <span>{source.parsePipelines?.length || 0} 个解析管道</span>
                                 </div>
                               </div>
                               <ChevronRight className="w-4 h-4 text-text-muted" />
@@ -496,7 +495,7 @@ export default function DetectionRules() {
                           已关联 {selectedDataSources.length} 个数据源
                           {selectedDataSources.length > 0 && (
                             <span className="text-text-muted ml-1">
-                              ({selectedDataSources.map(id => mockDataSources.find(s => s.id === id)?.name).filter(Boolean).join(', ')})
+                              ({selectedDataSources.map(id => dataSources.find(s => s.id === id)?.name).filter(Boolean).join(', ')})
                             </span>
                           )}
                         </span>

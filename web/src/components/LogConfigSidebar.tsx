@@ -8,6 +8,7 @@ import {
 interface LogConfigSidebarProps {
   activeSection: string;
   onSectionChange: (section: string) => void;
+  dataSourceCount?: number;
 }
 
 const menuItems = [
@@ -26,7 +27,7 @@ const flowNodes = [
   { id: 'storage', label: '存储配置', icon: HardDrive },
 ];
 
-export default function LogConfigSidebar({ activeSection, onSectionChange }: LogConfigSidebarProps) {
+export default function LogConfigSidebar({ activeSection, onSectionChange, dataSourceCount = 0 }: LogConfigSidebarProps) {
   return (
     <div className="w-72 bg-card-bg rounded-2xl shadow-sm border border-border-color flex flex-col h-full overflow-hidden">
       {/* Header */}
@@ -47,6 +48,8 @@ export default function LogConfigSidebar({ activeSection, onSectionChange }: Log
         {menuItems.map((item) => {
           const Icon = item.icon;
           const isActive = activeSection === item.id;
+          // 数据源管理使用传入的数量
+          const displayCount = item.id === 'sources' ? dataSourceCount : item.count;
           return (
             <motion.button
               key={item.id}
@@ -70,7 +73,7 @@ export default function LogConfigSidebar({ activeSection, onSectionChange }: Log
                       {item.label}
                     </span>
                     <span className={`text-xs ${isActive ? 'text-orange-600 font-medium' : 'text-gray-400'}`}>
-                      {item.count} 个
+                      {displayCount} 个
                     </span>
                   </div>
                   <p className="text-xs text-gray-400 mt-0.5">{item.desc}</p>

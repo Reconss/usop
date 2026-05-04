@@ -14,6 +14,13 @@ def create_app():
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'usop-secret-key-change-in-production')
     app.config['JWT_SECRET'] = os.getenv('JWT_SECRET', 'usop-jwt-secret-key')
+    
+    # TimescaleDB configuration for alert logs
+    app.config['TSDB_USER'] = os.getenv('TSDB_USER', 'timescale')
+    app.config['TSDB_PASSWORD'] = os.getenv('TSDB_PASSWORD', 'timescale_pass')
+    app.config['TSDB_NAME'] = os.getenv('TSDB_NAME', 'alerts')
+    app.config['TSDB_HOST'] = os.getenv('TSDB_HOST', 'localhost')
+    app.config['TSDB_PORT'] = os.getenv('TSDB_PORT', '5433')
 
     # Initialize extensions
     CORS(app, resources={
@@ -155,16 +162,30 @@ def create_app():
     @app.route('/api/health')
     def health():
         db_status = 'connected'
+        tsdb_status = 'disconnected'
+        
         try:
             db.session.execute(db.text('SELECT 1'))
         except Exception:
             db_status = 'disconnected'
+        
+        # 检查 TimescaleDB 连接
+        try:
+            from app.timescaledb import get_tsdb
+            tsdb = get_tsdb()
+            if tsdb.test_connection():
+                tsdb_status = 'connected'
+        except Exception as e:
+            tsdb_status = f'disconnected: {str(e)}'
 
         return {
-            'status': 'healthy',
+            'status': 'healthy' if db_status == 'connected' else 'degraded',
             'service': 'USOP Backend API (Python)',
             'version': '1.0.0',
-            'database': db_status,
+            'databases': {
+                'postgresql': db_status,
+                'timescaledb': tsdb_status
+            },
             'timestamp': datetime.now().isoformat()
         }
 

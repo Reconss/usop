@@ -741,10 +741,10 @@ export default function FormatTemplate() {
               </div>
               <div className="flex items-center gap-2 mb-3">
                 <span className={`px-2 py-1 text-xs rounded-lg bg-gradient-to-r ${parserInfo.color} text-white`}>{parserInfo.name}</span>
-                <span className="text-xs text-gray-400">{template.fields.length} 字段</span>
+                <span className="text-xs text-gray-400">{(template.fields || []).length} 字段</span>
               </div>
               <div className="flex flex-wrap gap-1">
-                {template.fields.slice(0, 4).map((f, i) => (
+                {(template.fields || []).slice(0, 4).map((f: any, i: number) => (
                   <span key={i} className="px-2 py-1 text-xs bg-slate-50 border border-slate-200 rounded text-slate-600">{f.name}</span>
                 ))}
               </div>

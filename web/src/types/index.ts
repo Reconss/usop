@@ -115,16 +115,17 @@ export interface DetectionRule {
 }
 
 export interface DataSource {
-  id: string;
+  id: number | string;
   name: string;
   type: 'pull' | 'push';
   protocol: string;
   status: 'connected' | 'disconnected' | 'error' | 'syncing' | 'paused';
-  lastSync: string;
-  totalEvents: number;
-  health: number;
-  parsePipelines: { id: string; name: string; parser: string; priority: number }[];
-  storageConfig: { hypertable: string; retentionDays: number };
+  lastSync?: string;
+  totalEvents?: number;
+  health?: number;
+  parsePipelines?: any[];
+  storageConfig?: any;
+  [key: string]: any;
 }
 
 export interface Playbook {

@@ -33,9 +33,21 @@ const colorOptions = [
 
 export default function LogTypeManager() {
   const [logTypes, setLogTypes] = useState<LogType[]>([]);
-  const [pipelines, setPipelines] = useState<ParsePipeline[]>([]);
   const [sources, setSources] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showModal, setShowModal] = useState(false);
+  const [showDetail, setShowDetail] = useState(false);
+  const [showDelete, setShowDelete] = useState(false);
+  const [showPipelineModal, setShowPipelineModal] = useState(false);
+  const [editingType, setEditingType] = useState<LogType | null>(null);
+  const [selectedType, setSelectedType] = useState<LogType | null>(null);
+  const [formData, setFormData] = useState({ 
+    name: '', 
+    description: '', 
+    icon: 'FileText', 
+    color: colorOptions[0].value,
+    pipelineId: ''
+  });
 
   // 从API获取数据
   const fetchData = async () => {
@@ -78,38 +90,20 @@ export default function LogTypeManager() {
     fetchData();
   }, []);
 
-export default function LogTypeManager() {
-  const [logTypes, setLogTypes] = useState<LogType[]>(mockLogTypes);
-  const [showModal, setShowModal] = useState(false);
-  const [showDetail, setShowDetail] = useState(false);
-  const [showDelete, setShowDelete] = useState(false);
-  const [showPipelineModal, setShowPipelineModal] = useState(false);
-  const [editingType, setEditingType] = useState<LogType | null>(null);
-  const [selectedType, setSelectedType] = useState<LogType | null>(null);
-  const [formData, setFormData] = useState({ 
-    name: '', 
-    description: '', 
-    icon: 'FileText', 
-    color: colorOptions[0].value,
-    pipelineId: ''
-  });
-
   const handleSave = () => {
     if (!formData.name.trim()) return;
-    const pipeline = mockPipelines.find(p => p.id === formData.pipelineId);
     if (editingType) {
       setLogTypes(prev => prev.map(lt => lt.id === editingType.id ? { 
         ...lt, 
-        ...formData,
-        pipelineName: pipeline?.name
+        ...formData
       } : lt));
     } else {
       setLogTypes(prev => [...prev, { 
         ...formData, 
-        id: `lt-${Date.now()}`, 
+        id: Date.now(), 
         sourceCount: 0, 
         pipelineCount: 0,
-        pipelineName: pipeline?.name
+        category: 'other'
       }]);
     }
     closeModal();
@@ -137,7 +131,7 @@ export default function LogTypeManager() {
       description: type.description, 
       icon: type.icon, 
       color: type.color,
-      pipelineId: type.pipelineId || ''
+      pipelineId: type.pipelineId ? String(type.pipelineId) : ''
     });
     setShowModal(true);
   };
@@ -155,18 +149,16 @@ export default function LogTypeManager() {
       description: type.description,
       icon: type.icon,
       color: type.color,
-      pipelineId: type.pipelineId || ''
+      pipelineId: type.pipelineId ? String(type.pipelineId) : ''
     });
     setShowPipelineModal(true);
   };
 
   const savePipeline = () => {
     if (selectedType) {
-      const pipeline = mockPipelines.find(p => p.id === formData.pipelineId);
       setLogTypes(prev => prev.map(lt => lt.id === selectedType.id ? {
         ...lt,
-        pipelineId: formData.pipelineId,
-        pipelineName: pipeline?.name
+        pipelineId: formData.pipelineId ? Number(formData.pipelineId) : undefined
       } : lt));
       setShowPipelineModal(false);
     }
@@ -199,66 +191,72 @@ export default function LogTypeManager() {
         </button>
       </div>
 
-      <div className="grid grid-cols-3 gap-4">
-        {logTypes.map((type, index) => {
-          const Icon = iconMap[type.icon] || FileText;
-          const colorClass = type.color.split(' ')[0];
-          const bgClass = type.color.split(' ')[1];
-          const borderClass = type.color.split(' ')[2];
-          return (
-            <motion.div
-              key={type.id}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: index * 0.05 }}
-              whileHover={{ y: -2 }}
-              onClick={() => openDetail(type)}
-              className="bg-card-bg border border-border-color rounded-xl p-5 hover:border-blue-300 transition-all cursor-pointer group"
-            >
-              <div className="flex items-start justify-between mb-4">
-                <div className={`w-12 h-12 rounded-xl flex items-center justify-center border ${bgClass} ${borderClass} ${colorClass}`}>
-                  <Icon size={24} />
+      {loading ? (
+        <div className="flex items-center justify-center py-12">
+          <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+        </div>
+      ) : (
+        <div className="grid grid-cols-3 gap-4">
+          {logTypes.map((type, index) => {
+            const Icon = iconMap[type.icon] || FileText;
+            const colorClass = type.color.split(' ')[0];
+            const bgClass = type.color.split(' ')[1];
+            const borderClass = type.color.split(' ')[2];
+            return (
+              <motion.div
+                key={type.id}
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: index * 0.05 }}
+                whileHover={{ y: -2 }}
+                onClick={() => openDetail(type)}
+                className="bg-card-bg border border-border-color rounded-xl p-5 hover:border-blue-300 transition-all cursor-pointer group"
+              >
+                <div className="flex items-start justify-between mb-4">
+                  <div className={`w-12 h-12 rounded-xl flex items-center justify-center border ${bgClass} ${borderClass} ${colorClass}`}>
+                    <Icon size={24} />
+                  </div>
+                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button 
+                      onClick={(e) => openEdit(type, e)} 
+                      className="p-1.5 text-gray-400 hover:text-blue-600 rounded-lg hover:bg-blue-50"
+                    >
+                      <Edit3 size={14} />
+                    </button>
+                    <button 
+                      onClick={(e) => confirmDelete(type, e)} 
+                      className="p-1.5 text-gray-400 hover:text-red-600 rounded-lg hover:bg-red-50"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button 
-                    onClick={(e) => openEdit(type, e)} 
-                    className="p-1.5 text-gray-400 hover:text-blue-600 rounded-lg hover:bg-blue-50"
+                <h3 className="font-medium text-text-primary mb-1">{type.name}</h3>
+                <p className="text-sm text-text-muted mb-4">{type.description}</p>
+                
+                {type.pipelineName ? (
+                  <div className="flex items-center gap-2 mb-3 p-2 bg-page-bg/50 rounded-lg">
+                    <GitBranch size={14} className="text-blue-600" />
+                    <span className="text-xs text-text-secondary">{type.pipelineName}</span>
+                  </div>
+                ) : (
+                  <button
+                    onClick={(e) => openPipelineModal(type, e)}
+                    className="flex items-center gap-2 mb-3 px-3 py-2 text-xs text-blue-600 hover:text-blue-700 border border-dashed border-blue-300 rounded-lg hover:bg-blue-50 transition-colors w-full"
                   >
-                    <Edit3 size={14} />
+                    <Link2 size={12} /> 绑定解析管道
                   </button>
-                  <button 
-                    onClick={(e) => confirmDelete(type, e)} 
-                    className="p-1.5 text-gray-400 hover:text-red-600 rounded-lg hover:bg-red-50"
-                  >
-                    <Trash2 size={14} />
-                  </button>
+                )}
+                
+                <div className="flex items-center gap-4 text-xs text-text-muted">
+                  <span className="flex items-center gap-1"><Database size={12} /> {type.sourceCount} 数据源</span>
+                  <span className="flex items-center gap-1"><GitBranch size={12} /> {type.pipelineCount} 管道</span>
                 </div>
-              </div>
-              <h3 className="font-medium text-text-primary mb-1">{type.name}</h3>
-              <p className="text-sm text-text-muted mb-4">{type.description}</p>
-              
-              {type.pipelineName ? (
-                <div className="flex items-center gap-2 mb-3 p-2 bg-page-bg/50 rounded-lg">
-                  <GitBranch size={14} className="text-blue-600" />
-                  <span className="text-xs text-text-secondary">{type.pipelineName}</span>
-                </div>
-              ) : (
-                <button
-                  onClick={(e) => openPipelineModal(type, e)}
-                  className="flex items-center gap-2 mb-3 px-3 py-2 text-xs text-blue-600 hover:text-blue-700 border border-dashed border-blue-300 rounded-lg hover:bg-blue-50 transition-colors w-full"
-                >
-                  <Link2 size={12} /> 绑定解析管道
-                </button>
-              )}
-              
-              <div className="flex items-center gap-4 text-xs text-text-muted">
-                <span className="flex items-center gap-1"><Database size={12} /> {type.sourceCount} 数据源</span>
-                <span className="flex items-center gap-1"><GitBranch size={12} /> {type.pipelineCount} 管道</span>
-              </div>
-            </motion.div>
-          );
-        })}
-      </div>
+              </motion.div>
+            );
+          })}
+        </div>
+      )}
 
       <AnimatePresence>
         {showModal && (
@@ -337,19 +335,6 @@ export default function LogTypeManager() {
                     ))}
                   </div>
                 </div>
-                <div>
-                  <label className="block text-text-secondary text-sm font-medium mb-2 flex items-center gap-2">
-                    <GitBranch size={14} /> 绑定解析管道
-                  </label>
-                  <select 
-                    value={formData.pipelineId} 
-                    onChange={e => setFormData({ ...formData, pipelineId: e.target.value })} 
-                    className="w-full px-3 py-2 bg-card-bg border border-border-color rounded-lg text-text-primary focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  >
-                    <option value="">不绑定</option>
-                    {mockPipelines.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                  </select>
-                </div>
               </div>
               <div className="flex justify-end gap-3 pt-6 border-t border-border-color mt-6">
                 <button onClick={closeModal} className="px-4 py-2 text-text-secondary hover:text-text-primary text-sm">取消</button>
@@ -388,37 +373,9 @@ export default function LogTypeManager() {
                   <X size={20} />
                 </button>
               </div>
-              <div className="space-y-2">
-                {mockPipelines.map(pipeline => (
-                  <button
-                    key={pipeline.id}
-                    onClick={() => setFormData({ ...formData, pipelineId: pipeline.id })}
-                    className={`w-full flex items-center gap-3 p-3 rounded-lg border transition-all ${
-                      formData.pipelineId === pipeline.id
-                        ? 'border-blue-500 bg-blue-50'
-                        : 'border-border-color hover:border-border-color'
-                    }`}
-                  >
-                    <div className={`w-5 h-5 rounded-full border flex items-center justify-center ${
-                      formData.pipelineId === pipeline.id ? 'bg-blue-600 border-blue-600' : 'border-border-color'
-                    }`}>
-                      {formData.pipelineId === pipeline.id && <CheckCircle className="w-3 h-3 text-white" />}
-                    </div>
-                    <div className="flex-1 text-left">
-                      <div className="font-medium text-text-primary">{pipeline.name}</div>
-                      <div className="text-xs text-text-muted">{pipeline.parser}</div>
-                    </div>
-                  </button>
-                ))}
-              </div>
-              <div className="flex justify-end gap-3 pt-6 border-t border-border-color mt-6">
-                <button onClick={() => setShowPipelineModal(false)} className="px-4 py-2 text-text-secondary hover:text-text-primary text-sm">取消</button>
-                <button 
-                  onClick={savePipeline} 
-                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium"
-                >
-                  保存绑定
-                </button>
+              <p className="text-sm text-text-secondary mb-4">暂无可用解析管道</p>
+              <div className="flex justify-end gap-3 pt-4 border-t border-border-color mt-4">
+                <button onClick={() => setShowPipelineModal(false)} className="px-4 py-2 text-text-secondary hover:text-text-primary text-sm">关闭</button>
               </div>
             </motion.div>
           </motion.div>
@@ -469,25 +426,13 @@ export default function LogTypeManager() {
                   <h3 className="text-sm font-medium text-text-primary mb-2 flex items-center gap-2">
                     <Database size={16} /> 关联数据源 ({selectedType.sourceCount})
                   </h3>
-                  <div className="space-y-1">
-                    {mockSources.slice(0, selectedType.sourceCount).map((s, i) => (
-                      <div key={i} className="flex items-center gap-2 p-2 bg-page-bg/50 rounded-lg text-sm text-text-secondary">
-                        <Link2 size={14} /> {s}
-                      </div>
-                    ))}
-                  </div>
+                  <p className="text-sm text-text-muted">暂无关联数据源</p>
                 </div>
                 <div>
                   <h3 className="text-sm font-medium text-text-primary mb-2 flex items-center gap-2">
                     <GitBranch size={16} /> 关联解析管道 ({selectedType.pipelineCount})
                   </h3>
-                  <div className="space-y-1">
-                    {mockPipelines.slice(0, selectedType.pipelineCount).map((p, i) => (
-                      <div key={i} className="flex items-center gap-2 p-2 bg-page-bg/50 rounded-lg text-sm text-text-secondary">
-                        <Link2 size={14} /> {p.name}
-                      </div>
-                    ))}
-                  </div>
+                  <p className="text-sm text-text-muted">暂无关联解析管道</p>
                 </div>
               </div>
             </motion.div>

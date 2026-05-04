@@ -1,12 +1,15 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Shield, Eye, EyeOff, Lock, User, AlertCircle } from 'lucide-react';
+import { authApi } from '../services/api';
 
 interface LoginProps {
   onLogin: () => void;
 }
 
 export default function Login({ onLogin }: LoginProps) {
+  const navigate = useNavigate();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [rememberMe, setRememberMe] = useState(false);
@@ -28,9 +31,27 @@ export default function Login({ onLogin }: LoginProps) {
     }
 
     setIsLoading(true);
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    setIsLoading(false);
-    onLogin();
+    
+    try {
+      const response = await authApi.login(username, password);
+      
+      // API 返回格式: {success: true, data: {token: ..., user: ...}}
+      if (response.success && response.data?.token) {
+        // 保存 token 和用户信息
+        localStorage.setItem('token', response.data.token);
+        localStorage.setItem('user', JSON.stringify(response.data.user));
+        if (rememberMe) {
+          localStorage.setItem('rememberMe', 'true');
+        }
+        onLogin();
+      } else {
+        setError(response.error || '用户名或密码错误');
+      }
+    } catch (err: any) {
+      setError(err.message || '登录失败，请检查用户名和密码');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (

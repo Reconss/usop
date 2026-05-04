@@ -9,77 +9,16 @@ import {
   FileText, HardDrive, Cpu, Wifi, Lock, Shield, FolderOpen, Loader2
 } from 'lucide-react';
 import { dataSourcesApi } from '../services/api';
-
-interface DataSource {
-  id: number;
-  name: string;
-  type: string;
-  status: string;
-  host?: string;
-  port?: number;
-  description?: string;
-  created_at?: string;
-}
+import { DataSource } from '../types';
 
 interface DataSourceManagerProps {
-  dataSources?: DataSource[];
+  dataSources?: any[];
   onAddSource?: () => void;
-  onEditSource?: (source: DataSource) => void;
-  onDeleteSource?: (source: DataSource) => void;
-  onToggleStatus?: (source: DataSource) => void;
-  onViewDetail?: (source: DataSource) => void;
+  onEditSource?: (source: any) => void;
+  onDeleteSource?: (source: any) => void;
+  onToggleStatus?: (source: any) => void;
+  onViewDetail?: (source: any) => void;
 }
-
-export default function DataSourceManager(props: DataSourceManagerProps) {
-  const [dataSources, setDataSources] = useState<DataSource[]>(props.dataSources || []);
-  const [loading, setLoading] = useState(!props.dataSources);
-  const [localProps] = useState(props);
-
-  // 如果没有传入dataSources，则从API获取
-  useEffect(() => {
-    if (props.dataSources) {
-      setDataSources(props.dataSources);
-      return;
-    }
-
-    const fetchData = async () => {
-      try {
-        setLoading(true);
-        const res = await dataSourcesApi.getDataSources({ page_size: 100 });
-        if (res.success && res.data) {
-          const items = Array.isArray(res.data) ? res.data : res.data.items || [];
-          setDataSources(items.map((item: any) => ({
-            id: item.id,
-            name: item.name || item.source_name,
-            type: item.type || item.source_type,
-            status: item.status || 'active',
-            host: item.host,
-            port: item.port,
-            description: item.description,
-            created_at: item.created_at
-          })));
-        }
-      } catch (error) {
-        console.error('获取数据源失败:', error);
-        setDataSources([]);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchData();
-  }, [props.dataSources]);
-
-const getStatusColor = (status: string) => {
-  switch (status) {
-    case 'connected': return 'bg-emerald-50 text-emerald-600 border-emerald-200';
-    case 'disconnected': return 'bg-page-bg/50 text-text-muted border-border-color';
-    case 'error': return 'bg-red-50 text-red-600 border-red-200';
-    case 'syncing': return 'bg-blue-50 text-blue-600 border-blue-200';
-    case 'paused': return 'bg-amber-50 text-amber-600 border-amber-200';
-    default: return 'bg-page-bg/50 text-text-muted border-border-color';
-  }
-};
 
 const getStatusText = (status: string) => {
   switch (status) {
@@ -89,6 +28,17 @@ const getStatusText = (status: string) => {
     case 'syncing': return '同步中';
     case 'paused': return '已暂停';
     default: return '未知';
+  }
+};
+
+const getStatusColor = (status: string) => {
+  switch (status) {
+    case 'connected': return 'bg-emerald-100 text-emerald-700 border-emerald-200';
+    case 'disconnected': return 'bg-gray-100 text-gray-600 border-gray-200';
+    case 'error': return 'bg-red-100 text-red-700 border-red-200';
+    case 'syncing': return 'bg-blue-100 text-blue-700 border-blue-200';
+    case 'paused': return 'bg-yellow-100 text-yellow-700 border-yellow-200';
+    default: return 'bg-gray-100 text-gray-600 border-gray-200';
   }
 };
 
@@ -198,14 +148,9 @@ const protocolConfigFields: Record<string, { label: string; placeholder: string;
   ]
 };
 
-export default function DataSourceManager({
-  dataSources,
-  onAddSource,
-  onEditSource,
-  onDeleteSource,
-  onToggleStatus,
-  onViewDetail
-}: DataSourceManagerProps) {
+export default function DataSourceManager(props: DataSourceManagerProps) {
+  const [dataSources, setDataSources] = useState<DataSource[]>(props.dataSources || []);
+  const [loading, setLoading] = useState(!props.dataSources);
   const [filterType, setFilterType] = useState<'all' | 'pull' | 'push'>('all');
   const [showAddModal, setShowAddModal] = useState(false);
   const [showDetailModal, setShowDetailModal] = useState(false);
@@ -225,20 +170,41 @@ export default function DataSourceManager({
     return source.type === filterType;
   });
 
-  const handleAddClick = () => {
-    setAddStep(1);
-    setSourceType('pull');
-    setProtocol('');
-    setTestSuccess(false);
-    setSelectedPipelines([]);
-    setFormData({});
-    setShowAddModal(true);
+  useEffect(() => {
+    if (!props.dataSources) {
+      fetchData();
+    }
+  }, []);
+
+  const fetchData = async () => {
+    try {
+      setLoading(true);
+      const res = await dataSourcesApi.getDataSources({ page_size: 100 });
+      if (res.success && res.data) {
+        const items = Array.isArray(res.data) ? res.data : res.data.items || [];
+        setDataSources(items.map((item: any) => ({
+          id: item.id,
+          name: item.name || item.source_name,
+          type: item.type || item.source_type,
+          status: item.status || 'disconnected',
+          host: item.host,
+          port: item.port,
+          description: item.description,
+          created_at: item.created_at || item.createdAt,
+          protocol: item.protocol
+        })));
+      }
+    } catch (error) {
+      console.error('获取数据源失败:', error);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleViewClick = (source: DataSource) => {
     setSelectedSource(source);
     setShowDetailModal(true);
-    onViewDetail(source);
+    props.onViewDetail && props.onViewDetail(source);
   };
 
   const handleDeleteClick = (source: DataSource) => {
@@ -248,7 +214,8 @@ export default function DataSourceManager({
 
   const confirmDelete = () => {
     if (selectedSource) {
-      onDeleteSource(selectedSource);
+      setDataSources(prev => prev.filter(s => s.id !== selectedSource.id));
+      props.onDeleteSource && props.onDeleteSource(selectedSource);
       setShowDeleteModal(false);
       setSelectedSource(null);
     }
@@ -263,7 +230,7 @@ export default function DataSourceManager({
 
   const openPipelineModal = (source: DataSource) => {
     setSelectedSource(source);
-    setSelectedPipelines(source.parsePipelines.map(p => p.id));
+    setSelectedPipelines(source.parsePipelines?.map((p: any) => p.id) || []);
     setShowPipelineModal(true);
   };
 
@@ -272,192 +239,156 @@ export default function DataSourceManager({
       const newPipelines = availablePipelines
         .filter(p => selectedPipelines.includes(p.id))
         .map((p, idx) => ({ ...p, priority: idx + 1 }));
-      onEditSource({ ...selectedSource, parsePipelines: newPipelines });
+      props.onEditSource && props.onEditSource({ ...selectedSource, parsePipelines: newPipelines });
       setShowPipelineModal(false);
     }
   };
 
   const getProtocolFields = () => {
-    return protocolConfigFields[protocol] || [
-      { label: '主机地址', placeholder: 'localhost', type: 'text' },
-      { label: '端口', placeholder: '8080', type: 'number' }
-    ];
+    return protocolConfigFields[protocol] || [];
   };
 
-  const pullProtocols = [
-    { id: 'kafka', name: 'Kafka', icon: MessageSquare, desc: '分布式消息队列消费' },
-    { id: 'rabbitmq', name: 'RabbitMQ', icon: Cable, desc: 'AMQP消息队列消费' },
-    { id: 'http', name: 'HTTP轮询', icon: Globe, desc: 'REST API拉取数据' },
-    { id: 'https', name: 'HTTPS', icon: Lock, desc: '加密HTTP拉取' },
-    { id: 's3', name: 'S3/OSS', icon: Cloud, desc: '对象存储文件读取' },
-    { id: 'jdbc', name: 'JDBC', icon: Database, desc: '数据库直连读取' },
-    { id: 'redis', name: 'Redis', icon: Cpu, desc: 'Redis队列消费' },
-    { id: 'elasticsearch', name: 'ES', icon: Database, desc: 'Elasticsearch查询' },
-    { id: 'file', name: '文件', icon: FolderOpen, desc: '本地/远程文件监控' }
-  ];
-
-  const pushProtocols = [
-    { id: 'syslog', name: 'Syslog', icon: Terminal, desc: 'UDP/TCP/TLS日志接收' },
-    { id: 'webhook', name: 'Webhook', icon: Webhook, desc: 'HTTP/HTTPS推送接收' },
-    { id: 'grpc', name: 'gRPC', icon: Radio, desc: '流式数据接收' },
-    { id: 'tcp', name: 'TCP', icon: Wifi, desc: '原始TCP数据接收' },
-    { id: 'udp', name: 'UDP', icon: Wifi, desc: '原始UDP数据接收' }
-  ];
-
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-semibold text-text-primary">数据源管理</h2>
-          <p className="text-sm text-text-muted mt-1">配置日志数据接入来源，支持主动拉取和被动接收</p>
+        <div className="flex items-center gap-4">
+          <div className="relative">
+            <input
+              type="text"
+              placeholder="搜索数据源..."
+              className="w-56 pl-10 pr-4 py-2 bg-card-bg border border-border-color rounded-lg text-text-primary placeholder-text-muted focus:outline-none focus:border-primary text-sm"
+            />
+            <Activity className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
+          </div>
+          <select
+            value={filterType}
+            onChange={(e) => setFilterType(e.target.value as typeof filterType)}
+            className="px-3 py-2 bg-card-bg border border-border-color rounded-lg text-text-primary focus:outline-none focus:border-primary cursor-pointer text-sm"
+          >
+            <option value="all">全部类型</option>
+            <option value="pull">主动拉取</option>
+            <option value="push">被动接收</option>
+          </select>
         </div>
-        <button
-          onClick={handleAddClick}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors text-sm font-medium"
+        <motion.button
+          whileHover={{ scale: 1.02 }}
+          whileTap={{ scale: 0.98 }}
+          onClick={() => setShowAddModal(true)}
+          className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors text-sm font-medium"
         >
-          <Plus className="w-4 h-4" />添加数据源
-        </button>
+          <Plus className="w-4 h-4" />
+          添加数据源
+        </motion.button>
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
-        <motion.div
-          whileHover={{ y: -2 }}
-          className={`bg-card-bg border rounded-xl p-5 cursor-pointer transition-all ${
-            filterType === 'pull' ? 'border-blue-500 shadow-sm' : 'border-border-color hover:border-border-color'
-          }`}
-          onClick={() => setFilterType('pull')}
-        >
-          <div className="flex items-start gap-4">
-            <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center shadow-sm">
-              <ArrowDownCircle className="w-6 h-6 text-white" />
-            </div>
-            <div className="flex-1">
-              <h3 className="text-base font-semibold text-text-primary">主动拉取 (Pull)</h3>
-              <p className="text-sm text-text-muted mt-1">从消息队列、API、存储等主动消费日志数据</p>
-              <div className="flex items-center gap-4 mt-3 text-sm">
-                <span className="text-text-muted">数据源: <span className="text-blue-600 font-medium">{dataSources.filter(s => s.type === 'pull').length}</span></span>
-              </div>
-            </div>
-          </div>
-        </motion.div>
-
-        <motion.div
-          whileHover={{ y: -2 }}
-          className={`bg-card-bg border rounded-xl p-5 cursor-pointer transition-all ${
-            filterType === 'push' ? 'border-blue-500 shadow-sm' : 'border-border-color hover:border-border-color'
-          }`}
-          onClick={() => setFilterType('push')}
-        >
-          <div className="flex items-start gap-4">
-            <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center shadow-sm">
-              <Inbox className="w-6 h-6 text-white" />
-            </div>
-            <div className="flex-1">
-              <h3 className="text-base font-semibold text-text-primary">被动接收 (Push)</h3>
-              <p className="text-sm text-text-muted mt-1">通过Syslog、Webhook、gRPC等方式接收推送的日志</p>
-              <div className="flex items-center gap-4 mt-3 text-sm">
-                <span className="text-text-muted">数据源: <span className="text-emerald-600 font-medium">{dataSources.filter(s => s.type === 'push').length}</span></span>
-              </div>
-            </div>
-          </div>
-        </motion.div>
-      </div>
-
-      <div className="bg-card-bg border border-border-color rounded-xl overflow-hidden">
-        <table className="w-full">
-          <thead className="bg-page-bg/50 border-b border-border-color">
-            <tr>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-muted uppercase tracking-wider">名称</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-muted uppercase tracking-wider">类型</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-muted uppercase tracking-wider">协议</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-muted uppercase tracking-wider">状态</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-muted uppercase tracking-wider">解析管道</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-text-muted uppercase tracking-wider">健康度</th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-text-muted uppercase tracking-wider">操作</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100">
-            {filteredSources.map((source, index) => {
-              const ProtocolIcon = protocolIcons[source.protocol] || Server;
-              return (
-                <motion.tr
-                  key={source.id}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: index * 0.05 }}
-                  className="hover:bg-page-bg/50/50 group"
-                >
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-3">
-                      <div className="w-9 h-9 rounded-lg bg-blue-50 flex items-center justify-center">
-                        <ProtocolIcon className="w-4 h-4 text-blue-600" />
-                      </div>
-                      <div>
-                        <div className="text-sm font-medium text-text-primary">{source.name}</div>
-                        <div className="text-xs text-gray-400 flex items-center gap-1">
-                          <Clock className="w-3 h-3" />
-                          {new Date(source.lastSync).toLocaleString('zh-CN')}
+      {loading ? (
+        <div className="flex items-center justify-center py-12">
+          <Loader2 className="w-8 h-8 text-primary animate-spin" />
+        </div>
+      ) : (
+        <div className="glass-card rounded-xl overflow-hidden">
+          <table className="w-full">
+            <thead className="bg-card-bg border-b border-border-color">
+              <tr>
+                <th className="px-6 py-4 text-left text-sm font-medium text-text-secondary">数据源</th>
+                <th className="px-6 py-4 text-left text-sm font-medium text-text-secondary">类型</th>
+                <th className="px-6 py-4 text-left text-sm font-medium text-text-secondary">协议</th>
+                <th className="px-6 py-4 text-left text-sm font-medium text-text-secondary">状态</th>
+                <th className="px-6 py-4 text-left text-sm font-medium text-text-secondary">解析管道</th>
+                <th className="px-6 py-4 text-left text-sm font-medium text-text-secondary">健康度</th>
+                <th className="px-6 py-4 text-right text-sm font-medium text-text-secondary">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredSources.map((source, index) => {
+                const ProtocolIcon = protocolIcons[source.protocol || ''] || Server;
+                return (
+                  <motion.tr
+                    key={source.id}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: index * 0.05 }}
+                    className="border-b border-border-color/50 last:border-0 hover:bg-page-bg/50"
+                  >
+                    <td className="px-6 py-4">
+                      <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-lg bg-blue-50 flex items-center justify-center">
+                          <ProtocolIcon className="w-4 h-4 text-blue-600" />
+                        </div>
+                        <div>
+                          <div className="text-sm font-medium text-text-primary">{source.name}</div>
+                          <div className="text-xs text-gray-400 flex items-center gap-1">
+                            <Clock className="w-3 h-3" />
+                            {source.created_at ? new Date(source.created_at).toLocaleString('zh-CN') : '-'}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className={`text-xs px-2 py-1 rounded-full border ${
-                      source.type === 'pull' 
-                        ? 'bg-blue-50 text-blue-600 border-blue-200' 
-                        : 'bg-emerald-50 text-emerald-600 border-emerald-200'
-                    }`}>
-                      {source.type === 'pull' ? 'Pull' : 'Push'}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-sm text-text-secondary">{source.protocol.toUpperCase()}</td>
-                  <td className="px-4 py-3">
-                    <span className={`text-xs px-2 py-1 rounded-full border ${getStatusColor(source.status)}`}>
-                      {getStatusText(source.status)}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3">
-                    <button
-                      onClick={() => openPipelineModal(source)}
-                      className="flex items-center gap-1.5 text-sm text-blue-600 hover:text-blue-700"
-                    >
-                      <GitBranch className="w-3.5 h-3.5" />
-                      <span>{source.parsePipelines.length} 个管道</span>
-                    </button>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <div className="w-14 h-1.5 bg-page-bg rounded-full overflow-hidden">
-                        <div
-                          className={`h-full rounded-full ${source.health >= 90 ? 'bg-emerald-500' : source.health >= 70 ? 'bg-amber-500' : 'bg-red-500'}`}
-                          style={{ width: `${source.health}%` }}
-                        />
+                    </td>
+                    <td className="px-6 py-4">
+                      <span className={`text-xs px-2 py-1 rounded-full border ${
+                        source.type === 'pull' 
+                          ? 'bg-blue-50 text-blue-600 border-blue-200' 
+                          : 'bg-emerald-50 text-emerald-600 border-emerald-200'
+                      }`}>
+                        {source.type === 'pull' ? 'Pull' : 'Push'}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 text-sm text-text-secondary">{(source.protocol || 'unknown').toUpperCase()}</td>
+                    <td className="px-6 py-4">
+                      <span className={`text-xs px-2 py-1 rounded-full border ${getStatusColor(source.status)}`}>
+                        {getStatusText(source.status)}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4">
+                      <button
+                        onClick={() => openPipelineModal(source)}
+                        className="flex items-center gap-1.5 text-sm text-blue-600 hover:text-blue-700"
+                      >
+                        <GitBranch className="w-3.5 h-3.5" />
+                        <span>{source.parsePipelines?.length || 0} 个管道</span>
+                      </button>
+                    </td>
+                    <td className="px-6 py-4">
+                      <div className="flex items-center gap-2">
+                        <div className="w-14 h-1.5 bg-page-bg rounded-full overflow-hidden">
+                          <div
+                            className="h-full rounded-full bg-emerald-500"
+                            style={{ width: source.status === 'connected' ? '100%' : '0%' }}
+                          />
+                        </div>
+                        <span className="text-xs text-text-muted">{source.status === 'connected' ? '100%' : '0%'}</span>
                       </div>
-                      <span className="text-xs text-text-muted">{source.health}%</span>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button onClick={() => handleViewClick(source)} className="p-1.5 text-gray-400 hover:text-blue-600 rounded-lg hover:bg-blue-50">
-                        <Eye className="w-4 h-4" />
-                      </button>
-                      <button onClick={() => onToggleStatus(source)} className="p-1.5 text-gray-400 hover:text-blue-600 rounded-lg hover:bg-blue-50">
-                        {source.status === 'paused' ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
-                      </button>
-                      <button onClick={() => onEditSource(source)} className="p-1.5 text-gray-400 hover:text-blue-600 rounded-lg hover:bg-blue-50">
-                        <Edit3 className="w-4 h-4" />
-                      </button>
-                      <button onClick={() => handleDeleteClick(source)} className="p-1.5 text-gray-400 hover:text-red-600 rounded-lg hover:bg-red-50">
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </td>
-                </motion.tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+                    </td>
+                    <td className="px-6 py-4">
+                      <div className="flex items-center justify-end gap-1">
+                        <button onClick={() => handleViewClick(source)} className="p-1.5 text-gray-400 hover:text-blue-600 rounded-lg hover:bg-blue-50">
+                          <Eye className="w-4 h-4" />
+                        </button>
+                        <button onClick={() => props.onToggleStatus && props.onToggleStatus(source)} className="p-1.5 text-gray-400 hover:text-blue-600 rounded-lg hover:bg-blue-50">
+                          {source.status === 'paused' ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
+                        </button>
+                        <button onClick={() => props.onEditSource && props.onEditSource(source)} className="p-1.5 text-gray-400 hover:text-blue-600 rounded-lg hover:bg-blue-50">
+                          <Edit3 className="w-4 h-4" />
+                        </button>
+                        <button onClick={() => handleDeleteClick(source)} className="p-1.5 text-gray-400 hover:text-red-600 rounded-lg hover:bg-red-50">
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </td>
+                  </motion.tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {filteredSources.length === 0 && (
+            <div className="text-center py-12">
+              <Database className="w-12 h-12 mx-auto text-text-muted mb-3" />
+              <p className="text-text-muted">暂无数据源</p>
+              <p className="text-xs text-text-muted mt-1">点击上方按钮添加第一个数据源</p>
+            </div>
+          )}
+        </div>
+      )}
 
       <AnimatePresence>
         {showAddModal && (
@@ -517,17 +448,16 @@ export default function DataSourceManager({
               {addStep === 2 && (
                 <div className="space-y-6">
                   <div className="grid grid-cols-3 gap-3">
-                    {(sourceType === 'pull' ? pullProtocols : pushProtocols).map(p => (
+                    {Object.entries(protocolIcons).slice(0, 6).map(([key, Icon]) => (
                       <button
-                        key={p.id}
-                        onClick={() => { setProtocol(p.id); setFormData({}); }}
+                        key={key}
+                        onClick={() => { setProtocol(key); setFormData({}); }}
                         className={`p-4 rounded-xl border-2 transition-all flex flex-col items-center gap-2 ${
-                          protocol === p.id ? 'border-blue-500 bg-blue-50/50' : 'border-border-color hover:border-blue-300'
+                          protocol === key ? 'border-blue-500 bg-blue-50/50' : 'border-border-color hover:border-blue-300'
                         }`}
                       >
-                        <p.icon className={`w-6 h-6 ${protocol === p.id ? 'text-blue-600' : 'text-gray-400'}`} />
-                        <span className={`text-sm font-medium ${protocol === p.id ? 'text-blue-600' : 'text-text-primary'}`}>{p.name}</span>
-                        <span className="text-xs text-gray-400 text-center">{p.desc}</span>
+                        <Icon className={`w-6 h-6 ${protocol === key ? 'text-blue-600' : 'text-gray-400'}`} />
+                        <span className={`text-sm font-medium ${protocol === key ? 'text-blue-600' : 'text-text-primary'}`}>{key.toUpperCase()}</span>
                       </button>
                     ))}
                   </div>
@@ -703,39 +633,26 @@ export default function DataSourceManager({
                 <div className="grid grid-cols-4 gap-4">
                   <div className="p-3 bg-page-bg/50 rounded-lg">
                     <div className="text-xs text-text-muted mb-1">总事件数</div>
-                    <div className="text-lg font-semibold text-text-primary">{(selectedSource.totalEvents / 1000000).toFixed(1)}M</div>
+                    <div className="text-lg font-semibold text-text-primary">-</div>
                   </div>
                   <div className="p-3 bg-page-bg/50 rounded-lg">
                     <div className="text-xs text-text-muted mb-1">解析成功</div>
-                    <div className="text-lg font-semibold text-emerald-600">{(selectedSource.totalEvents * 0.99).toFixed(0)}</div>
+                    <div className="text-lg font-semibold text-emerald-600">-</div>
                   </div>
                   <div className="p-3 bg-page-bg/50 rounded-lg">
                     <div className="text-xs text-text-muted mb-1">解析失败</div>
-                    <div className="text-lg font-semibold text-red-600">{(selectedSource.totalEvents * 0.01).toFixed(0)}</div>
+                    <div className="text-lg font-semibold text-red-600">-</div>
                   </div>
                   <div className="p-3 bg-page-bg/50 rounded-lg">
                     <div className="text-xs text-text-muted mb-1">成功率</div>
-                    <div className="text-lg font-semibold text-blue-600">99%</div>
+                    <div className="text-lg font-semibold text-blue-600">-</div>
                   </div>
                 </div>
 
                 <div>
                   <h3 className="text-sm font-medium text-text-primary mb-3 flex items-center gap-2">
-                    <GitBranch className="w-4 h-4" /> 解析管道 ({selectedSource.parsePipelines.length})
+                    <GitBranch className="w-4 h-4" /> 解析管道 ({selectedSource.parsePipelines?.length || 0})
                   </h3>
-                  <div className="space-y-2">
-                    {selectedSource.parsePipelines.map(p => (
-                      <div key={p.id} className="flex items-center gap-3 p-3 bg-page-bg/50 rounded-lg">
-                        <div className="w-6 h-6 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 text-xs font-medium">{p.priority}</div>
-                        <div className="flex-1">
-                          <div className="flex items-center gap-2">
-                            <span className="font-medium text-text-primary">{p.name}</span>
-                            <span className="px-1.5 py-0.5 text-xs bg-blue-100 text-blue-600 rounded">{p.parser}</span>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
                 </div>
 
                 <div>
@@ -743,11 +660,11 @@ export default function DataSourceManager({
                   <div className="grid grid-cols-2 gap-3">
                     <div className="p-3 bg-page-bg/50 rounded-lg">
                       <div className="text-xs text-text-muted mb-1">Hypertable</div>
-                      <div className="text-sm font-medium text-text-primary">{selectedSource.storageConfig.hypertable}</div>
+                      <div className="text-sm font-medium text-text-primary">-</div>
                     </div>
                     <div className="p-3 bg-page-bg/50 rounded-lg">
                       <div className="text-xs text-text-muted mb-1">保留策略</div>
-                      <div className="text-sm font-medium text-text-primary">{selectedSource.storageConfig.retentionDays} 天</div>
+                      <div className="text-sm font-medium text-text-primary">-</div>
                     </div>
                   </div>
                 </div>
