@@ -242,7 +242,7 @@ def run_tests():
     tester.test("AI模型列表", "GET", "/api/ai-api/models")
     tester.test("AI模型详情", "GET", "/api/ai-api/models/1")
     tester.test("AI洞察", "GET", "/api/ai-api/insights")
-    tester.test("AI聊天会话", "GET", "/api/ai-api/sessions")
+    tester.test("AI聊天会话", "GET", "/api/ai-api/chat/sessions")
     tester.test("AI任务", "GET", "/api/ai-api/tasks")
     
     # 12. Audit Logs API
@@ -252,7 +252,6 @@ def run_tests():
     # 13. Products API
     print("\n【13. 安全产品 API】")
     tester.test_list("产品列表", "/api/products-api/products")
-    tester.test("数据源列表", "GET", "/api/products-api/datasources")
     
     # 14. Data Sources API
     print("\n【14. 数据源 API】")
