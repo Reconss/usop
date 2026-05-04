@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Search,
   Bell,
@@ -15,6 +15,7 @@ import {
   Info
 } from 'lucide-react';
 import { notifications } from '../data/mockData';
+import { authApi } from '../services/api';
 
 interface HeaderProps {
   onMenuClick: () => void;
@@ -39,10 +40,32 @@ const pageTitles: Record<string, string> = {
 
 const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
   const location = useLocation();
+  const navigate = useNavigate();
   const [showNotifications, setShowNotifications] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const notificationRef = React.useRef<HTMLDivElement>(null);
   const userMenuRef = React.useRef<HTMLDivElement>(null);
+
+  const handleLogout = async () => {
+    try {
+      await authApi.logout();
+    } catch (err) {
+      console.error('Logout error:', err);
+    }
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    navigate('/login');
+  };
+
+  const handleProfile = () => {
+    setShowUserMenu(false);
+    navigate('/profile');
+  };
+
+  const handleSettings = () => {
+    setShowUserMenu(false);
+    navigate('/settings');
+  };
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -179,16 +202,25 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
                 className="absolute right-0 top-full mt-2 w-48 bg-card-bg border border-border-color rounded-card shadow-card-hover z-50"
               >
                 <div className="p-2">
-                  <button className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-primary/5 text-sm text-text-primary transition-colors">
+                  <button 
+                    onClick={handleProfile}
+                    className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-primary/5 text-sm text-text-primary transition-colors"
+                  >
                     <User className="w-4 h-4" />
                     个人中心
                   </button>
-                  <button className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-primary/5 text-sm text-text-primary transition-colors">
+                  <button 
+                    onClick={handleSettings}
+                    className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-primary/5 text-sm text-text-primary transition-colors"
+                  >
                     <Settings className="w-4 h-4" />
                     系统设置
                   </button>
                   <div className="border-t border-border-color my-2" />
-                  <button className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-critical/10 text-sm text-critical transition-colors">
+                  <button 
+                    onClick={handleLogout}
+                    className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-critical/10 text-sm text-critical transition-colors"
+                  >
                     <LogOut className="w-4 h-4" />
                     退出登录
                   </button>

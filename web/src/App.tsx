@@ -19,6 +19,8 @@ import GlobalConfig from './pages/GlobalConfig';
 import VulnerabilityManagement from './pages/VulnerabilityManagement';
 import VulnerabilityAssessment from './pages/VulnerabilityAssessment';
 import Login from './pages/Login';
+import Profile from './pages/Profile';
+import Settings from './pages/Settings';
 
 function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -61,6 +63,8 @@ function App() {
               <Route path="/vulnerabilities/application" element={<VulnerabilityManagement type="application" />} />
               <Route path="/vulnerabilities/assessment" element={<VulnerabilityAssessment />} />
               <Route path="/vulnerabilities" element={<Navigate to="/vulnerabilities/host" replace />} />
+              <Route path="/profile" element={<Profile />} />
+              <Route path="/settings" element={<Settings />} />
               <Route path="/login" element={<Navigate to="/" replace />} />
             </Routes>
           </main>
