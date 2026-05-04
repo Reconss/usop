@@ -4,16 +4,22 @@ services:
     image: timescale/timescaledb:latest-pg16
     container_name: timescale
     environment:
-      POSTGRES_PASSWORD: yourpassword
+      POSTGRES_PASSWORD: timescale_pass
       POSTGRES_USER: postgres
       POSTGRES_DB: timescale
     ports:
       - "5432:5432"
     volumes:
       - timescale_data:/var/lib/postgresql/data
+      - ./postgres/init.d:/docker-entrypoint-initdb.d
     restart: unless-stopped
     networks:
       - log-platform
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # ==================== Kafka 相关 ====================
   zookeeper:
@@ -53,16 +59,10 @@ services:
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       KAFKA_LOG_RETENTION_HOURS: 168
       KAFKA_LOG_SEGMENT_BYTES: 1073741824
-      KAFKA_NUM_PARTITIONS: 3
-      # 分区数量（可根据需求调整）
-      KAFKA_NUM_PARTITION: 6
-      # 消息最大大小
+      KAFKA_NUM_PARTITIONS: 6
       KAFKA_MESSAGE_MAX_BYTES: 10485760
-      # 批次大小
       KAFKA_BATCH_SIZE_BYTES: 524288
-      #  linger.ms
       KAFKA_LINGER_MS: 10
-      # 压缩类型
       KAFKA_COMPRESSION_TYPE: lz4
     volumes:
       - kafka_data:/var/lib/kafka/data
@@ -74,7 +74,6 @@ services:
       timeout: 10s
       retries: 5
 
-  # Kafka UI 管理界面
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     container_name: kafka-ui
@@ -105,15 +104,14 @@ services:
         state.savepoints.dir: file:///savepoints
         parallelism.default: 2
         taskmanager.numberOfTaskSlots: 4
-        # Kafka 连接配置
         kafka.bootstrap.servers: kafka:29092
-        #  RocksDB 配置
         state.backend.rocksdb.checkpoint.transfer.thread.num: 4
         state.backend.rocksdb.writebuffer.size: 128mb
         state.backend.rocksdb.compaction.level.max-size-level-base: 320mb
     volumes:
       - flink_checkpoints:/checkpoints
       - flink_savepoints:/savepoints
+      - ./flink-jobs:/opt/flink/jobs
     networks:
       - log-platform
     healthcheck:
@@ -124,6 +122,7 @@ services:
 
   taskmanager:
     image: flink:1.18.1-scala_2.12-java11
+    container_name: flink-taskmanager
     depends_on:
       - jobmanager
     command: taskmanager
@@ -135,46 +134,19 @@ services:
         state.checkpoints.dir: file:///checkpoints
         parallelism.default: 2
         taskmanager.numberOfTaskSlots: 4
-        # Kafka 连接配置
         kafka.bootstrap.servers: kafka:29092
-        # RocksDB 配置
         state.backend.rocksdb.checkpoint.transfer.thread.num: 4
         state.backend.rocksdb.writebuffer.size: 128mb
     volumes:
       - flink_checkpoints:/checkpoints
       - flink_savepoints:/savepoints
+      - ./flink-jobs:/opt/flink/jobs
     networks:
       - log-platform
+    deploy:
+      replicas: 2
 
-  # ==================== 辅助服务 ====================
-  # Kafka Connect 用于数据源集成
-  kafka-connect:
-    image: confluentinc/cp-kafka-connect:7.5.0
-    container_name: kafka-connect
-    depends_on:
-      - kafka
-      - zookeeper
-    ports:
-      - "8083:8083"
-    environment:
-      CONNECT_BOOTSTRAP_SERVERS: kafka:29092
-      CONNECT_REST_ADVERTISED_HOST_NAME: kafka-connect
-      CONNECT_REST_PORT: 8083
-      CONNECT_GROUP_ID: log-platform-connect
-      CONNECT_CONFIG_STORAGE_TOPIC: _connect_configs
-      CONNECT_OFFSET_STORAGE_TOPIC: _connect_offsets
-      CONNECT_STATUS_STORAGE_TOPIC: _connect_statuses
-      CONNECT_KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
-      CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
-      CONNECT_INTERNAL_KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
-      CONNECT_INTERNAL_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
-      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
-      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
-      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
-    networks:
-      - log-platform
-
-  # Redis 缓存
+  # ==================== 缓存服务 ====================
   redis:
     image: redis:7-alpine
     container_name: redis
