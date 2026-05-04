@@ -2,7 +2,8 @@ import React, { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Search, Download, CheckCircle, XCircle, Clock, Bell, RefreshCw, Eye,
-  Play, EyeOff, UserCheck, AlertCircle, Zap, ArrowUpDown, AlertTriangle
+  Play, EyeOff, UserCheck, AlertCircle, Zap, ArrowUpDown, AlertTriangle,
+  ChevronDown, ChevronRight, Layers, Link2, Timer, GitMerge
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import type { SecurityEvent } from '../types';
@@ -21,6 +22,31 @@ const statusConfig = {
   false_positive: { icon: XCircle, color: 'text-gray-400', bg: 'bg-gray-500/10', label: '误报' }
 };
 
+// 告警聚合组类型
+interface AlertGroup {
+  id: string;
+  alerts: SecurityEvent[];
+  aggregatedCount: number;
+  timeWindow: string;
+  similarity: number;
+  reason: string; // 聚合原因：同IP、同资产、同类型等
+}
+
+// SOAR自动剧本类型
+interface AutoPlaybookRule {
+  id: string;
+  name: string;
+  triggerConditions: {
+    severity?: string[];
+    eventType?: string[];
+    sourceIp?: string;
+    confidence?: number;
+  };
+  playbookId: string;
+  playbookName: string;
+  enabled: boolean;
+}
+
 const mockAlerts: SecurityEvent[] = [
   {
     id: 'FW-2026-001',
@@ -33,6 +59,30 @@ const mockAlerts: SecurityEvent[] = [
     status: 'new',
     eventType: '网络入侵',
     description: '边界防火墙检测到工作站尝试连接已知恶意IP',
+  },
+  {
+    id: 'FW-2026-002',
+    title: '可疑出站连接（相同源）',
+    severity: 'high',
+    confidence: 88,
+    affectedAssets: ['workstation-02'],
+    sourceIp: '192.168.1.100',
+    timestamp: '2026-04-27T10:25:00Z',
+    status: 'new',
+    eventType: '网络入侵',
+    description: '检测到来自同一IP的可疑连接',
+  },
+  {
+    id: 'FW-2026-003',
+    title: '横向移动检测',
+    severity: 'critical',
+    confidence: 95,
+    affectedAssets: ['workstation-01', 'server-01'],
+    sourceIp: '192.168.1.100',
+    timestamp: '2026-04-27T10:20:00Z',
+    status: 'new',
+    eventType: '横向移动',
+    description: '检测到内网横向移动行为',
   },
   {
     id: 'IDS-2026-045',
@@ -57,6 +107,38 @@ const mockAlerts: SecurityEvent[] = [
     status: 'investigating',
     eventType: '恶意软件',
     description: 'EDR检测到可疑进程执行和文件修改行为',
+  },
+  {
+    id: 'EDR-2026-129',
+    title: '权限提升尝试',
+    severity: 'high',
+    confidence: 90,
+    affectedAssets: ['workstation-05'],
+    sourceIp: '192.168.1.105',
+    timestamp: '2026-04-27T10:22:00Z',
+    status: 'investigating',
+    eventType: '权限异常',
+    description: '检测到提权操作',
+  }
+];
+
+// 模拟自动剧本规则
+const mockAutoPlaybookRules: AutoPlaybookRule[] = [
+  {
+    id: 'APR-001',
+    name: '高危IP自动封堵',
+    triggerConditions: { severity: ['critical', 'high'], confidence: 80 },
+    playbookId: 'PB-001',
+    playbookName: '自动封堵恶意IP',
+    enabled: true
+  },
+  {
+    id: 'APR-002',
+    name: '恶意软件主机隔离',
+    triggerConditions: { eventType: ['恶意软件'] },
+    playbookId: 'PB-002',
+    playbookName: '主机隔离处置',
+    enabled: true
   }
 ];
 
@@ -78,9 +160,90 @@ export default function SecurityAlerts() {
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [showDetail, setShowDetail] = useState<SecurityEvent | null>(null);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
-  const [confirmAction, setConfirmAction] = useState<'close' | 'false_positive' | 'delete' | 'create_event' | 'observe'>('close');
+  const [confirmAction, setConfirmAction] = useState<'close' | 'false_positive' | 'delete' | 'create_event' | 'observe' | 'auto_playbook'>('close');
   const [activeTab, setActiveTab] = useState<'all' | 'pending' | 'critical' | 'investigating'>('all');
   const [sortBy, setSortBy] = useState<'severity' | 'time' | 'confidence'>('severity');
+  
+  // 新增状态
+  const [enableAggregation, setEnableAggregation] = useState(true); // 是否启用聚合
+  const [expandedGroups, setExpandedGroups] = useState<string[]>([]);
+  const [autoPlaybookRules] = useState<AutoPlaybookRule[]>(mockAutoPlaybookRules);
+  const [isLoading, setIsLoading] = useState(false);
+  const [runningPlaybooks, setRunningPlaybooks] = useState<Record<string, boolean>>({});
+  const [showAutoPlaybookModal, setShowAutoPlaybookModal] = useState(false);
+  const [autoPlaybookResults, setAutoPlaybookResults] = useState<Record<string, { success: boolean; message: string }>>({});
+
+  // 告警聚合算法
+  const alertGroups: AlertGroup[] = useMemo(() => {
+    if (!enableAggregation) return [];
+    
+    const groups: AlertGroup[] = [];
+    const processed = new Set<string>();
+    
+    alerts.forEach(alert => {
+      if (processed.has(alert.id)) return;
+      
+      // 查找相似告警（同源IP）
+      const sameSourceAlerts = alerts.filter(a => 
+        !processed.has(a.id) && 
+        a.sourceIp === alert.sourceIp &&
+        a.id !== alert.id
+      );
+      
+      if (sameSourceAlerts.length > 0) {
+        processed.add(alert.id);
+        sameSourceAlerts.forEach(a => processed.add(a.id));
+        
+        const groupAlerts = [alert, ...sameSourceAlerts];
+        const timeRange = groupAlerts.reduce((min, a) => 
+          new Date(a.timestamp) < new Date(min) ? a.timestamp : min, groupAlerts[0].timestamp);
+        const latestTime = groupAlerts.reduce((max, a) => 
+          new Date(a.timestamp) > new Date(max) ? a.timestamp : max, groupAlerts[0].timestamp);
+        
+        groups.push({
+          id: `group-${alert.sourceIp}`,
+          alerts: groupAlerts.sort((a, b) => 
+            new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()),
+          aggregatedCount: groupAlerts.length,
+          timeWindow: `${Math.round((new Date(latestTime).getTime() - new Date(timeRange).getTime()) / 60000)}分钟`,
+          similarity: 95,
+          reason: `同源IP: ${alert.sourceIp}`
+        });
+        return;
+      }
+      
+      // 查找同类型告警
+      const sameTypeAlerts = alerts.filter(a =>
+        !processed.has(a.id) &&
+        a.eventType === alert.eventType &&
+        a.id !== alert.id &&
+        a.sourceIp !== alert.sourceIp
+      );
+      
+      if (sameTypeAlerts.length > 0) {
+        processed.add(alert.id);
+        sameTypeAlerts.forEach(a => processed.add(a.id));
+        
+        const groupAlerts = [alert, ...sameTypeAlerts];
+        const timeRange = groupAlerts.reduce((min, a) => 
+          new Date(a.timestamp) < new Date(min) ? a.timestamp : min, groupAlerts[0].timestamp);
+        const latestTime = groupAlerts.reduce((max, a) => 
+          new Date(a.timestamp) > new Date(max) ? a.timestamp : max, groupAlerts[0].timestamp);
+        
+        groups.push({
+          id: `group-type-${alert.eventType}`,
+          alerts: groupAlerts.sort((a, b) => 
+            new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()),
+          aggregatedCount: groupAlerts.length,
+          timeWindow: `${Math.round((new Date(latestTime).getTime() - new Date(timeRange).getTime()) / 60000)}分钟`,
+          similarity: 75,
+          reason: `同类型: ${alert.eventType}`
+        });
+      }
+    });
+    
+    return groups;
+  }, [alerts, enableAggregation]);
 
   // 计算分诊统计数据
   const triageStats: TriageStats = useMemo(() => ({
@@ -90,6 +253,61 @@ export default function SecurityAlerts() {
     falsePositive: alerts.filter(a => a.status === 'false_positive').length,
     resolved: alerts.filter(a => a.status === 'closed').length
   }), [alerts]);
+
+  // 检查是否有匹配的自动剧本规则
+  const getMatchingAutoPlaybooks = (alert: SecurityEvent): AutoPlaybookRule[] => {
+    return autoPlaybookRules.filter(rule => {
+      if (!rule.enabled) return false;
+      const { triggerConditions } = rule;
+      
+      if (triggerConditions.severity && !triggerConditions.severity.includes(alert.severity)) {
+        return false;
+      }
+      if (triggerConditions.eventType && !triggerConditions.eventType.includes(alert.eventType)) {
+        return false;
+      }
+      if (triggerConditions.confidence && alert.confidence < triggerConditions.confidence) {
+        return false;
+      }
+      return true;
+    });
+  };
+
+  // 执行自动剧本
+  const handleAutoPlaybook = async (alert: SecurityEvent, rule: AutoPlaybookRule) => {
+    setRunningPlaybooks(prev => ({ ...prev, [rule.id]: true }));
+    
+    // 模拟执行
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    const success = Math.random() > 0.1; // 90% 成功率
+    setAutoPlaybookResults(prev => ({
+      ...prev,
+      [rule.id]: {
+        success,
+        message: success ? `剧本"${rule.playbookName}"执行成功` : `剧本"${rule.playbookName}"执行失败`
+      }
+    }));
+    
+    setRunningPlaybooks(prev => ({ ...prev, [rule.id]: false }));
+    
+    if (success) {
+      showToast(`自动剧本"${rule.playbookName}"已触发`);
+    }
+  };
+
+  const showToast = (message: string) => {
+    // 简单的toast提示
+    alert(message);
+  };
+
+  const toggleGroup = (groupId: string) => {
+    setExpandedGroups(prev => 
+      prev.includes(groupId) 
+        ? prev.filter(id => id !== groupId)
+        : [...prev, groupId]
+    );
+  };
 
   // 排序和筛选逻辑
   const filteredAlerts = useMemo(() => {
@@ -161,6 +379,24 @@ export default function SecurityAlerts() {
     }, 300);
   };
 
+  // 聚合组批量操作
+  const handleGroupAction = (groupId: string, action: 'close' | 'false_positive' | 'create_event' | 'auto_playbook' | 'investigating') => {
+    const group = alertGroups.find(g => g.id === groupId);
+    if (!group) return;
+    
+    setSelectedAlerts(group.alerts.map(a => a.id));
+    
+    if (action === 'auto_playbook') {
+      setShowAutoPlaybookModal(true);
+    } else if (action === 'investigating') {
+      handleQuickAction('investigating');
+    } else if (action === 'create_event') {
+      handleQuickAction('create_event');
+    } else if (action === 'false_positive') {
+      handleQuickAction('false_positive');
+    }
+  };
+
   const handleBatchAction = (action: 'closed' | 'false_positive' | 'deleted') => {
     setIsLoading(true);
     setTimeout(() => {
@@ -179,8 +415,6 @@ export default function SecurityAlerts() {
     setConfirmAction(action);
     setShowConfirmModal(true);
   };
-
-  const [isLoading, setIsLoading] = useState(false);
 
   return (
     <div className="space-y-6">
@@ -284,6 +518,22 @@ export default function SecurityAlerts() {
               <option value="confidence">按置信度</option>
             </select>
           </div>
+          {/* 聚合开关 */}
+          <label className="flex items-center gap-2 px-3 py-1.5 bg-page-bg border border-border-color rounded-lg cursor-pointer hover:bg-white/5 transition-colors">
+            <input
+              type="checkbox"
+              checked={enableAggregation}
+              onChange={(e) => setEnableAggregation(e.target.checked)}
+              className="w-4 h-4 rounded border-border-color accent-primary"
+            />
+            <Layers className="w-4 h-4 text-text-muted" />
+            <span className="text-sm text-text-secondary">告警聚合</span>
+            {alertGroups.length > 0 && (
+              <span className="px-1.5 py-0.5 bg-primary/20 text-primary text-xs rounded">
+                {alertGroups.length}组
+              </span>
+            )}
+          </label>
         </div>
         <div className="flex items-center gap-3">
           <button className="flex items-center gap-2 px-4 py-2 bg-card-bg border border-border-color rounded-lg text-text-secondary hover:bg-white/5 transition-colors">
@@ -409,84 +659,120 @@ export default function SecurityAlerts() {
             </tr>
           </thead>
           <tbody>
-            {filteredAlerts.map((alert, index) => (
-              <motion.tr
-                key={alert.id}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: index * 0.05 }}
-                className="border-b border-border-color/50 hover:bg-white/5 transition-colors"
-              >
-                <td className="p-4">
-                  <input
-                    type="checkbox"
-                    checked={selectedAlerts.includes(alert.id)}
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        setSelectedAlerts([...selectedAlerts, alert.id]);
-                      } else {
-                        setSelectedAlerts(selectedAlerts.filter(id => id !== alert.id));
-                      }
-                    }}
-                    className="w-4 h-4 rounded border-border-color"
+            {/* 聚合组显示 */}
+            {enableAggregation && alertGroups.map((group, groupIndex) => (
+              <React.Fragment key={group.id}>
+                {/* 聚合组标题行 */}
+                <motion.tr
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="bg-gradient-to-r from-purple-500/5 to-transparent border-b border-purple-500/20"
+                >
+                  <td colSpan={7} className="p-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={() => toggleGroup(group.id)}
+                          className="p-1 hover:bg-white/10 rounded transition-colors"
+                        >
+                          {expandedGroups.includes(group.id) ? (
+                            <ChevronDown className="w-4 h-4 text-purple-400" />
+                          ) : (
+                            <ChevronRight className="w-4 h-4 text-purple-400" />
+                          )}
+                        </button>
+                        <Layers className="w-5 h-5 text-purple-400" />
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium text-purple-300">
+                            聚合组 #{groupIndex + 1}
+                          </span>
+                          <span className={`px-2 py-0.5 text-xs rounded ${severityConfig[group.alerts[0].severity].bg} ${severityConfig[group.alerts[0].severity].text}`}>
+                            {severityConfig[group.alerts[0].severity].label}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-4 text-xs text-text-muted">
+                          <span className="flex items-center gap-1">
+                            <Link2 className="w-3 h-3" />
+                            {group.aggregatedCount} 条告警
+                          </span>
+                          <span className="flex items-center gap-1">
+                            <Timer className="w-3 h-3" />
+                            {group.timeWindow}
+                          </span>
+                          <span className="flex items-center gap-1">
+                            <GitMerge className="w-3 h-3" />
+                            {group.reason}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {/* 聚合组批量操作 */}
+                        <button
+                          onClick={() => handleGroupAction(group.id, 'auto_playbook')}
+                          className="px-2 py-1 text-xs bg-purple-600 text-white rounded hover:bg-purple-700 transition-colors flex items-center gap-1"
+                        >
+                          <Zap className="w-3 h-3" />
+                          自动处置
+                        </button>
+                        <button
+                          onClick={() => {
+                            setSelectedAlerts(group.alerts.map(a => a.id));
+                            handleQuickAction('create_event');
+                          }}
+                          className="px-2 py-1 text-xs bg-rose-600 text-white rounded hover:bg-rose-700 transition-colors flex items-center gap-1"
+                        >
+                          <GitMerge className="w-3 h-3" />
+                          合并事件
+                        </button>
+                        <button
+                          onClick={() => handleGroupAction(group.id, 'investigating')}
+                          className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+                        >
+                          批量调查
+                        </button>
+                      </div>
+                    </div>
+                  </td>
+                </motion.tr>
+                {/* 聚合组内的告警 */}
+                {expandedGroups.includes(group.id) && group.alerts.map((alert, index) => (
+                  <AlertRow
+                    key={alert.id}
+                    alert={alert}
+                    index={index}
+                    selectedAlerts={selectedAlerts}
+                    setSelectedAlerts={setSelectedAlerts}
+                    onQuickAction={handleQuickAction}
+                    onShowDetail={setShowDetail}
+                    severityConfig={severityConfig}
+                    statusConfig={statusConfig}
+                    getMatchingAutoPlaybooks={getMatchingAutoPlaybooks}
+                    runningPlaybooks={runningPlaybooks}
+                    onAutoPlaybook={handleAutoPlaybook}
                   />
-                </td>
-                <td className="p-4">
-                  <div>
-                    <p className="text-sm font-medium text-text-primary">{alert.title}</p>
-                    <p className="text-xs text-text-muted">{alert.id}</p>
-                  </div>
-                </td>
-                <td className="p-4">
-                  <span className={`inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded ${severityConfig[alert.severity].bg} ${severityConfig[alert.severity].text}`}>
-                    {severityConfig[alert.severity].label}
-                  </span>
-                </td>
-                <td className="p-4 text-sm text-text-secondary">{alert.sourceIp}</td>
-                <td className="p-4">
-                  <span className={`inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded ${statusConfig[alert.status].bg} ${statusConfig[alert.status].color}`}>
-                    {statusConfig[alert.status].label}
-                  </span>
-                </td>
-                <td className="p-4 text-sm text-text-secondary">
-                  {new Date(alert.timestamp).toLocaleString()}
-                </td>
-                <td className="p-4">
-                  <div className="flex items-center gap-1">
-                    {/* 确认为事件 */}
-                    <button
-                      onClick={() => {
-                        setSelectedAlerts([alert.id]);
-                        handleQuickAction('create_event');
-                      }}
-                      className="p-1.5 text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors"
-                      title="确认为事件"
-                    >
-                      <Zap className="w-4 h-4" />
-                    </button>
-                    {/* 开始调查 */}
-                    <button
-                      onClick={() => {
-                        setSelectedAlerts([alert.id]);
-                        handleQuickAction('investigating');
-                      }}
-                      className="p-1.5 text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors"
-                      title="开始调查"
-                    >
-                      <Play className="w-4 h-4" />
-                    </button>
-                    {/* 查看详情 */}
-                    <button
-                      onClick={() => setShowDetail(alert)}
-                      className="p-1.5 text-text-muted hover:text-primary hover:bg-primary/10 rounded-lg transition-colors"
-                      title="查看详情"
-                    >
-                      <Eye className="w-4 h-4" />
-                    </button>
-                  </div>
-                </td>
-              </motion.tr>
+                ))}
+              </React.Fragment>
             ))}
+            
+            {/* 非聚合的单独告警 */}
+            {filteredAlerts
+              .filter(alert => !enableAggregation || !alertGroups.some(g => g.alerts.some(a => a.id === alert.id)))
+              .map((alert, index) => (
+                <AlertRow
+                  key={alert.id}
+                  alert={alert}
+                  index={index}
+                  selectedAlerts={selectedAlerts}
+                  setSelectedAlerts={setSelectedAlerts}
+                  onQuickAction={handleQuickAction}
+                  onShowDetail={setShowDetail}
+                  severityConfig={severityConfig}
+                  statusConfig={statusConfig}
+                  getMatchingAutoPlaybooks={getMatchingAutoPlaybooks}
+                  runningPlaybooks={runningPlaybooks}
+                  onAutoPlaybook={handleAutoPlaybook}
+                />
+              ))}
           </tbody>
         </table>
         {filteredAlerts.length === 0 && (
@@ -594,7 +880,218 @@ export default function SecurityAlerts() {
             </motion.div>
           </motion.div>
         )}
+
+        {/* 自动剧本执行弹窗 */}
+        {showAutoPlaybookModal && selectedAlerts.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+            onClick={() => setShowAutoPlaybookModal(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.95 }}
+              animate={{ scale: 1 }}
+              exit={{ scale: 0.95 }}
+              className="bg-card-bg rounded-2xl p-6 w-full max-w-md border border-border-color"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-text-primary flex items-center gap-2">
+                  <Zap className="w-5 h-5 text-purple-400" />
+                  自动剧本执行
+                </h3>
+                <button
+                  onClick={() => setShowAutoPlaybookModal(false)}
+                  className="p-2 hover:bg-white/5 rounded-lg text-text-muted"
+                >
+                  <XCircle className="w-5 h-5" />
+                </button>
+              </div>
+              <p className="text-text-secondary text-sm mb-4">
+                已选择 {selectedAlerts.length} 条告警，将自动触发匹配的剧本：
+              </p>
+              <div className="space-y-3 mb-4">
+                {autoPlaybookRules
+                  .filter(rule => rule.enabled)
+                  .slice(0, 3)
+                  .map(rule => (
+                    <div
+                      key={rule.id}
+                      className="p-3 bg-purple-500/10 border border-purple-500/20 rounded-lg"
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-sm font-medium text-purple-300">{rule.playbookName}</span>
+                        {runningPlaybooks[rule.id] ? (
+                          <span className="flex items-center gap-1 text-xs text-purple-400">
+                            <Clock className="w-3 h-3 animate-spin" />
+                            执行中
+                          </span>
+                        ) : autoPlaybookResults[rule.id] ? (
+                          <span className={`text-xs ${autoPlaybookResults[rule.id].success ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            {autoPlaybookResults[rule.id].success ? '成功' : '失败'}
+                          </span>
+                        ) : null}
+                      </div>
+                      <button
+                        onClick={() => {
+                          const alert = alerts.find(a => a.id === selectedAlerts[0]);
+                          if (alert) handleAutoPlaybook(alert, rule);
+                        }}
+                        disabled={runningPlaybooks[rule.id]}
+                        className="w-full py-1.5 bg-purple-600 text-white text-sm rounded hover:bg-purple-700 transition-colors disabled:opacity-50"
+                      >
+                        {runningPlaybooks[rule.id] ? '执行中...' : '执行剧本'}
+                      </button>
+                    </div>
+                  ))}
+              </div>
+              <button
+                onClick={() => setShowAutoPlaybookModal(false)}
+                className="w-full py-2 bg-page-bg text-text-secondary rounded-lg hover:bg-white/5 transition-colors"
+              >
+                关闭
+              </button>
+            </motion.div>
+          </motion.div>
+        )}
       </AnimatePresence>
     </div>
+  );
+}
+
+// 告警行组件
+interface AlertRowProps {
+  alert: SecurityEvent;
+  index: number;
+  selectedAlerts: string[];
+  setSelectedAlerts: React.Dispatch<React.SetStateAction<string[]>>;
+  onQuickAction: (action: any) => void;
+  onShowDetail: (alert: SecurityEvent) => void;
+  severityConfig: Record<string, any>;
+  statusConfig: Record<string, any>;
+  getMatchingAutoPlaybooks: (alert: SecurityEvent) => AutoPlaybookRule[];
+  runningPlaybooks: Record<string, boolean>;
+  onAutoPlaybook: (alert: SecurityEvent, rule: AutoPlaybookRule) => void;
+}
+
+function AlertRow({
+  alert,
+  index,
+  selectedAlerts,
+  setSelectedAlerts,
+  onQuickAction,
+  onShowDetail,
+  severityConfig,
+  statusConfig,
+  getMatchingAutoPlaybooks,
+  runningPlaybooks,
+  onAutoPlaybook
+}: AlertRowProps) {
+  const matchingPlaybooks = getMatchingAutoPlaybooks(alert);
+  const hasAutoPlaybook = matchingPlaybooks.length > 0;
+
+  return (
+    <motion.tr
+      key={alert.id}
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: index * 0.05 }}
+      className="border-b border-border-color/50 hover:bg-white/5 transition-colors"
+    >
+      <td className="p-4">
+        <input
+          type="checkbox"
+          checked={selectedAlerts.includes(alert.id)}
+          onChange={(e) => {
+            if (e.target.checked) {
+              setSelectedAlerts([...selectedAlerts, alert.id]);
+            } else {
+              setSelectedAlerts(selectedAlerts.filter(id => id !== alert.id));
+            }
+          }}
+          className="w-4 h-4 rounded border-border-color"
+        />
+      </td>
+      <td className="p-4">
+        <div className="flex items-center gap-2">
+          {hasAutoPlaybook && (
+            <div className="relative group">
+              <Zap className="w-3 h-3 text-purple-400" />
+              <div className="absolute left-0 top-full mt-1 hidden group-hover:block z-10">
+                <div className="bg-card-bg border border-purple-500/30 rounded-lg p-2 shadow-lg w-48">
+                  <div className="text-xs text-purple-300 mb-1">可自动触发:</div>
+                  {matchingPlaybooks.map(rule => (
+                    <button
+                      key={rule.id}
+                      disabled={runningPlaybooks[rule.id]}
+                      onClick={() => onAutoPlaybook(alert, rule)}
+                      className="block w-full text-left px-2 py-1 text-xs text-text-secondary hover:bg-purple-500/10 rounded transition-colors disabled:opacity-50"
+                    >
+                      {runningPlaybooks[rule.id] ? (
+                        <span className="flex items-center gap-1">
+                          <Clock className="w-3 h-3 animate-spin" />
+                          执行中...
+                        </span>
+                      ) : rule.playbookName}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+          <div>
+            <p className="text-sm font-medium text-text-primary">{alert.title}</p>
+            <p className="text-xs text-text-muted">{alert.id}</p>
+          </div>
+        </div>
+      </td>
+      <td className="p-4">
+        <span className={`inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded ${severityConfig[alert.severity].bg} ${severityConfig[alert.severity].text}`}>
+          {severityConfig[alert.severity].label}
+        </span>
+      </td>
+      <td className="p-4 text-sm text-text-secondary">{alert.sourceIp}</td>
+      <td className="p-4">
+        <span className={`inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded ${statusConfig[alert.status].bg} ${statusConfig[alert.status].color}`}>
+          {statusConfig[alert.status].label}
+        </span>
+      </td>
+      <td className="p-4 text-sm text-text-secondary">
+        {new Date(alert.timestamp).toLocaleString()}
+      </td>
+      <td className="p-4">
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => {
+              setSelectedAlerts([alert.id]);
+              onQuickAction('create_event');
+            }}
+            className="p-1.5 text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors"
+            title="确认为事件"
+          >
+            <Zap className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => {
+              setSelectedAlerts([alert.id]);
+              onQuickAction('investigating');
+            }}
+            className="p-1.5 text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors"
+            title="开始调查"
+          >
+            <Play className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => onShowDetail(alert)}
+            className="p-1.5 text-text-muted hover:text-primary hover:bg-primary/10 rounded-lg transition-colors"
+            title="查看详情"
+          >
+            <Eye className="w-4 h-4" />
+          </button>
+        </div>
+      </td>
+    </motion.tr>
   );
 }
