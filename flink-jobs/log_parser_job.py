@@ -1,14 +1,15 @@
 """
-Flink 日志解析任务
-用于实时解析 Kafka 中的日志数据
+Flink Log Parser Job - 完善版
+支持输出到 TimescaleDB 和 Kafka
 
 依赖:
-    pip install apache-flink kafka-python
+    pip install apache-flink kafka-python psycopg2-binary redis
 """
 
 from pyflink.datastream import StreamExecutionEnvironment
-from pyflink.datastream.connectors.kafka import KafkaSource, KafkaOffsetsInitializer
-from pyflink.datastream.formats.json import JsonRowDeserializationSchema
+from pyflink.datastream.connectors.kafka import KafkaSource, KafkaSink, KafkaOffsetsInitializer
+from pyflink.datastream.connectors.kafka import KafkaRecordSerializationSchema
+from pyflink.datastream.formats.json import JsonRowDeserializationSchema, JsonRowSerializationSchema
 from pyflink.common.typeinfo import Types
 from pyflink.common import Row
 import json
@@ -25,7 +26,6 @@ logger = logging.getLogger(__name__)
 class LogParser:
     """日志解析器"""
     
-    # 预编译正则表达式
     PATTERNS = {
         'json': re.compile(r'^\s*\{.*\}\s*$'),
         'syslog_rfc5424': re.compile(
@@ -51,16 +51,7 @@ class LogParser:
     
     @classmethod
     def parse(cls, raw_log: str, format_type: str = 'auto') -> Dict[str, Any]:
-        """
-        解析日志
-        
-        Args:
-            raw_log: 原始日志字符串
-            format_type: 格式类型 (auto, json, syslog, cef, keyvalue, grok)
-        
-        Returns:
-            解析后的字段字典
-        """
+        """解析日志"""
         result = {
             'raw_log': raw_log,
             'timestamp': datetime.utcnow().isoformat(),
@@ -81,13 +72,11 @@ class LogParser:
                 result.update(cls._parse_cef(raw_log))
             elif format_type == 'keyvalue':
                 result.update(cls._parse_keyvalue(raw_log))
-            elif format_type == 'grok':
-                result.update(cls._parse_grok(raw_log))
             else:
                 result['message'] = raw_log
                 
         except Exception as e:
-            logger.error(f"解析失败: {e}, raw_log: {raw_log[:100]}")
+            logger.error(f"解析失败: {e}")
             result['parse_error'] = str(e)
         
         return result
@@ -121,13 +110,26 @@ class LogParser:
                 if key in data:
                     result['timestamp'] = str(data[key])
                     break
+            # 提取 IP
+            for key in ['src_ip', 'source_ip', 'srcip', 'client_ip']:
+                if key in data:
+                    result['src_ip'] = data[key]
+                    break
+            for key in ['dst_ip', 'dest_ip', 'dstip', 'server_ip']:
+                if key in data:
+                    result['dst_ip'] = data[key]
+                    break
+            # 提取动作
+            for key in ['action', 'event', 'event_type']:
+                if key in data:
+                    result['action'] = data[key]
+                    break
         
         return result
     
     @classmethod
     def _parse_syslog(cls, raw_log: str) -> Dict[str, Any]:
         """解析 Syslog 格式"""
-        # 尝试 RFC5424
         match = cls.PATTERNS['syslog_rfc5424'].match(raw_log)
         if match:
             groups = match.groupdict()
@@ -142,7 +144,6 @@ class LogParser:
                 'format': 'RFC5424'
             }
         
-        # 尝试 RFC3164
         match = cls.PATTERNS['syslog_rfc3164'].match(raw_log)
         if match:
             groups = match.groupdict()
@@ -162,14 +163,27 @@ class LogParser:
         match = cls.PATTERNS['cef'].match(raw_log)
         if match:
             groups = match.groupdict()
+            # 解析扩展字段
+            extension = groups.get('extension', '')
+            ext_fields = {}
+            for item in extension.split(' '):
+                if '=' in item:
+                    k, v = item.split('=', 1)
+                    ext_fields[k] = v
+            
             return {
                 'vendor': groups.get('vendor', '').strip(),
                 'product': groups.get('product', '').strip(),
                 'signature_id': groups.get('signature_id', '').strip(),
                 'name': groups.get('name', '').strip(),
                 'severity': cls._cef_severity(int(groups.get('severity', 0))),
-                'message': groups.get('extension', ''),
-                'format': 'CEF'
+                'message': extension,
+                'action': ext_fields.get('act', 'unknown'),
+                'src_ip': ext_fields.get('src', ''),
+                'dst_ip': ext_fields.get('dst', ''),
+                'user': ext_fields.get('suser', ''),
+                'format': 'CEF',
+                'details': ext_fields
             }
         return {'message': raw_log}
     
@@ -179,87 +193,164 @@ class LogParser:
         matches = cls.PATTERNS['keyvalue'].findall(raw_log)
         return {k: v for k, v in matches}
     
-    @classmethod
-    def _parse_grok(cls, raw_log: str) -> Dict[str, Any]:
-        """解析 Grok 格式 (简化版)"""
-        # 实际生产环境应使用 pyparsing 或自定义 Grok 库
-        return {'message': raw_log, 'format': 'grok'}
-    
     @staticmethod
     def _cef_severity(level: int) -> str:
         """CEF 严重级别转换"""
-        mapping = {
-            0: 'Unknown',
-            1: 'Low',
-            2: 'Medium', 
-            3: 'High',
-            4: 'Very-High',
-            5: 'Critical',
-            6: 'Critical',
-            7: 'Critical',
-            8: 'Critical',
-            9: 'Critical',
-            10: 'Critical'
-        }
+        mapping = {0: 'Unknown', 1: 'Low', 2: 'Medium', 3: 'High', 4: 'Very-High', 5: 'Critical'}
         return mapping.get(level, 'Unknown')
 
 
+class TimescaleDBSink:
+    """TimescaleDB Sink (使用 JDBC)"""
+    
+    def __init__(self, host: str, port: int, database: str, user: str, password: str):
+        self.config = {
+            'host': host,
+            'port': port,
+            'database': database,
+            'user': user,
+            'password': password
+        }
+    
+    def insert_parsed_log(self, parsed_log: Dict) -> bool:
+        """插入解析后的日志到 TimescaleDB"""
+        import psycopg2
+        from psycopg2.extras import execute_values
+        
+        try:
+            conn = psycopg2.connect(**self.config)
+            cursor = conn.cursor()
+            
+            sql = """
+                INSERT INTO parsed_logs 
+                (source_id, log_type, timestamp, src_ip, dst_ip, src_port, dst_port,
+                 protocol, hostname, username, action, result, raw_message, details)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """
+            
+            values = (
+                parsed_log.get('source_id'),
+                parsed_log.get('log_type', 'unknown'),
+                parsed_log.get('timestamp', datetime.utcnow().isoformat()),
+                parsed_log.get('src_ip'),
+                parsed_log.get('dst_ip'),
+                parsed_log.get('src_port'),
+                parsed_log.get('dst_port'),
+                parsed_log.get('protocol'),
+                parsed_log.get('hostname'),
+                parsed_log.get('username'),
+                parsed_log.get('action'),
+                parsed_log.get('result'),
+                parsed_log.get('raw_log') or parsed_log.get('raw_message'),
+                json.dumps(parsed_log.get('details', {}))
+            )
+            
+            cursor.execute(sql, values)
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"插入 TimescaleDB 失败: {e}")
+            return False
+
+
 def create_flink_job():
-    """创建 Flink 流处理任务"""
+    """创建 Flink 日志解析任务"""
     
-    # 创建执行环境
     env = StreamExecutionEnvironment.get_execution_environment()
-    env.set_parallelism(4)  # 设置并行度
+    env.set_parallelism(4)
     
-    # 配置 Kafka Source
+    # Kafka Source (消费原始日志)
     kafka_source = KafkaSource.builder() \
         .set_bootstrap_servers("kafka:29092") \
         .set_topics("raw-logs") \
         .set_group_id("flink-log-parser") \
         .set_starting_offsets(KafkaOffsetsInitializer.earliest()) \
         .set_value_only_deserializer(JsonRowDeserializationSchema.builder()
-            .type_info(Types.ROW(Types.STRING, Types.STRING, Types.STRING))
+            .type_info(Types.ROW(Types.STRING, Types.STRING, Types.STRING, Types.STRING))
             .build()) \
         .build()
     
-    # 添加 Kafka Source
     stream = env.from_source(
         kafka_source,
         WatermarkStrategy.no_watermarks(),
         "Kafka Source"
     )
     
-    # 处理每条日志
+    # Kafka Sink (输出解析后日志)
+    kafka_sink = KafkaSink.builder() \
+        .set_bootstrap_servers("kafka:29092") \
+        .set_record_serializer(KafkaRecordSerializationSchema.builder()
+            .set_topic("parsed-logs")
+            .set_value_serialization_schema(JsonRowSerializationSchema.builder()
+                .with_type_info(Types.ROW_NAMED(
+                    ['id', 'source_id', 'log_type', 'timestamp', 'src_ip', 'dst_ip',
+                     'username', 'action', 'result', 'raw_message', 'details'],
+                    Types.STRING, Types.INT, Types.STRING, Types.STRING, Types.STRING,
+                    Types.STRING, Types.STRING, Types.STRING, Types.STRING, Types.STRING, Types.STRING
+                ))
+                .build())
+            .build()) \
+        .build()
+    
+    # TimescaleDB Sink
+    tsdb_sink = TimescaleDBSink(
+        host='timescale',
+        port=5432,
+        database='timescale',
+        user='postgres',
+        password='timescale_pass'
+    )
+    
+    # 处理函数
     def process_log(element):
         try:
-            # element 格式: Row(log_id, raw_log, format_type)
+            # element 格式: Row(id, source_id, raw_log, format_type)
             log_id = element[0]
-            raw_log = element[1]
-            format_type = element[2] if len(element) > 2 else 'auto'
+            source_id = element[1] if len(element) > 1 else None
+            raw_log = element[2] if len(element) > 2 else str(element)
+            format_type = element[3] if len(element) > 3 else 'auto'
             
             # 解析日志
             parsed = LogParser.parse(raw_log, format_type)
-            parsed['log_id'] = log_id
+            parsed['id'] = log_id
+            parsed['source_id'] = int(source_id) if source_id else None
+            parsed['log_type'] = parsed.get('log_type', format_type)
             parsed['parse_time'] = datetime.utcnow().isoformat()
             
-            # 输出到控制台（生产环境应输出到 Kafka 或数据库）
-            logger.info(f"Parsed: {parsed.get('name', 'unknown')}, "
-                       f"src_ip: {parsed.get('src_ip', 'N/A')}, "
-                       f"severity: {parsed.get('severity', 'N/A')}")
+            # 输出到 Kafka
+            kafka_record = (
+                log_id,
+                parsed.get('source_id'),
+                parsed.get('log_type', 'unknown'),
+                parsed.get('timestamp'),
+                parsed.get('src_ip'),
+                parsed.get('dst_ip'),
+                parsed.get('username'),
+                parsed.get('action'),
+                parsed.get('result'),
+                raw_log,
+                json.dumps(parsed.get('details', {}))
+            )
             
-            return parsed
+            return Row(*kafka_record)
             
         except Exception as e:
             logger.error(f"处理失败: {e}")
-            return {"error": str(e)}
+            return None
     
-    # 应用处理函数
-    processed_stream = stream.map(process_log)
+    # 应用处理
+    parsed_stream = stream.map(process_log).filter(lambda x: x is not None)
     
-    # 打印结果
-    processed_stream.print()
+    # 输出到 Kafka
+    parsed_stream.add_sink(kafka_sink)
     
-    # 执行任务
+    # 打印到控制台 (用于调试)
+    parsed_stream.print()
+    
     env.execute("Log Parser Job")
 
 

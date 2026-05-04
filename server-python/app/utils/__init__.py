@@ -39,3 +39,25 @@ def decode_token(token: str) -> dict:
         return None
     except jwt.InvalidTokenError:
         return None
+
+
+# 导出服务管理器
+from app.utils.service_manager import (
+    check_all_components,
+    wait_for_all_components,
+    ensure_docker_services_running,
+    init_kafka_topics,
+    init_timescale_db
+)
+
+__all__ = [
+    'hash_password',
+    'verify_password',
+    'generate_token',
+    'decode_token',
+    'check_all_components',
+    'wait_for_all_components',
+    'ensure_docker_services_running',
+    'init_kafka_topics',
+    'init_timescale_db'
+]

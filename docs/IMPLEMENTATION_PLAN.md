@@ -431,10 +431,79 @@ docker exec timescale psql -U postgres -d timescale -c "SELECT COUNT(*) FROM raw
 
 ## 九、待办事项
 
-- [ ] 完善 Kafka Topic 自动创建
-- [ ] 实现 Flink Log Parser Job
-- [ ] 实现 Flink Alert Engine Job
-- [ ] 集成 TimescaleDB 全文搜索
-- [ ] 实现规则同步机制
+### 已完成
+- [x] 完善 Kafka Topic 自动创建 (`scripts/init-kafka-topics.sh`)
+- [x] 实现 Flink Log Parser Job (`flink-jobs/log_parser_job.py`)
+- [x] 实现 Flink Alert Engine Job (`flink-jobs/alert_engine_job.py`)
+- [x] 集成 TimescaleDB 全文搜索 (`server-python/app/timescaledb.py`)
+- [x] 实现规则同步机制 (`flink-jobs/rule_sync_service.py`)
+- [x] 添加日志搜索 API (`server-python/app/routes/log_search.py`)
+- [x] 后端启动时自动检查大数据组件 (`server-python/app/utils/service_manager.py`)
+- [x] 更新后端启动脚本 (`server-python/run.py`)
+
+### 待完成
 - [ ] 添加监控告警
 - [ ] 完善前端交互
+- [ ] 集成测试
+- [ ] 性能优化
+
+## 十、启动流程
+
+### 10.1 启动后端 (自动检查大数据组件)
+
+```bash
+cd server-python
+python run.py
+```
+
+启动时会自动执行以下操作:
+1. 检查 TimescaleDB 是否就绪
+2. 检查 Kafka 是否就绪
+3. 检查 Redis 是否就绪
+4. 检查 Flink JobManager 是否就绪
+5. 自动启动 Docker 服务 (如未运行)
+6. 初始化 Kafka Topics
+7. 初始化 TimescaleDB 表
+
+### 10.2 跳过组件检查
+
+设置环境变量 `SKIP_BIGDATA_CHECK=1` 可跳过检查:
+
+```bash
+SKIP_BIGDATA_CHECK=1 python run.py
+```
+
+### 10.3 手动检查组件状态
+
+```bash
+cd server-python
+python -m app.utils.service_manager
+```
+
+### 10.4 组件检查 API
+
+健康检查接口已增强:
+
+```
+GET /api/health
+```
+
+响应示例:
+```json
+{
+  "status": "healthy",
+  "service": "USOP Backend API (Python)",
+  "version": "1.0.0",
+  "databases": {
+    "postgresql": "connected",
+    "timescaledb": "connected"
+  },
+  "components": {
+    "timescale": "healthy",
+    "kafka": "healthy",
+    "redis": "healthy",
+    "flink": "healthy"
+  },
+  "timestamp": "2026-05-04T16:43:00"
+}
+```

@@ -19,6 +19,9 @@ from app.models.extensions import (
     PlaybookExecution
 )
 
+# 导入事件处置记录模型
+from app.models.event_action import EventAction
+
 
 class User(db.Model):
     __tablename__ = 'users'
@@ -48,7 +51,7 @@ class Event(db.Model):
     __tablename__ = 'events'
 
     id = db.Column(db.Integer, primary_key=True)
-    event_code = db.Column(db.String(20), unique=True, nullable=False)
+    event_code = db.Column(db.String(30), unique=True, nullable=False)
     title = db.Column(db.String(200), nullable=False)
     description = db.Column(db.Text)
     severity = db.Column(db.String(20), default='medium')
@@ -56,8 +59,10 @@ class Event(db.Model):
     source = db.Column(db.String(100))
     status = db.Column(db.String(20), default='new')
     raw_log = db.Column(db.Text)
+    extra_data = db.Column(db.JSON, default=dict)  # 扩展数据，包含附件等
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     def to_dict(self):
         return {
@@ -70,8 +75,10 @@ class Event(db.Model):
             'source': self.source,
             'status': self.status,
             'raw_log': self.raw_log,
+            'extra_data': self.extra_data or {},
             'timestamp': self.timestamp.isoformat() if self.timestamp else None,
-            'created_at': self.created_at.isoformat() if self.created_at else None
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }
 
 

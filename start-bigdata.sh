@@ -165,13 +165,77 @@ case $COMMAND in
         if [ -d "flink-jobs" ]; then
             echo ""
             echo "可用的 Flink Jobs:"
-            ls -1 flink-jobs/*.py 2>/dev/null || ls -1 flink-jobs/*.jar 2>/dev/null || echo "  (无 Jobs 文件)"
+            for job in flink-jobs/*.py; do
+                [ -f "$job" ] && echo "  - $(basename $job)"
+            done
             echo ""
-            echo "手动提交 Job:"
-            echo "  docker exec flink-jobmanager flink run -d /opt/flink/jobs/<job-file>"
+            
+            # 提交 Log Parser Job
+            if [ -f "flink-jobs/log_parser_job.py" ]; then
+                echo "提交 Log Parser Job..."
+                docker exec flink-jobmanager python /opt/flink/jobs/log_parser_job.py &
+            fi
+            
+            # 提交 Alert Engine Job
+            if [ -f "flink-jobs/alert_engine_job.py" ]; then
+                echo "提交 Alert Engine Job..."
+                docker exec flink-jobmanager python /opt/flink/jobs/alert_engine_job.py &
+            fi
+            
+            sleep 5
         else
             echo "  Flink Jobs 目录不存在"
         fi
+        echo ""
+        ;;
+        
+    rule-sync)
+        echo "启动规则同步服务..."
+        echo ""
+        
+        if [ -f "flink-jobs/rule_sync_service.py" ]; then
+            cd server-python
+            python ../flink-jobs/rule_sync_service.py --mode sync
+            cd ..
+        else
+            echo "  规则同步脚本不存在"
+        fi
+        ;;
+        
+    deploy-all)
+        echo "=========================================="
+        echo "  完整部署 USOP 平台"
+        echo "=========================================="
+        echo ""
+        
+        echo "1. 启动基础服务..."
+        $0 up
+        
+        echo ""
+        echo "2. 启动后端 API..."
+        cd server-python
+        source venv/bin/activate
+        python run.py &
+        cd ..
+        
+        echo ""
+        echo "3. 启动规则同步服务..."
+        $0 rule-sync
+        
+        echo ""
+        echo "4. 提交 Flink Jobs..."
+        $0 flink-submit
+        
+        echo ""
+        echo "=========================================="
+        echo "  部署完成!"
+        echo "=========================================="
+        echo ""
+        echo "访问地址:"
+        echo "  - 前端:     http://localhost:3000"
+        echo "  - 后端 API: http://localhost:5000"
+        echo "  - Flink:    http://localhost:8081"
+        echo "  - Kafka UI: http://localhost:8080"
         echo ""
         ;;
         
@@ -216,8 +280,10 @@ case $COMMAND in
         echo "  logs [服务]     查看日志"
         echo "  status          查看服务状态"
         echo "  flink-submit    提交 Flink Jobs"
+        echo "  rule-sync       同步规则到 Flink"
         echo "  init-topics     初始化 Kafka Topics"
         echo "  init-db         初始化 TimescaleDB 表"
+        echo "  deploy-all      完整部署所有服务"
         echo "  test            测试日志摄入"
         echo "  clean           清理所有数据"
         echo "  help            显示帮助"

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, Search, Edit2, Trash2, Play, X, Code, FileText, Clock, AlertTriangle, Database, Server, CheckCircle, ChevronRight, Globe, MessageSquare, Terminal, Cloud, Lock, FolderOpen, Wifi } from 'lucide-react';
-import { rulesApi, dataSourcesApi } from '../services/api';
+import { Plus, Search, Edit2, Trash2, Play, X, Code, FileText, Clock, AlertTriangle, Database, Server, CheckCircle, ChevronRight, Globe, MessageSquare, Terminal, Cloud, Lock, FolderOpen, Wifi, Workflow } from 'lucide-react';
+import { rulesApi, dataSourcesApi, playbooksApi } from '../services/api';
 
 interface DetectionRule {
   id: number | string;
@@ -12,6 +12,15 @@ interface DetectionRule {
   lastHitTime?: string;
   description?: string;
   dataSourceIds?: (string | number)[];
+  playbookId?: string | number;
+}
+
+interface Playbook {
+  id: string | number;
+  name: string;
+  description?: string;
+  status: string;
+  triggerType?: string;
 }
 
 interface DataSource {
@@ -63,17 +72,19 @@ const severityOptions = [
 export default function DetectionRules() {
   const [rules, setRules] = useState<DetectionRule[]>([]);
   const [dataSources, setDataSources] = useState<DataSource[]>([]);
+  const [playbooks, setPlaybooks] = useState<Playbook[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterType, setFilterType] = useState<string>('all');
   const [showForm, setShowForm] = useState(false);
   const [editingRule, setEditingRule] = useState<DetectionRule | null>(null);
+  const [selectedPlaybookId, setSelectedPlaybookId] = useState<string | number | null>(null);
 
   // 获取数据
   const fetchData = async () => {
     try {
-      const [rulesRes, dsRes] = await Promise.allSettled([
+      const [rulesRes, dsRes, pbRes] = await Promise.allSettled([
         rulesApi.getRules({ page_size: 100 }),
-        dataSourcesApi.getDataSources({ page_size: 100 })
+        dataSourcesApi.getDataSources({ page_size: 100 }),
+        playbooksApi.getPlaybooks({ page_size: 100 })
       ]);
 
       if (rulesRes.status === 'fulfilled' && rulesRes.value.success) {
@@ -86,7 +97,8 @@ export default function DetectionRules() {
           hitCount: item.hit_count || 0,
           lastHitTime: item.last_hit_time || item.updated_at,
           description: item.description || item.detail,
-          dataSourceIds: item.data_source_ids || []
+          dataSourceIds: item.data_source_ids || [],
+          playbookId: item.playbook_id || item.playbookId
         })));
       }
 
@@ -97,6 +109,17 @@ export default function DetectionRules() {
           name: item.name || item.source_name,
           type: item.type || item.source_type,
           status: item.status || 'active'
+        })));
+      }
+
+      if (pbRes.status === 'fulfilled' && pbRes.value.success) {
+        const items = Array.isArray(pbRes.value.data) ? pbRes.value.data : pbRes.value.data?.items || [];
+        setPlaybooks(items.filter((p: any) => p.status === 'published' || p.status === 'enabled').map((item: any) => ({
+          id: item.id,
+          name: item.name || item.playbook_name,
+          description: item.description,
+          status: item.status,
+          triggerType: item.trigger_type || item.triggerType
         })));
       }
     } catch (error) {
@@ -117,8 +140,31 @@ export default function DetectionRules() {
   const [selectedDataSources, setSelectedDataSources] = useState<string[]>([]);
 
   const filteredRules = rules.filter(rule => {
-    const matchesSearch = rule.name.toLowerCase().includes(searchTerm.toLowerCase()) || String(rule.id).toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesType = filterType === 'all' || rule.type === filterType;
+    const term = searchTerm.toLowerCase().trim();
+    if (!term) return true;
+    
+    // 解析搜索词中的类型关键词
+    const typeKeywords: Record<string, string> = {
+      '单事件': 'single', '单': 'single',
+      '关联': 'correlation', '关联规则': 'correlation',
+      '时序': 'sequence', '时序规则': 'sequence'
+    };
+    
+    let searchText = term;
+    let matchedType = '';
+    for (const [keyword, type] of Object.entries(typeKeywords)) {
+      if (term.includes(keyword)) {
+        searchText = term.replace(keyword, '').trim();
+        matchedType = type;
+        break;
+      }
+    }
+    
+    const matchesSearch = !searchText || 
+      rule.name.toLowerCase().includes(searchText) || 
+      String(rule.id).toLowerCase().includes(searchText);
+    const matchesType = !matchedType || rule.type === matchedType;
+    
     return matchesSearch && matchesType;
   });
 
@@ -135,6 +181,7 @@ export default function DetectionRules() {
       status: 'disabled'
     });
     setSelectedDataSources([]);
+    setSelectedPlaybookId(null);
     setActiveTab('basic');
     setShowForm(true);
   };
@@ -143,6 +190,7 @@ export default function DetectionRules() {
     setEditingRule(rule);
     setFormData({ ...rule });
     setSelectedDataSources((rule.dataSourceIds || []).map(id => String(id)));
+    setSelectedPlaybookId(rule.playbookId || null);
     setActiveTab('basic');
     setShowForm(true);
   };
@@ -153,7 +201,7 @@ export default function DetectionRules() {
     if (editingRule) {
       setRules(prev => prev.map(rule =>
         rule.id === editingRule.id
-          ? { ...rule, ...formData, dataSourceIds: selectedDataSources } as DetectionRule
+          ? { ...rule, ...formData, dataSourceIds: selectedDataSources, playbookId: selectedPlaybookId } as DetectionRule
           : rule
       ));
     } else {
@@ -164,7 +212,8 @@ export default function DetectionRules() {
         status: 'disabled',
         hitCount: 0,
         description: formData.description,
-        dataSourceIds: selectedDataSources
+        dataSourceIds: selectedDataSources,
+        playbookId: selectedPlaybookId || undefined
       };
       setRules(prev => [...prev, newRule]);
     }
@@ -197,27 +246,17 @@ export default function DetectionRules() {
         </motion.button>
       </div>
 
-      <div className="glass-card rounded-xl p-4 flex items-center gap-4">
-        <div className="relative flex-1 max-w-md">
+      <div className="glass-card rounded-xl p-4">
+        <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
           <input
             type="text"
-            placeholder="搜索规则名称或ID..."
+            placeholder="搜索规则名称或ID，支持：单事件、关联、时序..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="w-full pl-10 pr-4 py-2 bg-card-bg border border-border-color rounded-lg text-text-primary placeholder-text-muted focus:outline-none focus:border-primary"
           />
         </div>
-        <select
-          value={filterType}
-          onChange={(e) => setFilterType(e.target.value)}
-          className="px-4 py-2 bg-card-bg border border-border-color rounded-lg text-text-primary focus:outline-none focus:border-primary cursor-pointer"
-        >
-          <option value="all">全部类型</option>
-          <option value="single">单事件</option>
-          <option value="correlation">关联</option>
-          <option value="sequence">时序</option>
-        </select>
       </div>
 
       <div className="glass-card rounded-xl overflow-hidden">
@@ -546,7 +585,42 @@ export default function DetectionRules() {
                   {activeTab === 'action' && (
                     <div className="space-y-4">
                       <div>
-                        <label className="block text-text-secondary text-sm mb-2">响应动作</label>
+                        <label className="block text-text-secondary text-sm mb-2">关联剧本</label>
+                        <div className="bg-page-bg rounded-lg border border-border-color p-4">
+                          <p className="text-xs text-text-muted mb-3">选择规则触发时要执行的剧本编排，可从剧本库中选择已发布的剧本</p>
+                          <select
+                            value={selectedPlaybookId || ''}
+                            onChange={(e) => setSelectedPlaybookId(e.target.value ? Number(e.target.value) : null)}
+                            className="w-full px-3 py-2 bg-card-bg border border-border-color rounded-lg text-text-primary focus:border-primary focus:outline-none"
+                          >
+                            <option value="">不关联剧本</option>
+                            {playbooks.map((pb) => (
+                              <option key={pb.id} value={pb.id}>
+                                {pb.name} {pb.triggerType ? `(${pb.triggerType})` : ''}
+                              </option>
+                            ))}
+                          </select>
+                          {selectedPlaybookId && (
+                            <div className="mt-3 p-3 bg-primary/5 rounded-lg border border-primary/20">
+                              <div className="flex items-center gap-2 text-sm text-primary">
+                                <Workflow className="w-4 h-4" />
+                                <span>已选择剧本：{playbooks.find(p => p.id === selectedPlaybookId)?.name}</span>
+                              </div>
+                              <p className="text-xs text-text-muted mt-1">
+                                当规则触发时，将自动执行此剧本进行响应处置
+                              </p>
+                            </div>
+                          )}
+                          {playbooks.length === 0 && (
+                            <p className="text-xs text-text-muted mt-2">
+                              暂无可用的剧本，请先在「响应剧本」中创建并发布剧本
+                            </p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-text-secondary text-sm mb-2">其他响应动作</label>
                         <div className="space-y-2">
                           {[
                             { id: 'alert', label: '生成告警', desc: '触发时创建安全事件' },

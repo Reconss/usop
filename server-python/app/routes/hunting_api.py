@@ -225,31 +225,72 @@ def get_results():
 @hunting_api_bp.route('/search', methods=['POST'])
 @login_required
 def search():
-    """执行高级搜索"""
+    """执行高级搜索 - 使用 TimescaleDB 全文搜索"""
     data = request.get_json()
     
     query_string = data.get('query')
     time_range = data.get('time_range', '24h')
     limit = data.get('limit', 100)
+    offset = data.get('offset', 0)
+    log_type = data.get('log_type')
+    src_ip = data.get('src_ip')
+    username = data.get('username')
     
-    # 模拟搜索结果 - 实际应该调用数据源
-    mock_events = []
-    for i in range(min(limit, 10)):
-        mock_events.append({
-            'id': f'evt_{i}',
-            'timestamp': datetime.utcnow().isoformat(),
-            'source': 'simulated',
-            'message': f'Simulated event {i}',
-            'severity': ['low', 'medium', 'high', 'critical'][i % 4]
-        })
+    # 计算时间范围
+    from datetime import timedelta
+    now = datetime.utcnow()
+    if time_range.endswith('h'):
+        hours = int(time_range[:-1])
+        start_time = now - timedelta(hours=hours)
+    elif time_range.endswith('d'):
+        days = int(time_range[:-1])
+        start_time = now - timedelta(days=days)
+    else:
+        start_time = now - timedelta(hours=24)
     
-    return jsonify({
-        'success': True,
-        'data': {
-            'query': query_string,
-            'time_range': time_range,
-            'total_hits': len(mock_events),
-            'events': mock_events,
-            'searched_at': datetime.utcnow().isoformat()
-        }
-    })
+    try:
+        from app.timescaledb import get_tsdb, full_text_search
+        
+        tsdb = get_tsdb()
+        session = tsdb.get_session()
+        
+        try:
+            result = full_text_search(
+                session=session,
+                search_query=query_string,
+                start_time=start_time,
+                end_time=now,
+                log_type=log_type,
+                src_ip=src_ip,
+                username=username,
+                limit=limit,
+                offset=offset
+            )
+            
+            return jsonify({
+                'success': True,
+                'data': {
+                    'query': query_string,
+                    'time_range': time_range,
+                    'total_hits': result['total'],
+                    'limit': limit,
+                    'offset': offset,
+                    'events': result['results'],
+                    'searched_at': now.isoformat()
+                }
+            })
+        finally:
+            tsdb.close_session(session)
+            
+    except Exception as e:
+        # 如果 TimescaleDB 不可用，返回错误信息
+        return jsonify({
+            'success': False,
+            'error': f'搜索服务暂时不可用: {str(e)}',
+            'data': {
+                'query': query_string,
+                'time_range': time_range,
+                'total_hits': 0,
+                'events': []
+            }
+        }), 503

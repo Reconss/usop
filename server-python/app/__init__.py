@@ -119,6 +119,8 @@ def create_app():
     from app.routes.products_api import products_api_bp
     from app.routes.data_sources_api import data_sources_api_bp
     from app.routes.log_types_api import log_types_api_bp
+    from app.routes.log_search import log_search_bp
+    from app.routes.events_api import events_api_bp
 
     app.register_blueprint(log_management_bp, url_prefix='/api/log-management')
     app.register_blueprint(data_sources_bp, url_prefix='/api/data-sources')
@@ -157,6 +159,8 @@ def create_app():
     app.register_blueprint(products_api_bp, url_prefix='/api/products-api')
     app.register_blueprint(data_sources_api_bp, url_prefix='/api/datasources-api')
     app.register_blueprint(log_types_api_bp, url_prefix='/api/log-types-api')
+    app.register_blueprint(log_search_bp, url_prefix='/api/log-search')
+    app.register_blueprint(events_api_bp, url_prefix='/api/event-actions-api')
 
     # Health check
     @app.route('/api/health')
@@ -177,6 +181,16 @@ def create_app():
                 tsdb_status = 'connected'
         except Exception as e:
             tsdb_status = f'disconnected: {str(e)}'
+        
+        # 检查大数据组件状态
+        components = {}
+        try:
+            from app.utils.service_manager import check_all_components, ComponentStatus
+            results = check_all_components(show_details=False)
+            for key, status in results.items():
+                components[key] = status.value
+        except Exception:
+            pass
 
         return {
             'status': 'healthy' if db_status == 'connected' else 'degraded',
@@ -186,6 +200,7 @@ def create_app():
                 'postgresql': db_status,
                 'timescaledb': tsdb_status
             },
+            'components': components,
             'timestamp': datetime.now().isoformat()
         }
 

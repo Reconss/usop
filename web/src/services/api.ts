@@ -30,6 +30,13 @@ export async function request<T = any>(
     const data = await response.json();
     
     if (!response.ok) {
+      // 401 未授权，跳转到登录页
+      if (response.status === 401) {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        window.location.href = '/login';
+        throw new Error('登录已过期，请重新登录');
+      }
       throw new Error(data.error || `请求失败 (${response.status})`);
     }
     
@@ -100,7 +107,7 @@ export const dashboardApi = {
   getTopAlerts: (limit?: number) => request(`/dashboard-api/top-alerts?limit=${limit || 10}`),
 };
 
-// Alerts API
+// Alerts API (使用 events API 作为后端)
 export const alertsApi = {
   getAlerts: (params?: { page?: number; page_size?: number; severity?: string; status?: string; search?: string }) => {
     const searchParams = new URLSearchParams();
@@ -109,12 +116,12 @@ export const alertsApi = {
     if (params?.severity) searchParams.append('severity', params.severity);
     if (params?.status) searchParams.append('status', params.status);
     if (params?.search) searchParams.append('search', params.search);
-    return request(`/alerts-api/alerts?${searchParams.toString()}`);
+    return request(`/event-actions-api/events?${searchParams.toString()}`);
   },
   
-  getAlert: (id: string | number) => request(`/alerts-api/alerts/${id}`),
-  updateAlert: (id: number, data: any) => request(`/alerts-api/alerts/${id}`, { method: 'PUT', body: data }),
-  deleteAlert: (id: number) => request(`/alerts-api/alerts/${id}`, { method: 'DELETE' }),
+  getAlert: (id: string | number) => request(`/event-actions-api/events/${id}`),
+  updateAlert: (id: number, data: any) => request(`/event-actions-api/events/${id}`, { method: 'PUT', body: data }),
+  deleteAlert: (id: number) => request(`/event-actions-api/events/${id}`, { method: 'DELETE' }),
 };
 
 // Assets API
@@ -182,7 +189,7 @@ export const playbooksApi = {
   createPlaybook: (data: any) => request('/playbooks-api/playbooks', { method: 'POST', body: data }),
   updatePlaybook: (id: number, data: any) => request(`/playbooks-api/playbooks/${id}`, { method: 'PUT', body: data }),
   deletePlaybook: (id: number) => request(`/playbooks-api/playbooks/${id}`, { method: 'DELETE' }),
-  executePlaybook: (id: number, data?: any) => request(`/playbooks-api/playbooks/${id}/execute`, { method: 'POST', body: data }),
+  executePlaybook: (id: string | number, data?: any) => request(`/playbooks-api/playbooks/${id}/execute`, { method: 'POST', body: data }),
 };
 
 // Hunting API
@@ -294,8 +301,88 @@ export const productsApi = {
 
 // Notifications API
 export const notificationsApi = {
-  getNotifications: () => request('/notifications-api/notifications'),
-  markAsRead: (id: number) => request(`/notifications-api/notifications/${id}/read`, { method: 'POST' }),
-  markAllAsRead: () => request('/notifications-api/notifications/read-all', { method: 'POST' }),
-  deleteNotification: (id: number) => request(`/notifications-api/notifications/${id}`, { method: 'DELETE' }),
+  getNotifications: () => request('/notifications'),
+  markAsRead: (id: number) => request(`/notifications/${id}/read`, { method: 'PATCH' }),
+  markAllAsRead: () => request('/notifications/mark-all-read', { method: 'POST' }),
+  deleteNotification: (id: number) => request(`/notifications/${id}`, { method: 'DELETE' }),
+};
+
+// Event Actions API (事件处置记录)
+export const eventActionsApi = {
+  // 获取事件的处置记录列表
+  getEventActions: (eventId: string) => request(`/event-actions-api/events/${eventId}/actions`),
+
+  // 添加处置记录
+  createEventAction: (eventId: string, data: {
+    action: string;
+    content?: string;
+    assignee?: string;
+    previousStatus?: string;
+    newStatus?: string;
+    previousSeverity?: string;
+    newSeverity?: string;
+    metadata?: Record<string, any>;
+  }) => request(`/event-actions-api/events/${eventId}/actions`, { method: 'POST', body: data }),
+
+  // 更新处置记录
+  updateEventAction: (eventId: string, actionId: string, data: any) =>
+    request(`/event-actions-api/events/${eventId}/actions/${actionId}`, { method: 'PUT', body: data }),
+
+  // 删除处置记录
+  deleteEventAction: (eventId: string, actionId: string) =>
+    request(`/event-actions-api/events/${eventId}/actions/${actionId}`, { method: 'DELETE' }),
+
+  // 获取事件列表
+  getEvents: (params?: { page?: number; page_size?: number; severity?: string; status?: string; search?: string }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.page) searchParams.append('page', String(params.page));
+    if (params?.page_size) searchParams.append('page_size', String(params.page_size));
+    if (params?.severity) searchParams.append('severity', params.severity);
+    if (params?.status) searchParams.append('status', params.status);
+    if (params?.search) searchParams.append('search', params.search);
+    return request(`/event-actions-api/events?${searchParams.toString()}`);
+  },
+
+  // 获取事件详情
+  getEvent: (eventId: string) => request(`/event-actions-api/events/${eventId}`),
+
+  // 创建事件
+  createEvent: (data: {
+    title: string;
+    description?: string;
+    severity?: string;
+    event_type?: string;
+    source_ip?: string;
+  }) => request('/event-actions-api/events', { method: 'POST', body: data }),
+
+  // 更新事件
+  updateEvent: (eventId: string, data: any) =>
+    request(`/event-actions-api/events/${eventId}`, { method: 'PUT', body: data }),
+
+  // 更新事件状态
+  updateEventStatus: (eventId: string, status: string, reason?: string) =>
+    request(`/event-actions-api/events/${eventId}/status`, { method: 'PUT', body: { status, reason } }),
+
+  // 删除事件
+  deleteEvent: (eventId: string) =>
+    request(`/event-actions-api/events/${eventId}`, { method: 'DELETE' }),
+
+  // 执行剧本
+  executePlaybook: (eventId: string, playbookId: string | number) =>
+    request(`/event-actions-api/events/${eventId}/playbooks/${playbookId}/execute`, { method: 'POST', body: {} }),
+
+  // 获取可用剧本
+  getEventPlaybooks: (eventId: string) =>
+    request(`/event-actions-api/events/${eventId}/playbooks`),
+
+  // 获取事件统计
+  getEventStats: () => request('/event-actions-api/events/stats'),
+
+  // 批量更新状态
+  batchUpdateStatus: (eventIds: string[], status: string) =>
+    request('/event-actions-api/events/batch/status', { method: 'PUT', body: { event_ids: eventIds, status } }),
+
+  // 批量删除
+  batchDelete: (eventIds: string[]) =>
+    request('/event-actions-api/events/batch', { method: 'DELETE', body: { event_ids: eventIds } }),
 };

@@ -1,12 +1,12 @@
 services:
-  # ==================== 数据库 ====================
+  # ==================== 核心服务（默认启动）====================
   timescale:
     image: timescale/timescaledb:latest-pg16
     container_name: timescale
     environment:
-      POSTGRES_PASSWORD: timescale_pass
+      POSTGRES_PASSWORD: postgres
       POSTGRES_USER: postgres
-      POSTGRES_DB: timescale
+      POSTGRES_DB: postgres
     ports:
       - "5432:5432"
     volumes:
@@ -21,41 +21,42 @@ services:
       timeout: 5s
       retries: 5
 
-  # ==================== Kafka 相关 ====================
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.5.0
-    container_name: zookeeper
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
+  redis:
+    image: redis:7-alpine
+    container_name: redis
     ports:
-      - "2181:2181"
+      - "6379:6379"
     volumes:
-      - zookeeper_data:/var/lib/zookeeper/data
+      - redis_data:/data
+    command: redis-server --appendonly yes
     networks:
       - log-platform
     healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
 
+  # ==================== Kafka（KRaft 模式，无需 Zookeeper）====================
   kafka:
     image: confluentinc/cp-kafka:7.5.0
     container_name: kafka
-    depends_on:
-      zookeeper:
-        condition: service_healthy
     ports:
       - "9092:9092"
       - "29092:29092"
     environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_NODE_ID: 1
+      CLUSTER_ID: TUMghNssTfuY70MTwaCWkQ
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT_INTERNAL://0.0.0.0:29092
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:29092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       KAFKA_LOG_RETENTION_HOURS: 168
       KAFKA_LOG_SEGMENT_BYTES: 1073741824
@@ -69,36 +70,39 @@ services:
     networks:
       - log-platform
     healthcheck:
-      test: ["CMD", "kafka-broker-id", "--verify", "--zookeeper", "zookeeper:2181"]
+      test: ["CMD", "kafka-broker-id", "--verify", "--bootstrap-server", "localhost:9092"]
       interval: 30s
       timeout: 10s
       retries: 5
 
+  # ==================== Kafka UI（开发工具，可选）====================
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     container_name: kafka-ui
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
     ports:
       - "8080:8080"
     environment:
       KAFKA_CLUSTERS_0_NAME: local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
-      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
     networks:
       - log-platform
+    profiles:
+      - dev
 
-  # ==================== Flink 相关 ====================
-  jobmanager:
+  # ==================== Flink 流处理（可选）====================
+  flink:
     image: flink:1.18.1-scala_2.12-java11
-    container_name: flink-jobmanager
+    container_name: flink
     ports:
       - "8081:8081"
     command: jobmanager
     environment:
       - |
         FLINK_PROPERTIES=
-        jobmanager.rpc.address: jobmanager
+        jobmanager.rpc.address: flink
         state.backend: rocksdb
         state.checkpoints.dir: file:///checkpoints
         state.savepoints.dir: file:///savepoints
@@ -119,17 +123,19 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+    profiles:
+      - flink
 
-  taskmanager:
+  flink-worker:
     image: flink:1.18.1-scala_2.12-java11
-    container_name: flink-taskmanager
+    container_name: flink-worker
     depends_on:
-      - jobmanager
+      - flink
     command: taskmanager
     environment:
       - |
         FLINK_PROPERTIES=
-        jobmanager.rpc.address: jobmanager
+        jobmanager.rpc.address: flink
         state.backend: rocksdb
         state.checkpoints.dir: file:///checkpoints
         parallelism.default: 2
@@ -143,25 +149,8 @@ services:
       - ./flink-jobs:/opt/flink/jobs
     networks:
       - log-platform
-    deploy:
-      replicas: 2
-
-  # ==================== 缓存服务 ====================
-  redis:
-    image: redis:7-alpine
-    container_name: redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    command: redis-server --appendonly yes
-    networks:
-      - log-platform
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+    profiles:
+      - flink
 
 networks:
   log-platform:
@@ -169,8 +158,7 @@ networks:
 
 volumes:
   timescale_data:
-  zookeeper_data:
   kafka_data:
+  redis_data:
   flink_checkpoints:
   flink_savepoints:
-  redis_data:
