@@ -1,0 +1,148 @@
+---
+name: medieval-manuscript
+version: 1.0.0
+description: Medieval Manuscript design style for web interfaces
+keywords: [中世纪, 手抄本, 泥金, 花体, 羊皮纸]
+author: StyleKit
+style_type: visual
+---
+
+# Medieval Manuscript Style
+
+## Overview
+中世纪泥金手抄本风格，花体首字母、羊皮纸质感、金色与深红装饰性边框。哥特式黑体字与插画元素相结合。
+
+## Philosophy
+中世纪泥金手抄本（Illuminated Manuscript）是西方书籍艺术的巅峰形态，诞生于修道院的缮写室中。每一页都是信仰与美学的结合——金箔装饰的首字母、精细的藤蔓纹样、深红与深绿的矿物颜料，以及羊皮纸特有的温暖质感。
+
+## Design Tokens
+
+### Border
+- Width: `border-4`
+- Color: `border-[#c9a74e]`
+- Radius: `rounded-sm`
+
+### Shadow
+- Small: `shadow-[1px_1px_0px_#3d2b1f]`
+- Medium: `shadow-[2px_2px_0px_#3d2b1f]`
+- Large: `shadow-[3px_3px_0px_#3d2b1f]`
+- Hover: `hover:shadow-[1px_1px_0px_#3d2b1f]`
+
+### Typography
+- Heading: `font-serif font-bold uppercase tracking-wider`
+- Body: `font-serif leading-relaxed`
+- Hero: `text-6xl md:text-8xl`
+- H1: `text-3xl md:text-5xl`
+- Body: `text-sm md:text-base`
+
+### Spacing
+- Section: `py-14 md:py-24 lg:py-32`
+- Container: `px-6 md:px-12 lg:px-16`
+- Card: `p-6 md:p-8`
+
+### Colors
+- Primary BG: `bg-[#f0e6d0]`
+- Secondary BG: `bg-[#8b1a1a]`
+- Primary Text: `text-[#3d2b1f]`
+- Primary Button: `bg-[#8b1a1a] text-[#f0e6d0] border-4 border-double border-[#c9a74e] shadow-[2px_2px_0px_#3d2b1f]`
+
+## Component Recipes
+
+### Button
+- Base: `font-serif font-semibold rounded-sm border-2 transition-all duration-300 ease-in-out`
+- Primary: `bg-[#8b1a1a] text-[#f0e6d0] border-[#c9a74e] shadow-md shadow-[#8b1a1a]/30`
+- Secondary: `bg-[#f0e6d0] text-[#8b1a1a] border-[#8b1a1a]/40`
+- Gold: `bg-[#c9a74e] text-[#8b1a1a] border-[#8b1a1a] shadow-md shadow-[#c9a74e]/30`
+
+- Hover: `hover:shadow-lg hover:scale-105 hover:brightness-110`
+
+### Card
+- Base: `bg-[#f0e6d0] rounded-sm border-2 border-[#c9a74e]/60 shadow-lg font-serif transition-all duration-300 ease-in-out`
+- Default: ``
+- Illuminated: `border-[#c9a74e] bg-gradient-to-br from-[#f0e6d0] to-[#c9a74e]/15`
+- Crimson: `border-[#8b1a1a]/60 bg-gradient-to-br from-[#f0e6d0] to-[#8b1a1a]/10`
+
+- Hover: `hover:shadow-xl hover:border-[#c9a74e]`
+
+### Input
+- Base: `w-full rounded-sm border-2 border-[#c9a74e]/30 bg-[#f0e6d0] text-[#8b1a1a] placeholder:text-[#8b1a1a]/35 font-serif focus:outline-none transition-all duration-300 ease-in-out`
+- Default: ``
+- Gilded: `border-[#c9a74e]/50 placeholder:text-[#c9a74e]/40`
+
+## Forbidden Patterns
+These classes must NEVER be used in Medieval Manuscript style:
+
+- `font-sans`
+- `bg-black`
+- `bg-white`
+- `backdrop-blur`
+- `backdrop-blur-sm`
+- `backdrop-blur-md`
+- `rounded-xl`
+- `rounded-2xl`
+- `rounded-full`
+- `text-[#ff00ff]`
+
+- Pattern: `^font-sans$`
+- Pattern: `^bg-(?:black|white)$`
+- Pattern: `^backdrop-blur`
+- Pattern: `^rounded-(?:xl|2xl|3xl|full)$`
+- Pattern: `^(?:text|bg)-\[#(?:ff00ff|00ffff|00ff00)\]$`
+
+### Why:
+- `font-sans`: Medieval Manuscript uses serif fonts exclusively for authenticity
+- `bg-black`: Medieval Manuscript uses warm parchment #f0e6d0, not cold black
+- `bg-white`: Medieval Manuscript uses parchment #f0e6d0, not sterile white
+
+## Do's
+- 使用羊皮纸色 bg-[#f0e6d0] 作为主背景底色
+- 使用金色 border-[#c9a74e] 和 text-[#c9a74e] 作为装饰和高亮
+- 使用深红 text-[#8b1a1a] 作为标题和重要文字颜色
+- 使用 border-double border-4 或 border-[3px] 模拟手抄本双线边框
+- 标题首字使用 text-5xl 以上的放大效果（Drop Cap）
+- 全页使用衬线字体 font-serif 保持古典一致性
+- 使用深棕 #3d2b1f 作为正文文字色和辅助边框色
+- 添加角落装饰暗示：伪元素或小图标模拟藤蔓纹样
+- 按钮 :active 向右下偏移：active:translate-x-[3px] active:translate-y-[3px] active:shadow-[1px_1px_0px_#3d2b1f]（Wax Seal Impact，火漆印章按压感）
+- 金色边框 hover 时缓慢提亮：hover:border-[#dfbf66] transition-all duration-700 ease-in-out（Gold Leaf Shimmer，烛光映照金箔）
+- 卡片使用 group 类，角落装饰 group-hover:opacity-100，首字母 group-hover:drop-shadow-[0_0_8px_rgba(201,167,78,0.6)] 金箔浮现
+- 按钮悬停：hover:shadow-[5px_5px_0px_#3d2b1f]（阴影加重，压印加深预告）
+
+## Don'ts
+- 禁止使用无衬线字体 font-sans 作为主字体
+- 禁止使用现代渐变（bg-gradient-to-r 等现代配色渐变）
+- 禁止使用霓虹色、荧光色或高饱和度现代色彩
+- 禁止使用毛玻璃效果（backdrop-blur）
+- 禁止使用纯黑 bg-black 或纯白 bg-white 背景
+- 禁止使用圆角 rounded-xl 以上的现代圆角
+- 禁止使用科技感或未来感的设计元素
+- 禁止按钮使用 hover:-translate-y-*（羊皮纸是平铺的，无悬浮感）
+- 禁止按钮缺少 active:translate-x-[3px] active:translate-y-[3px]（Wax Seal Impact 是核心交互特征）
+- 禁止动画 duration < 300ms（手抄本的庄重感需要缓慢、从容的过渡）
+
+## Layout Archetypes
+- `landing-hero-centered`: Centered headline, subtitle, and CTA. Clean and focused.
+- `landing-hero-split`: Text on left, image/visual on right. Great for product showcases.
+- `landing-hero-fullscreen`: Full viewport hero with background image or color. High impact.
+- `landing-video-hero`: Full-screen video background with overlay text. High impact for product demos.
+- `landing-saas-pricing`: Complete SaaS pricing page with hero, pricing tiers, FAQ, and CTA.
+- `landing-waitlist`: Minimal pre-launch page with email collection and countdown.
+
+## Example Usage
+
+```
+Generate a landing page with:
+- Style: medieval-manuscript
+- Archetype: landing-hero-centered
+- Sections: hero, features, cta, footer
+- Components: heading (hero variant), button (primary, lg), card (default)
+```
+
+### Example Prompts:
+- "中世纪手抄本阅读页面"
+- "SaaS 着陆页"
+- "作品集展示"
+
+---
+Generated by StyleKit · https://stylekit.dev
+Style: 中世纪手抄本 (Medieval Manuscript)

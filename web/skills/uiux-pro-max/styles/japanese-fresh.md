@@ -1,0 +1,146 @@
+---
+name: japanese-fresh
+version: 1.0.0
+description: Japanese Fresh design style for web interfaces
+keywords: [Ma, 侘寂, 留白, 发丝边框, 植物线描]
+author: StyleKit
+style_type: visual
+---
+
+# Japanese Fresh Style
+
+## Overview
+以Ma (间) 留白哲学、侘寂美学和极致呼吸感为核心，通过发丝级边框、植物线描装饰和极简温暖中性色，营造沉静治愈的设计体验。
+
+## Philosophy
+Japanese Fresh embodies Ma (space between) and wabi-sabi (beauty in imperfection). Design is not about what you add, but what you allow to breathe.
+
+## Design Tokens
+
+### Border
+- Width: `border`
+- Color: `border-[#d4d4cf]`
+- Radius: `rounded-xl`
+
+### Shadow
+- Small: `shadow-none`
+- Medium: `shadow-[0_1px_3px_rgba(0,0,0,0.03)]`
+- Large: `shadow-[0_2px_6px_rgba(0,0,0,0.04)]`
+- Hover: `hover:shadow-[0_2px_8px_rgba(0,0,0,0.05)]`
+
+### Typography
+- Heading: `font-sans font-extralight text-[#4a5568] tracking-wide`
+- Body: `font-sans font-light text-[#6b7280] leading-relaxed`
+- Hero: `text-3xl md:text-5xl lg:text-6xl`
+- H1: `text-2xl md:text-4xl`
+- Body: `text-sm md:text-base`
+
+### Spacing
+- Section: `py-24 md:py-32 lg:py-40`
+- Container: `px-8 md:px-12 lg:px-20`
+- Card: `p-8 md:p-10`
+
+### Colors
+- Primary BG: `bg-[#fafaf8]`
+- Secondary BG: `bg-white`
+- Primary Text: `text-[#4a5568]`
+- Primary Button: `bg-[#64b5f6]/90 text-white`
+
+## Component Recipes
+
+### Whisper Button
+- Base: `font-sans font-light tracking-wide rounded-lg bg-transparent border border-[#d4d4cf]/40 transition-all duration-500 ease-in-out`
+- Primary: `bg-[#64b5f6]/90 text-white border-[#64b5f6]/30`
+- Secondary: `bg-transparent text-[#7a8a9e] border-[#d4d4cf]/40`
+- Mint: `bg-transparent text-[#98d8c8] border-[#98d8c8]/30`
+- Whisper: `bg-transparent text-[#b0b8c4] border-[#d4d4cf]/20`
+
+- Hover: `hover:border-[#64b5f6]/40 hover:text-[#64b5f6]`
+
+### Breath Card
+- Base: `bg-white rounded-xl border border-[#d4d4cf]/30 transition-all duration-500 ease-in-out`
+- Default: ``
+- Mint: `border-[#98d8c8]/25`
+- Pink: `border-[#ffb7c5]/25`
+- Sky: `border-[#64b5f6]/20`
+
+- Hover: `hover:border-[#d4d4cf]/50`
+
+### Bottom-line Input
+- Base: `w-full pb-2 pt-0 bg-transparent border-0 border-b border-[#d4d4cf] rounded-none text-[#4a5568] placeholder:text-[#b0b8c4]/60 font-sans font-light focus:outline-none transition-all duration-500 ease-in-out`
+- Default: ``
+- Mint: `border-b-[#98d8c8]/60`
+- Pink: `border-b-[#ffb7c5]/60`
+
+## Forbidden Patterns
+These classes must NEVER be used in Japanese Fresh style:
+
+- `rounded-none`
+- `rounded-sm`
+- `border-2`
+- `border-4`
+- `font-bold`
+- `font-black`
+- `font-extrabold`
+- `bg-[#0f0f1a]`
+- `bg-black`
+- `bg-[#1a1a1a]`
+
+- Pattern: `^rounded-(?:none|sm)$`
+- Pattern: `^border-[2-9]$`
+- Pattern: `^font-(?:bold|black|extrabold|semibold)$`
+- Pattern: `^bg-(?:black|\[#0)`
+- Pattern: `^uppercase$`
+
+### Why:
+- `rounded-none`: Japanese Fresh uses gentle curves inspired by natural forms, never sharp corners
+- `border-2`: Japanese Fresh uses only hairline borders (0.5-1px) for wabi-sabi delicacy
+- `font-bold`: Japanese Fresh uses light/extralight font weights to embody Ma and restraint
+
+## Do's
+- Use extreme whitespace (py-32, py-40) between sections -- Ma is the primary design tool
+- Use only hairline borders (border with opacity-30, never border-2)
+- Include one delicate botanical SVG line drawing per major section
+- Use font-extralight/font-light exclusively for all text
+- Keep inputs as bottom-line only with floating labels
+- Use warm neutral border color #d4d4cf instead of harsh gray
+- Apply asymmetric element placement for wabi-sabi character
+- Use transition duration-500 for slow, meditative interactions
+- Use weightless hover feedback (subtle lift + transparent tint) instead of heavy depth
+
+## Don'ts
+- Never use bold or heavy font weights (font-bold, font-semibold)
+- Never use uppercase text -- it is too aggressive for this aesthetic
+- Never use border-2 or thicker -- only hairline borders
+- Never use visible shadows (shadow-lg/xl) -- elements float without weight
+- Never use dark or black backgrounds
+- Never use sharp corners (rounded-none) -- always gentle rounded-lg/xl
+- Never crowd sections together -- maintain extreme breathing room
+- Never use fast, abrupt interaction transitions under 200ms
+
+## Layout Archetypes
+- `landing-hero-centered`: Centered headline, subtitle, and CTA. Clean and focused.
+- `landing-hero-split`: Text on left, image/visual on right. Great for product showcases.
+- `landing-hero-fullscreen`: Full viewport hero with background image or color. High impact.
+- `landing-video-hero`: Full-screen video background with overlay text. High impact for product demos.
+- `landing-saas-pricing`: Complete SaaS pricing page with hero, pricing tiers, FAQ, and CTA.
+- `landing-waitlist`: Minimal pre-launch page with email collection and countdown.
+
+## Example Usage
+
+```
+Generate a landing page with:
+- Style: japanese-fresh
+- Archetype: landing-hero-centered
+- Sections: hero, features, cta, footer
+- Components: heading (hero variant), button (primary, lg), card (default)
+```
+
+### Example Prompts:
+- "静谧日记"
+- "SaaS 着陆页"
+- "作品集展示"
+
+---
+Generated by StyleKit · https://stylekit.dev
+Style: 日系清新风 (Japanese Fresh)

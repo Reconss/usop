@@ -1,0 +1,195 @@
+# Design Kungfu Style Database
+#
+# 纯数据查表，供 AI 代理在推荐阶段读取。所有 slug 都对应 styles/<slug>.md。
+# 数据源：StyleKit (https://github.com/AnxForever/stylekit)
+#
+# Last cleaned: 2026-04-20 (P1: 迁移自 database.js，格式改为 YAML)
+
+# ==================== 产品类型 → 风格 ====================
+
+product_types:
+  saas:
+    primary: [minimalist-flat, vercel-style, linear-style]
+    secondary: [soft-ui, corporate-clean, bento-grid]
+    reasoning: SaaS 产品需要专业、可信赖的设计，Vercel 和 Linear 风格是行业标准
+
+  micro-saas:
+    primary: [minimalist-flat, soft-ui]
+    secondary: [bento-grid, neo-brutalist-playful]
+    reasoning: 微型 SaaS 需要快速传达价值，单一强调色 + 极简布局最有效
+
+  ecommerce:
+    primary: [airbnb-style, corporate-clean, minimalist-flat]
+    secondary: [apple-style, soft-ui, card-stack]
+    reasoning: 电商需要突出产品，Airbnb 风格的摄影驱动设计非常适合
+
+  fintech:
+    primary: [stripe-style, corporate-clean]
+    secondary: [glassmorphism, minimalist-flat]
+    reasoning: 金融科技需要传达信任和稳定，Stripe 风格是行业标杆
+
+  healthcare:
+    primary: [soft-ui, minimalist-flat]
+    secondary: [corporate-clean, apple-style]
+    reasoning: 医疗健康需要平易近人，柔和的圆角和镇静的配色最佳
+
+  edtech:
+    primary: [notion-style, soft-ui, bento-grid]
+    secondary: [neo-brutalist-playful, minimalist-flat]
+    reasoning: 教育科技需要友好且结构化，Notion 风格的工作空间感很适合
+
+  devtools:
+    primary: [vercel-style, supabase-style, cursor-style]
+    secondary: [raycast-style, dark-mode, neo-brutalist]
+    reasoning: 开发者工具偏好深色模式和代码友好的设计，Vercel、Supabase、Cursor、Raycast 是标杆
+
+  ai-ml:
+    primary: [claude-style, cursor-style]
+    secondary: [glassmorphism, dark-mode]
+    reasoning: AI/ML 产品需要知性友好的设计，Claude、Cursor 风格是最佳实践
+
+  web3:
+    primary: [dark-mode, cyberpunk-neon]
+    secondary: [glassmorphism, neo-brutalist]
+    reasoning: Web3 常用深色主题和霓虹强调色，传达去中心化和未来感
+
+  gaming:
+    primary: [cyberpunk-neon, dark-mode]
+    secondary: [neo-brutalist, comic-style]
+    reasoning: 游戏产品偏好大胆对比和动态效果
+
+  productivity:
+    primary: [linear-style, notion-style, raycast-style]
+    secondary: [minimalist-flat, soft-ui, cal-style]
+    reasoning: 效率工具需要专注和流畅的体验，Linear、Notion、Raycast 是行业标杆
+
+  design-tools:
+    primary: [figma-style, framer-style]
+    secondary: [glassmorphism, neo-brutalist, clay-style]
+    reasoning: 设计工具需要创意和专业的平衡，Figma、Framer 风格是最佳参考
+
+  media-streaming:
+    primary: [spotify-style]
+    secondary: [dark-mode, glassmorphism, modern-gradient]
+    reasoning: 媒体流媒体需要沉浸式体验，Spotify 风格是行业标杆
+
+  automotive:
+    primary: [bmw-style]
+    secondary: [dark-mode, editorial]
+    reasoning: 汽车品牌需要高端和力量感，BMW 风格是最佳参考
+
+  database:
+    primary: [supabase-style]
+    secondary: [vercel-style, dark-mode]
+    reasoning: 数据库产品需要技术感和可靠性，Supabase 风格是最佳参考
+
+  documentation:
+    primary: [notion-style]
+    secondary: [minimalist-flat, soft-ui]
+    reasoning: 文档平台需要阅读优化和清晰结构，Notion 风格是最佳参考
+
+  analytics:
+    primary: [linear-style]
+    secondary: [dark-mode, bento-grid]
+    reasoning: 分析工具需要数据密集和清晰可视化，Linear 风格是最佳参考
+
+  collaboration:
+    primary: [figma-style, linear-style]
+    secondary: [notion-style, soft-ui]
+    reasoning: 协作工具需要友好和高效，Figma、Linear 风格是最佳参考
+
+  portfolio:
+    primary: [minimalist-flat, editorial]
+    secondary: [bento-grid, art-deco]
+    reasoning: 个人作品集需要突出内容，留白和排版是关键
+
+  blog:
+    primary: [editorial, minimalist-flat]
+    secondary: [swiss-style, apple-style]
+    reasoning: 博客需要注重阅读体验，排版驱动的设计最佳
+
+  dashboard:
+    primary: [bento-grid, dashboard-layout]
+    secondary: [corporate-clean, minimalist-flat]
+    reasoning: 仪表板需要信息密度和清晰层级，网格布局最实用
+
+# ==================== 品牌调性 → 风格 ====================
+
+brand_moods:
+  professional:
+    styles: [corporate-clean, minimalist-flat, editorial]
+    keywords: [专业, 信任, 稳定, 企业]
+    colors: [blue, gray, navy]
+
+  playful:
+    styles: [neo-brutalist-playful, bento-grid, soft-ui]
+    keywords: [活泼, 有趣, 友好, 色彩]
+    colors: [pink, yellow, cyan, orange]
+
+  luxury:
+    styles: [glassmorphism, editorial, neumorphism]
+    keywords: [奢华, 优雅, 精致, 高级]
+    colors: [gold, black, cream, burgundy]
+
+  minimal:
+    styles: [minimalist-flat, bento-grid, corporate-clean]
+    keywords: [极简, 简洁, 清晰, 功能]
+    colors: [black, white, gray, beige]
+
+  bold:
+    styles: [neo-brutalist, cyberpunk-neon, neo-brutalist-playful]
+    keywords: [大胆, 强烈, 对比, 冲击]
+    colors: [neon, high-contrast, black, white]
+
+# ==================== 目标受众 → 风格 ====================
+
+audiences:
+  enterprise:
+    styles: [corporate-clean, minimalist-flat, editorial, linear-style]
+    considerations: 注重专业性、可扩展性和可维护性，Linear 风格非常适合企业级 SaaS
+
+  consumer:
+    styles: [soft-ui, glassmorphism, bento-grid, airbnb-style]
+    considerations: 注重易用性和视觉吸引力，Airbnb 风格适合消费者产品
+
+  developer:
+    styles: [vercel-style, supabase-style, cursor-style, raycast-style, dark-mode, neo-brutalist, minimalist-flat]
+    considerations: 偏好深色模式、代码友好、信息密度，Vercel、Supabase、Cursor、Raycast 是开发者首选
+
+  creative:
+    styles: [figma-style, framer-style, clay-style, neo-brutalist-playful, glassmorphism, editorial]
+    considerations: 注重视觉表现和创意灵活性，Figma、Framer、Clay 风格是创意人士的最爱
+
+  productivity-users:
+    styles: [linear-style, notion-style, raycast-style, cal-style, minimalist-flat]
+    considerations: 注重效率和专注，Linear、Notion、Raycast 风格是生产力用户的首选
+
+  fintech-users:
+    styles: [stripe-style, corporate-clean, minimalist-flat]
+    considerations: 注重信任和安全感，Stripe 风格适合金融科技用户
+
+# ==================== 品牌深度参考（references/） ====================
+#
+# 这里列出的条目指向 references/<brand>.md（叙事性设计系统文档），
+# **不是** styles/ 里的 Tailwind token 文件，**不参与三维打分**。
+#
+# 使用场景：
+# - 用户点名某个品牌（"做个类似 Tesla 的落地页"）→ 读 references/tesla.md
+# - 用户要做品牌视觉调研 / 高保真还原 / 深度色彩系统理解
+# - 某个类别在 product_types 里覆盖不够，需要补充参考
+
+brand_references:
+  automotive: [tesla, ferrari, lamborghini, bugatti, renault]
+  fintech: [mastercard, binance, coinbase, kraken, revolut, wise]
+  ai-ml: [cohere, mistral-ai, x-ai, minimax, together-ai, replicate, runwayml, elevenlabs, ollama, nvidia]
+  devtools: [clickhouse, composio, hashicorp, mongodb, sentry, posthog, resend, warp, opencode-ai, mintlify, lovable, expo, sanity, webflow, voltagent]
+  productivity: [linear-app, miro, superhuman, intercom, zapier]
+  ecommerce: [shopify]
+  telecom: [vodafone]
+  enterprise: [ibm]
+  social-media: [meta, pinterest]
+  mobility: [uber]
+  gaming: [playstation]
+  lifestyle: [nike, starbucks]
+  aerospace: [spacex]
+  editorial: [theverge, wired]
