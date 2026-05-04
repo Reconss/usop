@@ -1,39 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Search, Filter, Download, Shield, Server, AlertTriangle, CheckCircle,
-  XCircle, Clock, ExternalLink, Bell, RefreshCw, Calendar, ChevronDown,
-  MoreHorizontal, ArrowRight, Laptop, Cloud, Wifi, Eye, Trash2, CheckSquare
+  Search, Download, CheckCircle, XCircle, Clock, Bell, RefreshCw, Eye,
+  Play, EyeOff, UserCheck, AlertCircle, Zap, ArrowUpDown, AlertTriangle
 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import type { SecurityEvent } from '../types';
-
-interface AlertSource {
-  id: string;
-  name: string;
-  type: 'firewall' | 'ids' | 'edr' | 'cloud' | 'network' | 'endpoint';
-  icon: React.ElementType;
-  color: string;
-  count: number;
-  lastUpdate: string;
-}
-
-const sourceIconMap: Record<string, React.ElementType> = {
-  '边界防火墙': Shield,
-  '入侵检测系统': AlertTriangle,
-  '终端安全EDR': Laptop,
-  '云安全中心': Cloud,
-  '网络流量分析': Wifi,
-  '服务器监控': Server
-};
-
-const sourceColorMap: Record<string, string> = {
-  '边界防火墙': '#2F6BFF',
-  '入侵检测系统': '#FF9A3C',
-  '终端安全EDR': '#10B981',
-  '云安全中心': '#3B82F6',
-  '网络流量分析': '#8B5CF6',
-  '服务器监控': '#F2545B'
-};
 
 const severityConfig = {
   critical: { color: 'bg-rose-500', text: 'text-rose-400', bg: 'bg-rose-500/10', label: '危急' },
@@ -61,7 +33,6 @@ const mockAlerts: SecurityEvent[] = [
     status: 'new',
     eventType: '网络入侵',
     description: '边界防火墙检测到工作站尝试连接已知恶意IP',
-    source: '边界防火墙'
   },
   {
     id: 'IDS-2026-045',
@@ -74,7 +45,6 @@ const mockAlerts: SecurityEvent[] = [
     status: 'new',
     eventType: 'Web攻击',
     description: 'IDS检测到针对Web服务器的SQL注入攻击模式',
-    source: '入侵检测系统'
   },
   {
     id: 'EDR-2026-128',
@@ -87,29 +57,73 @@ const mockAlerts: SecurityEvent[] = [
     status: 'investigating',
     eventType: '恶意软件',
     description: 'EDR检测到可疑进程执行和文件修改行为',
-    source: '终端安全EDR'
   }
 ];
 
+// 告警分诊统计类型
+interface TriageStats {
+  pending: number;      // 待分诊
+  critical: number;     // 危急告警
+  investigating: number; // 调查中
+  falsePositive: number; // 误报
+  resolved: number;     // 已处理
+}
+
 export default function SecurityAlerts() {
+  const navigate = useNavigate();
   const [alerts, setAlerts] = useState<SecurityEvent[]>(mockAlerts);
   const [selectedAlerts, setSelectedAlerts] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [severityFilter, setSeverityFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [sourceFilter, setSourceFilter] = useState<string>('all');
   const [showDetail, setShowDetail] = useState<SecurityEvent | null>(null);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
-  const [confirmAction, setConfirmAction] = useState<'close' | 'false_positive' | 'delete'>('close');
-  const [isLoading, setIsLoading] = useState(false);
+  const [confirmAction, setConfirmAction] = useState<'close' | 'false_positive' | 'delete' | 'create_event' | 'observe'>('close');
+  const [activeTab, setActiveTab] = useState<'all' | 'pending' | 'critical' | 'investigating'>('all');
+  const [sortBy, setSortBy] = useState<'severity' | 'time' | 'confidence'>('severity');
 
-  const filteredAlerts = alerts.filter(a => {
-    if (searchQuery && !a.title.toLowerCase().includes(searchQuery.toLowerCase()) && !a.id.toLowerCase().includes(searchQuery.toLowerCase())) return false;
-    if (severityFilter !== 'all' && a.severity !== severityFilter) return false;
-    if (statusFilter !== 'all' && a.status !== statusFilter) return false;
-    if (sourceFilter !== 'all' && a.source !== sourceFilter) return false;
-    return true;
-  });
+  // 计算分诊统计数据
+  const triageStats: TriageStats = useMemo(() => ({
+    pending: alerts.filter(a => a.status === 'new').length,
+    critical: alerts.filter(a => a.severity === 'critical').length,
+    investigating: alerts.filter(a => a.status === 'investigating').length,
+    falsePositive: alerts.filter(a => a.status === 'false_positive').length,
+    resolved: alerts.filter(a => a.status === 'closed').length
+  }), [alerts]);
+
+  // 排序和筛选逻辑
+  const filteredAlerts = useMemo(() => {
+    let result = alerts.filter(a => {
+      // 搜索过滤
+      if (searchQuery && !a.title.toLowerCase().includes(searchQuery.toLowerCase()) && !a.id.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+      // 严重度过滤
+      if (severityFilter !== 'all' && a.severity !== severityFilter) return false;
+      // 状态过滤
+      if (statusFilter !== 'all' && a.status !== statusFilter) return false;
+      // Tab 过滤
+      if (activeTab === 'pending' && a.status !== 'new') return false;
+      if (activeTab === 'critical' && a.severity !== 'critical') return false;
+      if (activeTab === 'investigating' && a.status !== 'investigating') return false;
+      return true;
+    });
+
+    // 排序
+    const severityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
+    result.sort((a, b) => {
+      switch (sortBy) {
+        case 'severity':
+          return severityOrder[a.severity] - severityOrder[b.severity];
+        case 'time':
+          return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime();
+        case 'confidence':
+          return b.confidence - a.confidence;
+        default:
+          return 0;
+      }
+    });
+
+    return result;
+  }, [alerts, searchQuery, severityFilter, statusFilter, activeTab, sortBy]);
 
   const toggleSelectAll = () => {
     if (selectedAlerts.length === filteredAlerts.length) {
@@ -117,6 +131,34 @@ export default function SecurityAlerts() {
     } else {
       setSelectedAlerts(filteredAlerts.map(a => a.id));
     }
+  };
+
+  // 快捷操作处理
+  const handleQuickAction = (action: 'create_event' | 'false_positive' | 'observe' | 'investigating') => {
+    setIsLoading(true);
+    setTimeout(() => {
+      if (selectedAlerts.length > 0) {
+        let newStatus: SecurityEvent['status'] = 'new';
+        switch (action) {
+          case 'false_positive':
+            newStatus = 'false_positive';
+            break;
+          case 'observe':
+          case 'investigating':
+            newStatus = 'investigating';
+            break;
+        }
+        setAlerts(prev => prev.map(a => 
+          selectedAlerts.includes(a.id) ? { ...a, status: newStatus } : a
+        ));
+        setSelectedAlerts([]);
+      }
+      setIsLoading(false);
+      // 如果是创建事件，跳转到事件工作区
+      if (action === 'create_event') {
+        navigate('/detection/events');
+      }
+    }, 300);
   };
 
   const handleBatchAction = (action: 'closed' | 'false_positive' | 'deleted') => {
@@ -133,23 +175,124 @@ export default function SecurityAlerts() {
     }, 500);
   };
 
-  const openConfirmModal = (action: 'close' | 'false_positive' | 'delete') => {
+  const openConfirmModal = (action: 'close' | 'false_positive' | 'delete' | 'create_event' | 'observe') => {
     setConfirmAction(action);
     setShowConfirmModal(true);
   };
 
+  const [isLoading, setIsLoading] = useState(false);
+
   return (
     <div className="space-y-6">
+      {/* 告警分诊统计面板 */}
+      <div className="grid grid-cols-5 gap-4">
+        <motion.div
+          whileHover={{ scale: 1.02 }}
+          className={`glass-card rounded-xl p-4 cursor-pointer transition-all ${activeTab === 'pending' ? 'ring-2 ring-primary' : ''}`}
+          onClick={() => setActiveTab(activeTab === 'pending' ? 'all' : 'pending')}
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg bg-amber-500/10 flex items-center justify-center">
+              <AlertCircle className="w-5 h-5 text-amber-400" />
+            </div>
+            <div>
+              <div className="text-2xl font-bold text-text-primary">{triageStats.pending}</div>
+              <div className="text-xs text-text-muted">待分诊</div>
+            </div>
+          </div>
+        </motion.div>
+
+        <motion.div
+          whileHover={{ scale: 1.02 }}
+          className={`glass-card rounded-xl p-4 cursor-pointer transition-all ${activeTab === 'critical' ? 'ring-2 ring-rose-500' : ''}`}
+          onClick={() => setActiveTab(activeTab === 'critical' ? 'all' : 'critical')}
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg bg-rose-500/10 flex items-center justify-center">
+              <AlertTriangle className="w-5 h-5 text-rose-400" />
+            </div>
+            <div>
+              <div className="text-2xl font-bold text-text-primary">{triageStats.critical}</div>
+              <div className="text-xs text-text-muted">危急告警</div>
+            </div>
+          </div>
+        </motion.div>
+
+        <motion.div
+          whileHover={{ scale: 1.02 }}
+          className={`glass-card rounded-xl p-4 cursor-pointer transition-all ${activeTab === 'investigating' ? 'ring-2 ring-blue-500' : ''}`}
+          onClick={() => setActiveTab(activeTab === 'investigating' ? 'all' : 'investigating')}
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg bg-blue-500/10 flex items-center justify-center">
+              <Clock className="w-5 h-5 text-blue-400" />
+            </div>
+            <div>
+              <div className="text-2xl font-bold text-text-primary">{triageStats.investigating}</div>
+              <div className="text-xs text-text-muted">调查中</div>
+            </div>
+          </div>
+        </motion.div>
+
+        <motion.div
+          whileHover={{ scale: 1.02 }}
+          className="glass-card rounded-xl p-4"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg bg-gray-500/10 flex items-center justify-center">
+              <EyeOff className="w-5 h-5 text-gray-400" />
+            </div>
+            <div>
+              <div className="text-2xl font-bold text-text-primary">{triageStats.falsePositive}</div>
+              <div className="text-xs text-text-muted">误报</div>
+            </div>
+          </div>
+        </motion.div>
+
+        <motion.div
+          whileHover={{ scale: 1.02 }}
+          className="glass-card rounded-xl p-4"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center">
+              <CheckCircle className="w-5 h-5 text-emerald-400" />
+            </div>
+            <div>
+              <div className="text-2xl font-bold text-text-primary">{triageStats.resolved}</div>
+              <div className="text-xs text-text-muted">已处理</div>
+            </div>
+          </div>
+        </motion.div>
+      </div>
+
       <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold text-text-primary">安全告警</h1>
-          <p className="text-sm text-text-secondary mt-1">实时监控和处理安全告警事件</p>
+        <div className="flex items-center gap-4">
+          <div>
+            <h1 className="text-2xl font-semibold text-text-primary">告警分诊</h1>
+            <p className="text-sm text-text-secondary mt-1">实时监控和处理安全告警事件</p>
+          </div>
+          {/* 排序选择 */}
+          <div className="flex items-center gap-2 ml-4">
+            <ArrowUpDown className="w-4 h-4 text-text-muted" />
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as any)}
+              className="px-3 py-1.5 bg-page-bg border border-border-color rounded-lg text-sm text-text-primary"
+            >
+              <option value="severity">按严重度</option>
+              <option value="time">按时间</option>
+              <option value="confidence">按置信度</option>
+            </select>
+          </div>
         </div>
         <div className="flex items-center gap-3">
           <button className="flex items-center gap-2 px-4 py-2 bg-card-bg border border-border-color rounded-lg text-text-secondary hover:bg-white/5 transition-colors">
             <Download className="w-4 h-4" />导出
           </button>
-          <button className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors">
+          <button
+            onClick={() => setAlerts(mockAlerts)}
+            className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
+          >
             <RefreshCw className="w-4 h-4" />刷新
           </button>
         </div>
@@ -194,25 +337,51 @@ export default function SecurityAlerts() {
         <motion.div
           initial={{ opacity: 0, y: -10 }}
           animate={{ opacity: 1, y: 0 }}
-          className="flex items-center gap-3 p-3 bg-primary/10 border border-primary/20 rounded-xl"
+          className="flex items-center gap-3 p-4 bg-gradient-to-r from-primary/10 to-primary/5 border border-primary/20 rounded-xl"
         >
-          <span className="text-sm text-primary">已选择 {selectedAlerts.length} 项</span>
+          <span className="text-sm text-primary font-medium">已选择 {selectedAlerts.length} 项</span>
+          <div className="h-6 w-px bg-border-color" />
+          <div className="flex items-center gap-2">
+            {/* 快捷操作按钮 */}
+            <button
+              onClick={() => handleQuickAction('create_event')}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-rose-600 text-white rounded-lg hover:bg-rose-700 transition-colors"
+            >
+              <Zap className="w-3.5 h-3.5" />
+              确认为事件
+            </button>
+            <button
+              onClick={() => handleQuickAction('investigating')}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+            >
+              <UserCheck className="w-3.5 h-3.5" />
+              开始调查
+            </button>
+            <button
+              onClick={() => handleQuickAction('observe')}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors"
+            >
+              <Eye className="w-3.5 h-3.5" />
+              加入观察
+            </button>
+            <button
+              onClick={() => openConfirmModal('false_positive')}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
+            >
+              <XCircle className="w-3.5 h-3.5" />
+              标记误报
+            </button>
+          </div>
           <div className="flex-1" />
           <button
             onClick={() => openConfirmModal('close')}
-            className="px-3 py-1.5 text-xs bg-emerald-600 text-white rounded-lg hover:bg-emerald-700"
+            className="px-3 py-1.5 text-xs bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
           >
             批量关闭
           </button>
           <button
-            onClick={() => openConfirmModal('false_positive')}
-            className="px-3 py-1.5 text-xs bg-gray-600 text-white rounded-lg hover:bg-gray-700"
-          >
-            标记误报
-          </button>
-          <button
             onClick={() => openConfirmModal('delete')}
-            className="px-3 py-1.5 text-xs bg-rose-600 text-white rounded-lg hover:bg-rose-700"
+            className="px-3 py-1.5 text-xs bg-rose-600 text-white rounded-lg hover:bg-rose-700 transition-colors"
           >
             批量删除
           </button>
@@ -273,7 +442,7 @@ export default function SecurityAlerts() {
                     {severityConfig[alert.severity].label}
                   </span>
                 </td>
-                <td className="p-4 text-sm text-text-secondary">{alert.source}</td>
+                <td className="p-4 text-sm text-text-secondary">{alert.sourceIp}</td>
                 <td className="p-4">
                   <span className={`inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded ${statusConfig[alert.status].bg} ${statusConfig[alert.status].color}`}>
                     {statusConfig[alert.status].label}
@@ -284,9 +453,33 @@ export default function SecurityAlerts() {
                 </td>
                 <td className="p-4">
                   <div className="flex items-center gap-1">
+                    {/* 确认为事件 */}
+                    <button
+                      onClick={() => {
+                        setSelectedAlerts([alert.id]);
+                        handleQuickAction('create_event');
+                      }}
+                      className="p-1.5 text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors"
+                      title="确认为事件"
+                    >
+                      <Zap className="w-4 h-4" />
+                    </button>
+                    {/* 开始调查 */}
+                    <button
+                      onClick={() => {
+                        setSelectedAlerts([alert.id]);
+                        handleQuickAction('investigating');
+                      }}
+                      className="p-1.5 text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors"
+                      title="开始调查"
+                    >
+                      <Play className="w-4 h-4" />
+                    </button>
+                    {/* 查看详情 */}
                     <button
                       onClick={() => setShowDetail(alert)}
                       className="p-1.5 text-text-muted hover:text-primary hover:bg-primary/10 rounded-lg transition-colors"
+                      title="查看详情"
                     >
                       <Eye className="w-4 h-4" />
                     </button>
@@ -380,7 +573,7 @@ export default function SecurityAlerts() {
                 </div>
                 <h3 className="text-lg font-semibold text-text-primary mb-2">确认操作</h3>
                 <p className="text-text-secondary text-sm mb-4">
-                  确定要{confirmAction === 'close' ? '关闭' : confirmAction === 'false_positive' ? '标记为误报' : '删除'}选中的 {selectedAlerts.length} 条告警吗？
+                  确定要{confirmAction === 'close' ? '关闭' : confirmAction === 'false_positive' ? '标记为误报' : confirmAction === 'create_event' ? '确认为事件' : confirmAction === 'observe' ? '加入观察' : '删除'}选中的 {selectedAlerts.length} 条告警吗？
                 </p>
               </div>
               <div className="flex gap-3">

@@ -6,8 +6,10 @@ import {
   ShieldAlert,
   Server,
   RefreshCw,
-  Loader2
+  Loader2,
+  ArrowRight
 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { dashboardApi } from '../services/api';
 import MetricCard from '../components/MetricCard';
 import EventTrendChart from '../components/EventTrendChart';
@@ -48,9 +50,11 @@ const defaultRiskAssets = [
 ];
 
 const Dashboard: React.FC = () => {
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdate, setLastUpdate] = useState(new Date());
+  const [hoveredCard, setHoveredCard] = useState<string | null>(null);
   
   // 数据状态
   const [metrics, setMetrics] = useState(defaultMetrics);
@@ -136,11 +140,29 @@ const Dashboard: React.FC = () => {
     setLastUpdate(new Date());
   };
 
+  // 指标卡片点击处理
+  const handleCardClick = (cardType: string) => {
+    switch (cardType) {
+      case 'alerts':
+        navigate('/detection/investigation?status=new&severity=all');
+        break;
+      case 'events':
+        navigate('/detection/events?status=open');
+        break;
+      case 'assets':
+        navigate('/assets/inventory');
+        break;
+      case 'risk':
+        navigate('/assets/inventory?risk=high');
+        break;
+    }
+  };
+
   const metricCards = [
-    { title: '今日告警数', value: (metrics.todayAlerts || 0).toLocaleString(), trend: metrics.alertsTrend || 0, icon: AlertCircle, color: '#6366f1' },
-    { title: '待处理事件', value: (metrics.pendingEvents || 0).toString(), trend: metrics.pendingTrend || 0, icon: Activity, color: '#f97316' },
-    { title: '资产数量', value: (metrics.totalAssets || 0).toLocaleString(), trend: metrics.assetsTrend || 0, icon: Server, color: '#10b981' },
-    { title: '高危资产', value: (metrics.highRiskAssets || 0).toString(), trend: metrics.healthTrend || 0, icon: ShieldAlert, color: '#ef4444' }
+    { id: 'alerts', title: '今日告警数', value: (metrics.todayAlerts || 0).toLocaleString(), trend: metrics.alertsTrend || 0, icon: AlertCircle, color: '#6366f1', link: '/detection/investigation' },
+    { id: 'events', title: '待处理事件', value: (metrics.pendingEvents || 0).toString(), trend: metrics.pendingTrend || 0, icon: Activity, color: '#f97316', link: '/detection/events' },
+    { id: 'assets', title: '资产数量', value: (metrics.totalAssets || 0).toLocaleString(), trend: metrics.assetsTrend || 0, icon: Server, color: '#10b981', link: '/assets/inventory' },
+    { id: 'risk', title: '高危资产', value: (metrics.highRiskAssets || 0).toString(), trend: metrics.healthTrend || 0, icon: ShieldAlert, color: '#ef4444', link: '/assets/inventory' }
   ];
 
   if (loading) {
@@ -175,8 +197,27 @@ const Dashboard: React.FC = () => {
 
       <div className="grid grid-cols-4 gap-4">
         {metricCards.map((metric, index) => (
-          <motion.div key={metric.title} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.1 }}>
-            <MetricCard title={metric.title} value={metric.value} icon={metric.icon} color={metric.color} trend={metric.trend} />
+          <motion.div
+            key={metric.id}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: index * 0.1 }}
+            className="relative"
+            onMouseEnter={() => setHoveredCard(metric.id)}
+            onMouseLeave={() => setHoveredCard(null)}
+          >
+            <div onClick={() => handleCardClick(metric.id)} className="cursor-pointer">
+              <MetricCard title={metric.title} value={metric.value} icon={metric.icon} color={metric.color} trend={metric.trend} />
+            </div>
+            {/* 悬停时显示跳转提示 */}
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: hoveredCard === metric.id ? 1 : 0, y: hoveredCard === metric.id ? 0 : 10 }}
+              className="absolute bottom-2 right-2 flex items-center gap-1 text-xs text-primary"
+            >
+              <span>点击查看</span>
+              <ArrowRight className="w-3 h-3" />
+            </motion.div>
           </motion.div>
         ))}
       </div>

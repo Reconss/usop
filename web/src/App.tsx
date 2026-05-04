@@ -18,13 +18,17 @@ import RoleManagement from './pages/RoleManagement';
 import GlobalConfig from './pages/GlobalConfig';
 import VulnerabilityManagement from './pages/VulnerabilityManagement';
 import VulnerabilityAssessment from './pages/VulnerabilityAssessment';
+import NotificationSettings from './pages/NotificationSettings';
 import Login from './pages/Login';
 import Profile from './pages/Profile';
 import Settings from './pages/Settings';
 
 function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  // 从 localStorage 恢复登录状态
+  const [isAuthenticated, setIsAuthenticated] = useState(() => {
+    return !!localStorage.getItem('token');
+  });
 
   if (!isAuthenticated) {
     return (
@@ -63,6 +67,7 @@ function App() {
               <Route path="/vulnerabilities/application" element={<VulnerabilityManagement type="application" />} />
               <Route path="/vulnerabilities/assessment" element={<VulnerabilityAssessment />} />
               <Route path="/vulnerabilities" element={<Navigate to="/vulnerabilities/host" replace />} />
+              <Route path="/system/notifications" element={<NotificationSettings />} />
               <Route path="/profile" element={<Profile />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="/login" element={<Navigate to="/" replace />} />

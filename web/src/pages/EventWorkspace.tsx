@@ -1068,11 +1068,53 @@ export default function EventWorkspace() {
                     )}
                   </div>
 
+                  {/* 剧本执行进度展示 */}
+                  {executingPlaybook && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      className="mt-3 p-3 bg-purple-500/10 border border-purple-500/20 rounded-lg"
+                    >
+                      <div className="flex items-center gap-3 mb-2">
+                        <Loader2 className="w-4 h-4 text-purple-400 animate-spin" />
+                        <span className="text-sm text-purple-300">剧本执行中...</span>
+                      </div>
+                      {/* 进度条 */}
+                      <div className="h-1.5 bg-purple-500/20 rounded-full overflow-hidden">
+                        <motion.div
+                          className="h-full bg-purple-500 rounded-full"
+                          initial={{ width: '0%' }}
+                          animate={{ width: '100%' }}
+                          transition={{ duration: 3, ease: 'linear' }}
+                        />
+                      </div>
+                      <div className="flex justify-between mt-2 text-xs text-purple-300/70">
+                        <span>正在执行自动化处置...</span>
+                        <span>预计 3 秒</span>
+                      </div>
+                    </motion.div>
+                  )}
+
                   {/* 执行结果提示 */}
                   {playbookResults && Object.keys(playbookResults).length > 0 && (
-                    <div className="mt-3 p-2 bg-purple-500/10 border border-purple-500/20 rounded-lg text-xs text-purple-300">
-                      已执行 {Object.keys(playbookResults).length} 个剧本
-                    </div>
+                    <motion.div
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      className="mt-3 p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-lg"
+                    >
+                      <div className="flex items-center gap-2 mb-2">
+                        <CheckCircle className="w-4 h-4 text-emerald-400" />
+                        <span className="text-sm text-emerald-300">已执行 {Object.keys(playbookResults).length} 个剧本</span>
+                      </div>
+                      <div className="text-xs text-emerald-300/70 space-y-1">
+                        {Object.entries(playbookResults).map(([id, result]: [string, any]) => (
+                          <div key={id} className="flex items-center gap-2">
+                            <div className="w-1.5 h-1.5 bg-emerald-400 rounded-full" />
+                            <span>{result?.message || result?.result || '执行成功'}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </motion.div>
                   )}
                 </div>
 
