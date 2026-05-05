@@ -1,19 +1,14 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, Search, Edit2, Trash2, UserCheck, UserX, X, Mail, Shield, Key, Eye, EyeOff } from 'lucide-react';
+import { Plus, Search, Edit2, Trash2, UserCheck, UserX, X, Mail, Shield, Key, Eye, EyeOff, RefreshCw } from 'lucide-react';
 import type { User } from '../types';
-
-const mockUsers: User[] = [
-  { id: '1', username: 'admin', role: '超级管理员', email: 'admin@company.com', lastLogin: '2026-04-27T10:00:00Z', status: 'active' },
-  { id: '2', username: 'analyst01', role: '安全分析师', email: 'analyst01@company.com', lastLogin: '2026-04-27T09:30:00Z', status: 'active' },
-  { id: '3', username: 'operator01', role: '运营人员', email: 'operator01@company.com', lastLogin: '2026-04-26T18:00:00Z', status: 'active' },
-  { id: '4', username: 'guest01', role: '访客', email: 'guest01@company.com', lastLogin: '2026-04-25T14:00:00Z', status: 'inactive' }
-];
+import { userApi } from '../services/api';
 
 const roles = ['超级管理员', '安全分析师', '运营人员', '审计员', '访客'];
 
 export default function UserManagement() {
-  const [users, setUsers] = useState<User[]>(mockUsers);
+  const [users, setUsers] = useState<User[]>([]);
+  const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [showForm, setShowForm] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
@@ -25,6 +20,28 @@ export default function UserManagement() {
     password: '',
     confirmPassword: ''
   });
+
+  const fetchUsers = async () => {
+    setLoading(true);
+    try {
+      const res = await userApi.getUsers({ page_size: 100 });
+      if (res.success && res.data) {
+        const items = Array.isArray(res.data) ? res.data : res.data.items || [];
+        setUsers(items);
+      } else {
+        setUsers([]);
+      }
+    } catch (error) {
+      console.error('获取用户列表失败:', error);
+      setUsers([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchUsers();
+  }, []);
 
   const filteredUsers = users.filter(u =>
     u.username.toLowerCase().includes(searchTerm.toLowerCase()) ||

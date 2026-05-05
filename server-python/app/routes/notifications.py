@@ -6,7 +6,8 @@ from app.routes.auth import login_required
 notifications_bp = Blueprint('notifications', __name__)
 
 
-@notifications_bp.route('/', methods=['GET'])
+@notifications_bp.route('', methods=['GET'], strict_slashes=False)
+@notifications_bp.route('/', methods=['GET'], strict_slashes=False)
 @login_required
 def list_notifications():
     page = request.args.get('page', 1, type=int)

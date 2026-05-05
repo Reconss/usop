@@ -1,14 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, Play, Pause, RotateCcw, FileText, MoreHorizontal, X, Search, Filter, Download, Clock, Globe, Shield, Server, Target, Check, ChevronRight, Trash2, Edit2, Eye, Copy } from 'lucide-react';
+import { Plus, Play, Pause, RotateCcw, FileText, MoreHorizontal, X, Search, Filter, Download, Clock, Globe, Shield, Server, Target, Check, ChevronRight, Trash2, Edit2, Eye, Copy, RefreshCw } from 'lucide-react';
 import type { ScanTask } from '../types';
-
-const mockTasks: ScanTask[] = [
-  { id: 'SCAN-001', target: '192.168.1.0/24', type: '端口扫描', status: 'running', agent: 'agent-beijing-01', createdAt: '2026-04-27T10:00:00Z', progress: 65 },
-  { id: 'SCAN-002', target: 'web-server-01', type: 'Web指纹', status: 'completed', agent: 'agent-shanghai-01', createdAt: '2026-04-27T09:00:00Z', completedAt: '2026-04-27T09:15:00Z' },
-  { id: 'SCAN-003', target: '10.0.0.0/16', type: '服务识别', status: 'queued', agent: 'agent-beijing-02', createdAt: '2026-04-27T11:00:00Z' },
-  { id: 'SCAN-004', target: 'api-gateway', type: '漏洞扫描', status: 'failed', agent: 'agent-shanghai-02', createdAt: '2026-04-27T08:00:00Z' }
-];
+import { scansApi } from '../services/api';
 
 const getStatusBadge = (status: string) => {
   const styles: Record<string, string> = {
@@ -34,7 +28,8 @@ const scanTypes = [
 ];
 
 export default function ScanTasks() {
-  const [tasks, setTasks] = useState<ScanTask[]>(mockTasks);
+  const [tasks, setTasks] = useState<ScanTask[]>([]);
+  const [loading, setLoading] = useState(true);
   const [showNewTask, setShowNewTask] = useState(false);
   const [showDetail, setShowDetail] = useState(false);
   const [editingTask, setEditingTask] = useState<ScanTask | null>(null);
@@ -50,6 +45,28 @@ export default function ScanTasks() {
     threads: 100,
     timeout: 5
   });
+
+  const fetchTasks = async () => {
+    setLoading(true);
+    try {
+      const res = await scansApi.getScans({ page_size: 100 });
+      if (res.success && res.data) {
+        const items = Array.isArray(res.data) ? res.data : res.data.items || [];
+        setTasks(items);
+      } else {
+        setTasks([]);
+      }
+    } catch (error) {
+      console.error('获取扫描任务失败:', error);
+      setTasks([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchTasks();
+  }, []);
 
   const handleCreateTask = () => {
     if (!formData.target) return;

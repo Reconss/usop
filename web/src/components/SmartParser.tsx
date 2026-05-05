@@ -9,9 +9,10 @@ import {
   RefreshCw, Shield, Activity, Brain, Siren, ShieldCheck,
   Clock, Calendar, FileSearch, BarChart3, Target,
   HardDrive, Upload, Download, ShieldAlert,
-  Globe, Lock, Server, Check, LayoutGrid, Filter, Loader2
+  Globe, Lock, Server, Check, LayoutGrid, Filter, Loader2,
+  ArrowRight
 } from 'lucide-react';
-import { logTypesApi, dataSourcesApi, rulesApi } from '../services/api';
+import { logTypesApi, dataSourcesApi, rulesApi, alertFieldsApi, pipelineMappingsApi } from '../services/api';
 
 interface ParsePipeline {
   id?: number;
@@ -208,6 +209,293 @@ const generateSecurityEvent = (rule: DetectionRule, logData: Record<string, any>
 
 const getParserConfig = (parserId: string) => parserTypes.find(p => p.id === parserId) || parserTypes[0];
 
+// ==================== 安全告警标准字段映射表 ====================
+// 将原始日志中的常见字段名 映射为 TimescaleDB 告警表标准字段名 (snake_case)
+// 映射后的字段存入 DB 后，SecurityAlerts.tsx 的 fetchAlerts 会再次做 camelCase 转换
+
+interface FieldMappingRule {
+  targetField: string;       // 目标标准字段名 (DB 列名, snake_case)
+  displayLabel: string;      // 中文标签
+  priority: number;          // 优先级 (越小越优先，用于多源匹配)
+  isRequired: boolean;       // 是否告警必需字段 (自动选中)
+  category: string;          // 字段分类
+}
+
+// 原始字段名 → 映射规则 (支持模糊匹配)
+const SECURITY_FIELD_MAP: Record<string, FieldMappingRule[]> = {
+  // ====== 时间类 ======
+  'timestamp':        [{ targetField: 'timestamp',   displayLabel: '事件时间',    priority: 1, isRequired: true,  category: '时间' }],
+  '@timestamp':       [{ targetField: 'timestamp',   displayLabel: '事件时间',    priority: 1, isRequired: true,  category: '时间' }],
+  'time':             [{ targetField: 'timestamp',   displayLabel: '事件时间',    priority: 2, isRequired: true,  category: '时间' }],
+  'log_time':         [{ targetField: 'timestamp',   displayLabel: '事件时间',    priority: 3, isRequired: true,  category: '时间' }],
+  'event_time':       [{ targetField: 'timestamp',   displayLabel: '事件时间',    priority: 3, isRequired: true,  category: '时间' }],
+  'created_at':       [{ targetField: 'created_at',  displayLabel: '创建时间',    priority: 4, isRequired: false, category: '时间' }],
+
+  // ====== 源IP / 来源地址 (最高优先级) ======
+  'src_ip':           [{ targetField: 'src_ip',      displayLabel: '源地址',      priority: 1, isRequired: true,  category: '网络-五元组' }],
+  'source_ip':        [{ targetField: 'src_ip',      displayLabel: '源地址',      priority: 2, isRequired: true,  category: '网络-五元组' }],
+  'client_ip':        [{ targetField: 'src_ip',      displayLabel: '源地址',      priority: 3, isRequired: true,  category: '网络-五元组' }],
+  'remote_ip':        [{ targetField: 'src_ip',      displayLabel: '源地址',      priority: 4, isRequired: true,  category: '网络-五元组' }],
+  'ip':               [{ targetField: 'src_ip',      displayLabel: '源地址',      priority: 5, isRequired: true,  category: '网络-五元组' }],
+  'src_address':      [{ targetField: 'src_ip',      displayLabel: '源地址',      priority: 6, isRequired: true,  category: '网络-五元组' }],
+  'source_address':   [{ targetField: 'src_ip',      displayLabel: '源地址',      priority: 7, isRequired: true,  category: '网络-五元组' }],
+
+  // ====== 源端口 ======
+  'src_port':         [{ targetField: 'src_port',    displayLabel: '源端口',      priority: 1, isRequired: false, category: '网络-五元组' }],
+  'source_port':      [{ targetField: 'src_port',    displayLabel: '源端口',      priority: 2, isRequired: false, category: '网络-五元组' }],
+  'client_port':      [{ targetField: 'src_port',    displayLabel: '源端口',      priority: 3, isRequired: false, category: '网络-五元组' }],
+  'remote_port':      [{ targetField: 'src_port',    displayLabel: '源端口',      priority: 4, isRequired: false, category: '网络-五元组' }],
+  'sport':            [{ targetField: 'src_port',    displayLabel: '源端口',      priority: 5, isRequired: false, category: '网络-五元组' }],
+
+  // ====== 目标IP / 目的地址 ======
+  'dst_ip':           [{ targetField: 'dst_ip',      displayLabel: '目标地址',    priority: 1, isRequired: true,  category: '网络-五元组' }],
+  'dest_ip':          [{ targetField: 'dst_ip',      displayLabel: '目标地址',    priority: 2, isRequired: true,  category: '网络-五元组' }],
+  'destination_ip':   [{ targetField: 'dst_ip',      displayLabel: '目标地址',    priority: 3, isRequired: true,  category: '网络-五元组' }],
+  'server_ip':        [{ targetField: 'dst_ip',      displayLabel: '目标地址',    priority: 4, isRequired: true,  category: '网络-五元组' }],
+  'target_ip':        [{ targetField: 'dst_ip',      displayLabel: '目标地址',    priority: 5, isRequired: true,  category: '网络-五元组' }],
+  'dst_address':      [{ targetField: 'dst_ip',      displayLabel: '目标地址',    priority: 6, isRequired: true,  category: '网络-五元组' }],
+  'local_ip':         [{ targetField: 'dst_ip',      displayLabel: '目标地址',    priority: 7, isRequired: true,  category: '网络-五元组' }],
+
+  // ====== 目标端口 ======
+  'dst_port':         [{ targetField: 'dst_port',    displayLabel: '目标端口',    priority: 1, isRequired: false, category: '网络-五元组' }],
+  'dest_port':        [{ targetField: 'dst_port',    displayLabel: '目标端口',    priority: 2, isRequired: false, category: '网络-五元组' }],
+  'destination_port':[{ targetField: 'dst_port',    displayLabel: '目标端口',    priority: 3, isRequired: false, category: '网络-五元组' }],
+  'server_port':      [{ targetField: 'dst_port',    displayLabel: '目标端口',    priority: 4, isRequired: false, category: '网络-五元组' }],
+  'target_port':      [{ targetField: 'dst_port',    displayLabel: '目标端口',    priority: 5, isRequired: false, category: '网络-五元组' }],
+  'dport':            [{ targetField: 'dst_port',    displayLabel: '目标端口',    priority: 6, isRequired: false, category: '网络-五元组' }],
+  'port':             [{ targetField: 'dst_port',    displayLabel: '目标端口',    priority: 7, isRequired: false, category: '网络-五元组' }],
+
+  // ====== 协议 ======
+  'protocol':         [{ targetField: 'protocol',    displayLabel: '协议',        priority: 1, isRequired: false, category: '网络-五元组' }],
+  'proto':            [{ targetField: 'protocol',    displayLabel: '协议',        priority: 2, isRequired: false, category: '网络-五元组' }],
+  'transport':        [{ targetField: 'protocol',    displayLabel: '协议',        priority: 3, isRequired: false, category: '网络-五元组' }],
+
+  // ====== 严重度 (核心) ======
+  'severity':         [{ targetField: 'severity',    displayLabel: '严重程度',    priority: 1, isRequired: true,  category: '告警属性' }],
+  'severity_level':   [{ targetField: 'severity',    displayLabel: '严重程度',    priority: 2, isRequired: true,  category: '告警属性' }],
+  'severity_id':      [{ targetField: 'severity',    displayLabel: '严重程度',    priority: 3, isRequired: true,  category: '告警属性' }],
+  'level':            [{ targetField: 'severity',    displayLabel: '严重程度',    priority: 4, isRequired: true,  category: '告警属性' }],
+  'priority':         [{ targetField: 'severity',    displayLabel: '严重程度',    priority: 5, isRequired: true,  category: '告警属性' }],
+
+  // ====== 动作 (allow/block/drop) ======
+  'action':           [{ targetField: 'action',      displayLabel: '处置动作',    priority: 1, isRequired: false, category: '告警属性' }],
+  'act':              [{ targetField: 'action',      displayLabel: '处置动作',    priority: 2, isRequired: false, category: '告警属性' }],
+
+  // ====== 告警标题 / 名称 ======
+  'title':            [{ targetField: 'title',       displayLabel: '告警标题',    priority: 1, isRequired: true,  category: '告警属性' }],
+  'alert_name':       [{ targetField: 'title',       displayLabel: '告警标题',    priority: 2, isRequired: true,  category: '告警属性' }],
+  'event_name':       [{ targetField: 'title',       displayLabel: '告警标题',    priority: 3, isRequired: true,  category: '告警属性' }],
+  'rule_name':        [{ targetField: 'title',       displayLabel: '告警标题',    priority: 4, isRequired: true,  category: '告警属性' }],
+  'name':             [{ targetField: 'title',       displayLabel: '告警标题',    priority: 5, isRequired: true,  category: '告警属性' }],
+
+  // ====== 描述 ======
+  'description':      [{ targetField: 'description', displayLabel: '描述',        priority: 1, isRequired: false, category: '告警属性' }],
+  'desc':             [{ targetField: 'description', displayLabel: '描述',        priority: 2, isRequired: false, category: '告警属性' }],
+  'message':          [{ targetField: 'description', displayLabel: '描述',        priority: 3, isRequired: false, category: '告警属性' }],
+  'msg':              [{ targetField: 'description', displayLabel: '描述',        priority: 4, isRequired: false, category: '告警属性' }],
+  'detail':           [{ targetField: 'description', displayLabel: '描述',        priority: 5, isRequired: false, category: '告警属性' }],
+
+  // ====== 数据源产品类型 ======
+  'product':          [{ targetField: 'source_product', displayLabel: '数据源产品', priority: 1, isRequired: true,  category: '数据源' }],
+  'vendor':           [{ targetField: 'vendor',      displayLabel: '厂商',        priority: 2, isRequired: false, category: '数据源' }],
+  'device_vendor':    [{ targetField: 'vendor',      displayLabel: '厂商',        priority: 3, isRequired: false, category: '数据源' }],
+  'source':           [{ targetField: 'source_product', displayLabel: '数据源产品', priority: 4, isRequired: true,  category: '数据源' }],
+  'log_type':         [{ targetField: 'log_type',    displayLabel: '日志类型',    priority: 1, isRequired: false, category: '数据源' }],
+  'type':             [{ targetField: 'category',    displayLabel: '分类',        priority: 5, isRequired: false, category: '告警属性' }],
+  'event_type':       [{ targetField: 'category',    displayLabel: '分类',        priority: 1, isRequired: false, category: '告警属性' }],
+  'category':         [{ targetField: 'category',    displayLabel: '分类',        priority: 2, isRequired: false, category: '告警属性' }],
+
+  // ====== 规则ID / 签名 ======
+  'rule_id':          [{ targetField: 'rule_id',     displayLabel: '规则ID',      priority: 1, isRequired: false, category: '检测规则' }],
+  'attack_rule_id':   [{ targetField: 'rule_id',     displayLabel: '规则ID',      priority: 2, isRequired: false, category: '检测规则' }],
+  'signature_id':     [{ targetField: 'rule_id',     displayLabel: '规则ID',      priority: 3, isRequired: false, category: '检测规则' }],
+  'signature':        [{ targetField: 'rule_id',     displayLabel: '规则ID',      priority: 4, isRequired: false, category: '检测规则' }],
+  'alert_id':         [{ targetField: 'alert_code',  displayLabel: '告警编码',    priority: 1, isRequired: false, category: '检测规则' }],
+  'log_id':           [{ targetField: 'alert_code',  displayLabel: '告警编码',    priority: 2, isRequired: false, category: '检测规则' }],
+  'id':               [{ targetField: 'alert_code',  displayLabel: '告警编码',    priority: 3, isRequired: false, category: '检测规则' }],
+
+  // ====== HTTP 请求信息 ======
+  'method':           [{ targetField: 'method',      displayLabel: '请求方法',    priority: 1, isRequired: false, category: 'HTTP请求' }],
+  'http_method':      [{ targetField: 'method',      displayLabel: '请求方法',    priority: 2, isRequired: false, category: 'HTTP请求' }],
+  'request_method':   [{ targetField: 'method',      displayLabel: '请求方法',    priority: 3, isRequired: false, category: 'HTTP请求' }],
+  'url':              [{ targetField: 'url',         displayLabel: '请求URL',     priority: 1, isRequired: false, category: 'HTTP请求' }],
+  'uri':              [{ targetField: 'url',         displayLabel: '请求URL',     priority: 2, isRequired: false, category: 'HTTP请求' }],
+  'request_uri':      [{ targetField: 'url',         displayLabel: '请求URL',     priority: 3, isRequired: false, category: 'HTTP请求' }],
+  'path':             [{ targetField: 'url',         displayLabel: '请求URL',     priority: 4, isRequired: false, category: 'HTTP请求' }],
+  'user_agent':       [{ targetField: 'user_agent',  displayLabel: '用户代理',    priority: 1, isRequired: false, category: 'HTTP请求' }],
+  'ua':               [{ targetField: 'user_agent',  displayLabel: '用户代理',    priority: 2, isRequired: false, category: 'HTTP请求' }],
+  'http_user_agent':  [{ targetField: 'user_agent',  displayLabel: '用户代理',    priority: 3, isRequired: false, category: 'HTTP请求' }],
+  'response_code':    [{ targetField: 'response_code',displayLabel: '响应状态码',  priority: 1, isRequired: false, category: 'HTTP请求' }],
+  'status_code':      [{ targetField: 'response_code',displayLabel: '响应状态码',  priority: 2, isRequired: false, category: 'HTTP请求' }],
+  'http_status':      [{ targetField: 'response_code',displayLabel: '响应状态码',  priority: 3, isRequired: false, category: 'HTTP请求' }],
+  'response_time':    [{ targetField: 'response_time',displayLabel: '响应时间(ms)',priority: 1, isRequired: false, category: 'HTTP请求' }],
+
+  // ====== 主机 / 资产 ======
+  'hostname':         [{ targetField: 'hostname',    displayLabel: '主机名',      priority: 1, isRequired: false, category: '资产' }],
+  'host':             [{ targetField: 'hostname',    displayLabel: '主机名',      priority: 2, isRequired: false, category: '资产' }],
+  'server_name':      [{ targetField: 'hostname',    displayLabel: '主机名',      priority: 3, isRequired: false, category: '资产' }],
+  'computer':         [{ targetField: 'hostname',    displayLabel: '主机名',      priority: 4, isRequired: false, category: '资产' }],
+  'device_name':      [{ targetField: 'hostname',    displayLabel: '主机名',      priority: 5, isRequired: false, category: '资产' }],
+  'affected_asset':   [{ targetField: 'hostname',    displayLabel: '受影响资产',  priority: 6, isRequired: false, category: '资产' }],
+
+  // ====== 地理位置 ======
+  'src_location':     [{ targetField: 'src_location', displayLabel: '来源地',      priority: 1, isRequired: false, category: '地理' }],
+  'country':          [{ targetField: 'country',     displayLabel: '国家',        priority: 1, isRequired: false, category: '地理' }],
+  'city':             [{ targetField: 'city',        displayLabel: '城市',        priority: 2, isRequired: false, category: '地理' }],
+  'geo_location':     [{ targetField: 'src_location', displayLabel: '来源地',      priority: 2, isRequired: false, category: '地理' }],
+
+  // ====== 用户身份 ======
+  'username':         [{ targetField: 'username',    displayLabel: '用户名',      priority: 1, isRequired: false, category: '身份' }],
+  'user':             [{ targetField: 'username',    displayLabel: '用户名',      priority: 2, isRequired: false, category: '身份' }],
+  'account':          [{ targetField: 'username',    displayLabel: '用户名',      priority: 3, isRequired: false, category: '身份' }],
+
+  // ====== 进程信息 ======
+  'process_name':     [{ targetField: 'process_name',displayLabel: '进程名',      priority: 1, isRequired: false, category: '进程' }],
+  'process':          [{ targetField: 'process_name',displayLabel: '进程名',      priority: 2, isRequired: false, category: '进程' }],
+  'pid':              [{ targetField: 'pid',         displayLabel: '进程PID',     priority: 1, isRequired: false, category: '进程' }],
+  'process_id':       [{ targetField: 'pid',         displayLabel: '进程PID',     priority: 2, isRequired: false, category: '进程' }],
+};
+
+/**
+ * 智能字段映射：将原始日志字段名映射为安全告警标准字段
+ * 使用从数据库加载的动态字段定义（standardFields），替代硬编码映射表
+ *
+ * @param rawFields parseWithConfig 返回的原始字段列表
+ * @param stdFieldDefs 从 API 加载的标准字段定义列表（每项含 name/aliases/category/required）
+ * @returns 带映射信息的增强字段列表（含 fieldRole: 'standard' | 'extra'）
+ */
+const applySecurityFieldMapping = (
+  rawFields: Array<{name: string; type: string; value: any}>,
+  stdFieldDefs?: Array<{ name: string; label: string; type: string; category: string; required: boolean; aliases?: string[]; default_value?: string }>
+): ParsedAlertField[] => {
+
+  // 构建动态匹配表：别名/name → 标准字段定义
+  const aliasMap = new Map<string, { targetField: string; label: string; category: string; required: boolean; default_value?: string }>();
+
+  if (stdFieldDefs && stdFieldDefs.length > 0) {
+    for (const sf of stdFieldDefs) {
+      // 字段本身作为精确匹配键
+      aliasMap.set(sf.name.toLowerCase(), { targetField: sf.name, label: sf.label, category: sf.category, required: sf.required, default_value: sf.default_value });
+      // 所有别名也加入
+      if (sf.aliases) {
+        for (const a of sf.aliases) {
+          if (!aliasMap.has(a.toLowerCase())) { // 别名不覆盖精确匹配
+            aliasMap.set(a.toLowerCase(), { targetField: sf.name, label: sf.label, category: sf.category, required: sf.required, default_value: sf.default_value });
+          }
+        }
+      }
+    }
+  }
+
+  const usedTargets = new Set<string>(); // 已使用的目标字段（防重复）
+
+  return rawFields.map(field => {
+    const fieldNameLower = field.name.toLowerCase();
+
+    // 1. 精确匹配（name 或 db_column）
+    let rule = aliasMap.get(fieldNameLower);
+
+    // 2. 包含匹配（如 headers.user-agent → user_agent / client_ip）
+    if (!rule) {
+      for (const [aliasKey, val] of aliasMap.entries()) {
+        if (fieldNameLower.includes(aliasKey) || aliasKey.includes(fieldNameLower)) {
+          rule = val;
+          break;
+        }
+      }
+    }
+
+    if (rule && !usedTargets.has(rule.targetField)) {
+      usedTargets.add(rule.targetField);
+      return {
+        ...field,
+        selected: rule.required,
+        targetName: rule.targetField,
+        mappingLabel: rule.label,
+        mappingCategory: rule.category,
+        isKeyField: rule.required,
+        fieldRole: 'standard',
+        defaultValue: rule.default_value,
+      };
+    }
+
+    // 未映射的字段 → 归为额外数据（存入 parsedData / raw_log）
+    return {
+      ...field,
+      selected: false,
+      targetName: field.name,
+      mappingLabel: undefined,
+      mappingCategory: undefined,
+      isKeyField: false,
+      fieldRole: 'extra',
+    };
+  });
+};
+
+// ==================== 简化字段类型 ====================
+// 只区分两种角色：标准告警字段（匹配后写入DB告警表）vs 额外字段（存入parsedData/raw_log）
+interface ParsedAlertField {
+  name: string;
+  type: string;
+  value: any;
+  selected: boolean;
+  targetName?: string;          // 映射后的DB列名
+  mappingLabel?: string;        // 中文标签 (如"源地址")
+  mappingCategory?: string;     // 分类 (如"网络-五元组")
+  isKeyField?: boolean;         // 是否告警关键字段
+  fieldRole: 'standard' | 'extra';  // 核心区分：标准字段 vs 额外数据
+  defaultValue?: string;        // 默认值（当原始日志中无该字段时使用）
+}
+
+// ==================== 字段映射接口 ====================
+interface FieldMapping {
+  id?: number;
+  targetField: string;          // 目标标准字段名
+  targetLabel: string;          // 目标字段中文标签
+  sourceField: string | null;   // 源字段名 (null表示未映射)
+  fieldType: string;            // 字段类型
+  defaultValue?: string;        // 默认值
+  isRequired: boolean;          // 是否必填
+  sampleValue?: any;            // 样本值
+}
+
+// ==================== 映射建议接口 ====================
+interface MappingSuggestion {
+  target_field: string;
+  label: string;
+  category: string;
+  required: boolean;
+  aliases: string[];
+  suggested_source_names: string[];
+}
+
+/**
+ * 获取所有标准告警字段的定义（用于UI展示参考和映射匹配）
+ */
+export const STANDARD_ALERT_FIELDS = [
+  { name: 'timestamp',     label: '事件时间',   type: 'datetime', category: '时间',       required: true },
+  { name: 'src_ip',        label: '源地址',     type: 'string',   category: '网络-五元组', required: true },
+  { name: 'src_port',      label: '源端口',     type: 'number',   category: '网络-五元组', required: false },
+  { name: 'dst_ip',        label: '目标地址',   type: 'string',   category: '网络-五元组', required: true },
+  { name: 'dst_port',      label: '目标端口',   type: 'number',   category: '网络-五元组', required: false },
+  { name: 'protocol',      label: '协议',       type: 'string',   category: '网络-五元组', required: false },
+  { name: 'severity',      label: '严重程度',   type: 'string',   category: '告警属性',   required: true },
+  { name: 'action',        label: '处置动作',   type: 'string',   category: '告警属性',   required: false },
+  { name: 'title',         label: '告警标题',   type: 'string',   category: '告警属性',   required: true },
+  { name: 'description',   label: '描述',       type: 'string',   category: '告警属性',   required: false },
+  { name: 'source_product',label: '数据源产品', type: 'string',   category: '数据源',     required: true },
+  { name: 'category',      label: '分类',       type: 'string',   category: '告警属性',   required: false },
+  { name: 'rule_id',       label: '规则ID',     type: 'string',   category: '检测规则',   required: false },
+  { name: 'alert_code',    label: '告警编码',   type: 'string',   category: '检测规则',   required: false },
+  { name: 'method',        label: '请求方法',   type: 'string',   category: 'HTTP请求',   required: false },
+  { name: 'url',           label: '请求URL',    type: 'string',   category: 'HTTP请求',   required: false },
+  { name: 'user_agent',    label: '用户代理',   type: 'string',   category: 'HTTP请求',   required: false },
+  { name: 'response_code', label: '响应状态码', type: 'number',   category: 'HTTP请求',   required: false },
+  { name: 'hostname',      label: '主机名',     type: 'string',   category: '资产',       required: false },
+  { name: 'username',      label: '用户名',     type: 'string',   category: '身份',       required: false },
+  { name: 'raw_log',       label: '原始日志',   type: 'string',   category: '原始数据',   required: true },
+];
+
 const parseWithConfig = (sample: string, parserType: string, config?: any): Array<{name: string; type: string; value: any}> => {
   if (!sample.trim()) return [];
   const fields: Array<{name: string; type: string; value: any}> = [];
@@ -330,6 +618,12 @@ export default function SmartParser() {
   const [detectionRules, setDetectionRules] = useState<DetectionRule[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // 从数据库加载的标准告警字段定义（替代硬编码 STANDARD_ALERT_FIELDS）
+  const [standardFields, setStandardFields] = useState<Array<{
+    id?: number; name: string; label: string; type: string; category: string;
+    required: boolean; aliases?: string[]; db_column?: string; default_value?: string;
+  }>>([]);
+
   const [activeFilter, setActiveFilter] = useState('all');
   const [showAddModal, setShowAddModal] = useState(false);
   const [showDetailModal, setShowDetailModal] = useState(false);
@@ -344,15 +638,22 @@ export default function SmartParser() {
   const [templateSearchQuery, setTemplateSearchQuery] = useState('');
   const [templateCategory, setTemplateCategory] = useState('all');
 
+  // 字段映射相关状态
+  const [fieldMappings, setFieldMappings] = useState<FieldMapping[]>([]);
+  const [parsedFields, setParsedFields] = useState<Array<{name: string; type: string; value: any}>>([]);
+  const [mappingSuggestions, setMappingSuggestions] = useState<MappingSuggestion[]>([]);
+  const [savingMappings, setSavingMappings] = useState(false);
+
   // 从API获取数据
   useEffect(() => {
     const fetchData = async () => {
       try {
         setLoading(true);
-        const [logTypesRes, dataSourcesRes, rulesRes] = await Promise.allSettled([
+        const [logTypesRes, dataSourcesRes, rulesRes, fieldsRes] = await Promise.allSettled([
           logTypesApi.getLogTypes({ page_size: 100 }),
           dataSourcesApi.getDataSources({ page_size: 100 }),
-          rulesApi.getRules({ page_size: 100 })
+          rulesApi.getRules({ page_size: 100 }),
+          alertFieldsApi.getFields()
         ]);
 
         if (logTypesRes.status === 'fulfilled' && logTypesRes.value.success) {
@@ -384,6 +685,17 @@ export default function SmartParser() {
             status: item.status || 'active'
           })));
         }
+
+        // 加载标准告警字段定义（从数据库）
+        if (fieldsRes.status === 'fulfilled' && fieldsRes.value.success) {
+          const fieldData = fieldsRes.value.data;
+          const items = fieldData?.fields || (Array.isArray(fieldData) ? fieldData : []);
+          setStandardFields(items);
+        } else {
+          // API 不可用时使用硬编码兜底（保持向后兼容）
+          console.warn('标准字段 API 加载失败，使用本地默认配置');
+          setStandardFields(STANDARD_ALERT_FIELDS.map(f => ({ ...f, type: f.type })));
+        }
       } catch (error) {
         console.error('获取数据失败:', error);
       } finally {
@@ -412,7 +724,7 @@ export default function SmartParser() {
     filterRules: [] as Array<{ field: string; operator: 'eq' | 'ne' | 'gt' | 'lt' | 'contains' | 'regex'; value: string; logic: 'and' | 'or' }>
   });
 
-  const [configDetectedFields, setConfigDetectedFields] = useState<{ name: string; type: string; value: any; selected: boolean; targetName?: string }[]>([]);
+  const [configDetectedFields, setConfigDetectedFields] = useState<ParsedAlertField[]>([]);
   const [isTestingConfig, setIsTestingConfig] = useState(false);
 
   const [storageConfig, setStorageConfig] = useState<Record<string, any>>({
@@ -473,11 +785,16 @@ export default function SmartParser() {
     if (!formData.sample.trim()) return;
     setIsTestingConfig(true);
     await new Promise(r => setTimeout(r, 300));
-    const result = parseWithConfig(formData.sample, formData.parser, formData.parserConfig);
-    const fieldsWithSelection = result.map((f: any) => ({ ...f, selected: false, targetName: f.name }));
-    setConfigDetectedFields(fieldsWithSelection);
+    const rawResult = parseWithConfig(formData.sample, formData.parser, formData.parserConfig);
+    // 自动映射：使用从数据库加载的标准字段定义进行匹配
+    const fieldsWithMapping = applySecurityFieldMapping(rawResult, standardFields);
+    setConfigDetectedFields(fieldsWithMapping);
+    
+    // 更新字段映射状态
+    updateMappingsFromParsedFields(rawResult);
+    
     setIsTestingConfig(false);
-  }, [formData.sample, formData.parser, formData.parserConfig]);
+  }, [formData.sample, formData.parser, formData.parserConfig, standardFields]);
 
   const toggleConfigFieldSelected = useCallback((index: number) => {
     setConfigDetectedFields(prev => prev.map((f, i) => i === index ? { ...f, selected: !f.selected } : f));
@@ -491,9 +808,162 @@ export default function SmartParser() {
     setConfigDetectedFields(prev => prev.map(f => ({ ...f, selected: false })));
   }, []);
 
+  // 更新目标字段名（最终DB列名）
   const updateConfigFieldTargetName = useCallback((index: number, targetName: string) => {
     setConfigDetectedFields(prev => prev.map((f, i) => i === index ? { ...f, targetName } : f));
   }, []);
+
+  // 更新字段默认值
+  const updateConfigFieldDefaultValue = useCallback((index: number, defaultValue: string) => {
+    setConfigDetectedFields(prev => prev.map((f, i) => i === index ? { ...f, defaultValue } : f));
+  }, []);
+
+  // ==================== 字段映射相关函数 ====================
+
+  // 初始化字段映射（基于标准字段）
+  const initializeFieldMappings = useCallback(() => {
+    if (standardFields.length === 0) return;
+    
+    const mappings: FieldMapping[] = standardFields.map(sf => ({
+      targetField: sf.name,
+      targetLabel: sf.label,
+      sourceField: null,
+      fieldType: sf.type,
+      defaultValue: sf.default_value,
+      isRequired: sf.required,
+      sampleValue: undefined
+    }));
+    setFieldMappings(mappings);
+  }, [standardFields]);
+
+  // 当标准字段加载后初始化映射
+  useEffect(() => {
+    if (standardFields.length > 0 && fieldMappings.length === 0) {
+      initializeFieldMappings();
+    }
+  }, [standardFields, fieldMappings.length, initializeFieldMappings]);
+
+  // 从解析结果更新映射
+  const updateMappingsFromParsedFields = useCallback((parsed: Array<{name: string; type: string; value: any}>) => {
+    setParsedFields(parsed);
+    
+    // 自动匹配：尝试将解析字段与标准字段进行匹配
+    const updatedMappings = fieldMappings.map(mapping => {
+      // 查找是否有匹配的解析字段
+      const matchedField = parsed.find(p => 
+        p.name.toLowerCase() === mapping.targetField.toLowerCase() ||
+        p.name.toLowerCase().includes(mapping.targetField.toLowerCase()) ||
+        (mapping.targetField.toLowerCase().includes(p.name.toLowerCase()))
+      );
+      
+      if (matchedField) {
+        return {
+          ...mapping,
+          sourceField: matchedField.name,
+          sampleValue: matchedField.value,
+          fieldType: matchedField.type
+        };
+      }
+      
+      return mapping;
+    });
+    
+    setFieldMappings(updatedMappings);
+  }, [fieldMappings]);
+
+  // 更新单个映射的源字段
+  const updateMappingSourceField = useCallback((targetField: string, sourceField: string | null) => {
+    setFieldMappings(prev => prev.map(m => {
+      if (m.targetField === targetField) {
+        const parsedField = sourceField ? parsedFields.find(p => p.name === sourceField) : null;
+        return {
+          ...m,
+          sourceField,
+          sampleValue: parsedField?.value
+        };
+      }
+      return m;
+    }));
+  }, [parsedFields]);
+
+  // 更新映射的默认值
+  const updateMappingDefaultValue = useCallback((targetField: string, defaultValue: string) => {
+    setFieldMappings(prev => prev.map(m => 
+      m.targetField === targetField ? { ...m, defaultValue } : m
+    ));
+  }, []);
+
+  // 保存字段映射到数据库
+  const saveFieldMappingsToDb = useCallback(async (pipelineId: number) => {
+    if (!pipelineId) return;
+    
+    setSavingMappings(true);
+    try {
+      const mappings = fieldMappings
+        .filter(m => m.sourceField !== null)
+        .map((m, idx) => ({
+          target_field: m.targetField,
+          source_field: m.sourceField!,
+          field_type: m.fieldType,
+          default_value: m.defaultValue,
+          is_required: m.isRequired,
+          sort_order: idx
+        }));
+      
+      await pipelineMappingsApi.saveMappings(pipelineId, mappings);
+      
+      // 同时更新管道配置
+      await pipelineMappingsApi.updateConfig(pipelineId, {
+        parser_type: formData.parser,
+        parser_config: formData.parserConfig,
+        sample_log: formData.sample,
+        filter_rules: formData.filterRules
+      });
+      
+      return true;
+    } catch (error) {
+      console.error('保存字段映射失败:', error);
+      return false;
+    } finally {
+      setSavingMappings(false);
+    }
+  }, [fieldMappings, formData]);
+
+  // 加载管道的已有映射
+  const loadPipelineMappings = useCallback(async (pipelineId: number) => {
+    try {
+      const [mappingsRes, suggestionsRes] = await Promise.allSettled([
+        pipelineMappingsApi.getMappings(pipelineId),
+        pipelineMappingsApi.getSuggestions()
+      ]);
+      
+      if (mappingsRes.status === 'fulfilled' && mappingsRes.value.success) {
+        const existingMappings = mappingsRes.value.data?.mappings || [];
+        // 用已有映射更新 fieldMappings
+        const updatedMappings = fieldMappings.map(m => {
+          const existing = existingMappings.find((em: any) => em.target_field === m.targetField);
+          if (existing) {
+            const parsedField = parsedFields.find(p => p.name === existing.source_field);
+            return {
+              ...m,
+              sourceField: existing.source_field,
+              fieldType: existing.field_type || m.fieldType,
+              defaultValue: existing.default_value,
+              sampleValue: parsedField?.value
+            };
+          }
+          return m;
+        });
+        setFieldMappings(updatedMappings);
+      }
+      
+      if (suggestionsRes.status === 'fulfilled' && suggestionsRes.value.success) {
+        setMappingSuggestions(suggestionsRes.value.data);
+      }
+    } catch (error) {
+      console.error('加载字段映射失败:', error);
+    }
+  }, [fieldMappings, parsedFields]);
 
   const runRealTimeAnalysis = useCallback(async (logData: Record<string, any>) => {
     const results: Array<{rule: DetectionRule; matched: boolean; event?: SecurityEvent; severity: string}> = [];
@@ -541,7 +1011,8 @@ export default function SmartParser() {
     const selectedFields = configDetectedFields.filter(f => f.selected).map(f => ({
       sourceField: f.name,
       targetField: f.targetName || f.name,
-      type: f.type
+      type: f.type,
+      defaultValue: f.defaultValue,
     }));
 
     const newPipeline: ParsePipeline = {
@@ -588,7 +1059,8 @@ export default function SmartParser() {
     const selectedFields = configDetectedFields.filter(f => f.selected).map(f => ({
       sourceField: f.name,
       targetField: f.targetName || f.name,
-      type: f.type
+      type: f.type,
+      defaultValue: f.defaultValue,
     }));
 
     setPipelines(prev => prev.map(p => p.id === editingPipeline.id ? {
@@ -656,7 +1128,8 @@ export default function SmartParser() {
       type: fm.type,
       value: '',
       selected: true,
-      targetName: fm.targetField
+      targetName: fm.targetField,
+      defaultValue: fm.defaultValue
     })));
     setShowAddModal(true);
   }, []);
@@ -1496,83 +1969,219 @@ export default function SmartParser() {
 
                     {renderParserConfig()}
 
-                    {configDetectedFields.length > 0 && (
-                      <div className="space-y-4">
+                    {/* ========== 字段映射区域 ========== */}
+                    {parsedFields.length > 0 && (
+                      <div className="space-y-6">
+                        {/* ====== 头部统计 ====== */}
                         <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2">
-                            <Sparkles className="w-5 h-5 text-amber-500" />
-                            <span className="font-semibold text-gray-900">识别字段</span>
-                            <span className="text-sm text-gray-500">({configDetectedFields.filter(f => f.selected).length}/{configDetectedFields.length})</span>
+                          <div className="flex items-center gap-3">
+                            <Sparkles className="w-5 h-5 text-indigo-600" />
+                            <span className="font-bold text-gray-900">字段映射</span>
+                            <span className="text-sm text-gray-500">解析出 {parsedFields.length} 个字段</span>
+                            <span className="text-xs px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded-full font-medium border border-emerald-200">
+                              <CheckCircle className="w-3 h-3 inline mr-1" />
+                              {fieldMappings.filter(m => m.sourceField !== null).length} / {fieldMappings.length} 已映射
+                            </span>
                           </div>
-                          <div className="flex items-center gap-2">
+                          {editingPipeline?.id && (
                             <button
-                              onClick={selectAllConfigFields}
-                              className="px-3 py-1.5 text-xs bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
+                              onClick={() => saveFieldMappingsToDb(editingPipeline.id!)}
+                              disabled={savingMappings}
+                              className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 transition-colors"
                             >
-                              全选
+                              {savingMappings ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                              保存映射
                             </button>
-                            <button
-                              onClick={deselectAllConfigFields}
-                              className="px-3 py-1.5 text-xs bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
-                            >
-                              清空
-                            </button>
+                          )}
+                        </div>
+
+                        {/* 简要说明 */}
+                        <div className="p-3 bg-blue-50/80 border border-blue-200 rounded-xl text-xs text-blue-800 flex items-start gap-2">
+                          <ShieldAlert className="w-4 h-4 text-blue-500 mt-0.5 flex-shrink-0" />
+                          <span>
+                            <strong>字段映射：</strong>
+                            从上方列表选择解析后的字段，映射到右侧的标准告警字段。已映射的字段会写入 TimescaleDB 告警表。
+                            未映射的字段存入 parsedData JSON。
+                          </span>
+                        </div>
+
+                        {/* ========== Section 1: 标准告警字段（固定列表）========== */}
+                        <div>
+                          <div className="flex items-center gap-2 mb-3 pb-1.5 border-b-2 border-emerald-300">
+                            <LayoutGrid className="w-5 h-5 text-emerald-600" />
+                            <span className="text-base font-bold text-emerald-800">标准告警字段</span>
+                            <span className="text-xs px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded-full">
+                              {fieldMappings.filter(m => m.sourceField !== null).length} / {fieldMappings.length} 已配置
+                            </span>
+                            <span className="text-xs text-gray-400 ml-auto">→ 写入 TimescaleDB 告警表</span>
+                          </div>
+                          
+                          <div className="space-y-2">
+                            {fieldMappings.map((mapping) => {
+                              const isMapped = mapping.sourceField !== null;
+                              return (
+                                <div 
+                                  key={mapping.targetField}
+                                  className={`p-4 rounded-xl border-2 transition-all ${
+                                    isMapped 
+                                      ? 'bg-gradient-to-r from-emerald-50 to-teal-50 border-emerald-300 shadow-sm' 
+                                      : 'bg-white border-gray-200 hover:border-gray-300'
+                                  }`}
+                                >
+                                  <div className="flex items-center gap-4">
+                                    {/* 映射状态指示 */}
+                                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                                      isMapped ? 'bg-emerald-500 text-white' : 'bg-gray-200 text-gray-400'
+                                    }`}>
+                                      {isMapped ? <Check className="w-5 h-5" /> : <span className="text-sm font-bold">{mapping.targetField[0].toUpperCase()}</span>}
+                                    </div>
+                                    
+                                    {/* 目标标准字段信息 */}
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex flex-wrap items-center gap-2 mb-1">
+                                        <span className="font-bold text-emerald-900">{mapping.targetLabel}</span>
+                                        <code className="text-xs px-1.5 py-0.5 bg-emerald-100 text-emerald-700 rounded font-mono">{mapping.targetField}</code>
+                                        <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                                          mapping.fieldType === 'datetime' ? 'bg-purple-100 text-purple-600' :
+                                          mapping.fieldType === 'number' ? 'bg-blue-100 text-blue-600' :
+                                          'bg-gray-100 text-gray-600'
+                                        }`}>{mapping.fieldType}</span>
+                                        {mapping.isRequired && (
+                                          <span className="text-xs px-1.5 py-0.5 bg-rose-100 text-rose-600 rounded font-medium">
+                                            <Zap className="w-3 h-3 inline mr-0.5" />必填
+                                          </span>
+                                        )}
+                                        <span className="text-xs px-1.5 py-0.5 bg-cyan-50 text-cyan-700 rounded border border-cyan-200">
+                                          {mapping.targetField.split('_')[0]}
+                                        </span>
+                                      </div>
+                                      
+                                      {/* 映射的下拉选择 */}
+                                      <div className="flex items-center gap-2 mt-2">
+                                        <span className="text-xs text-gray-500 whitespace-nowrap">← 映射自:</span>
+                                        <select
+                                          value={mapping.sourceField || ''}
+                                          onChange={(e) => updateMappingSourceField(mapping.targetField, e.target.value || null)}
+                                          className={`flex-1 text-sm px-3 py-1.5 rounded-lg border-2 transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-emerald-400 ${
+                                            isMapped 
+                                              ? 'bg-white border-emerald-300 text-emerald-800' 
+                                              : 'bg-gray-50 border-gray-200 text-gray-500'
+                                          }`}
+                                        >
+                                          <option value="">-- 选择解析字段 --</option>
+                                          {parsedFields.map(pf => (
+                                            <option key={pf.name} value={pf.name}>
+                                              {pf.name} ({pf.type})
+                                              {pf.value ? `: ${String(pf.value).substring(0, 30)}` : ''}
+                                            </option>
+                                          ))}
+                                        </select>
+                                      </div>
+                                      
+                                      {/* 样本值预览 */}
+                                      {mapping.sampleValue !== undefined && (
+                                        <div className="mt-2 text-xs text-gray-500 font-mono bg-slate-100 p-2 rounded border border-slate-200 truncate">
+                                          样本值: {String(mapping.sampleValue).substring(0, 80)}{String(mapping.sampleValue).length > 80 ? '...' : ''}
+                                        </div>
+                                      )}
+                                      
+                                      {/* 默认值输入（当必填但未映射时） */}
+                                      {mapping.isRequired && !isMapped && (
+                                        <div className="flex items-center gap-2 mt-2">
+                                          <span className="text-xs text-amber-600 whitespace-nowrap">默认值:</span>
+                                          <input
+                                            type="text"
+                                            value={mapping.defaultValue || ''}
+                                            onChange={(e) => updateMappingDefaultValue(mapping.targetField, e.target.value)}
+                                            placeholder={mapping.defaultValue || '请输入默认值'}
+                                            className="flex-1 text-sm px-2 py-1 border border-amber-300 rounded-lg bg-amber-50 focus:outline-none focus:ring-2 focus:ring-amber-400"
+                                          />
+                                          {mapping.defaultValue && !mapping.defaultValue && (
+                                            <span className="text-xs text-amber-500">使用预设: {mapping.defaultValue}</span>
+                                          )}
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
                           </div>
                         </div>
 
-                        <div className="space-y-2 max-h-64 overflow-auto">
-                          {configDetectedFields.map((field, idx) => (
-                            <div
-                              key={idx}
-                              className={`p-3 rounded-xl border transition-all ${
-                                field.selected ? 'bg-indigo-50 border-indigo-300' : 'bg-gray-50 border-gray-200'
-                              }`}
-                            >
-                              <div className="flex items-start gap-3">
-                                <button
-                                  onClick={() => toggleConfigFieldSelected(idx)}
-                                  className={`mt-0.5 w-5 h-5 rounded flex items-center justify-center transition-colors ${
-                                    field.selected ? 'bg-indigo-600 text-white' : 'border-2 border-gray-300 hover:border-indigo-400'
+                        {/* ========== Section 2: 解析字段列表（可选择映射）========== */}
+                        <div>
+                          <div className="flex items-center gap-2 mb-3 pb-1.5 border-b-2 border-gray-300">
+                            <FileJson className="w-5 h-5 text-gray-500" />
+                            <span className="text-base font-bold text-gray-700">解析字段</span>
+                            <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-600 rounded-full">
+                              {parsedFields.length} 个字段
+                            </span>
+                            <span className="text-xs text-gray-400 ml-auto">→ 选择字段映射到上方标准字段</span>
+                          </div>
+                          
+                          <div className="grid grid-cols-2 gap-2">
+                            {parsedFields.map((field, idx) => {
+                              // 检查是否已被映射
+                              const isMapped = fieldMappings.some(m => m.sourceField === field.name);
+                              return (
+                                <div 
+                                  key={`parsed-${idx}`}
+                                  className={`group p-3 rounded-lg border-2 transition-all cursor-default ${
+                                    isMapped 
+                                      ? 'bg-emerald-50/50 border-emerald-200 opacity-60' 
+                                      : 'bg-gray-50 border-gray-200 hover:border-indigo-300'
                                   }`}
                                 >
-                                  {field.selected && <CheckCircle className="w-3.5 h-3.5" />}
-                                </button>
-                                <div className="flex-1 min-w-0">
-                                  <div className="flex items-center gap-3 mb-2">
-                                    <span className="font-semibold text-gray-900">{field.name}</span>
-                                    <span className={`text-xs px-2 py-0.5 rounded-lg font-medium ${
-                                      field.type === 'datetime' ? 'bg-purple-100 text-purple-600' :
-                                      field.type === 'number' ? 'bg-blue-100 text-blue-600' :
-                                      field.type === 'boolean' ? 'bg-amber-100 text-amber-600' :
-                                      'bg-gray-100 text-gray-600'
-                                    }`}>{field.type}</span>
-                                    <button
-                                      onClick={() => navigator.clipboard.writeText(field.name)}
-                                      className="p-1 text-gray-400 hover:text-indigo-600 transition-colors"
-                                      title="复制字段名"
-                                    >
-                                      <Copy className="w-3.5 h-3.5" />
-                                    </button>
-                                  </div>
-                                  {field.selected && (
-                                    <div className="mb-2">
-                                      <label className="text-xs text-gray-500 mb-1 block">目标字段名</label>
-                                      <input
-                                        type="text"
-                                        value={field.targetName || field.name}
-                                        onChange={e => updateConfigFieldTargetName(idx, e.target.value)}
-                                        className="w-full px-3 py-1.5 text-sm bg-white border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                                        placeholder="输入目标字段名"
-                                      />
+                                  <div className="flex items-start gap-2">
+                                    <div className={`w-5 h-5 rounded flex items-center justify-center flex-shrink-0 mt-0.5 ${
+                                      isMapped ? 'bg-emerald-500 text-white' : 'bg-gray-200 text-gray-500'
+                                    }`}>
+                                      {isMapped ? <Check className="w-3 h-3" /> : <span className="text-[10px] font-bold">{idx + 1}</span>}
                                     </div>
-                                  )}
-                                  <div className="text-sm text-gray-600 font-mono bg-white p-2 rounded-lg border border-gray-200 break-all">
-                                    {String(field.value).length > 100 ? String(field.value).substring(0, 100) + '...' : String(field.value)}
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
+                                        <span className={`text-xs font-semibold truncate ${isMapped ? 'text-emerald-700' : 'text-gray-800'}`}>
+                                          {field.name}
+                                        </span>
+                                        <span className={`text-[10px] px-1 py-px rounded font-mono ${
+                                          field.type === 'datetime' ? 'bg-purple-100 text-purple-600' :
+                                          field.type === 'number' ? 'bg-blue-100 text-blue-600' :
+                                          'bg-gray-200 text-gray-500'
+                                        }`}>{field.type}</span>
+                                        {isMapped && (
+                                          <span className="text-[10px] px-1 py-px bg-emerald-100 text-emerald-600 rounded">
+                                            已映射
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="text-[11px] text-gray-500 font-mono truncate" title={String(field.value)}>
+                                        {String(field.value).substring(0, 40)}{String(field.value).length > 40 ? '...' : ''}
+                                      </div>
+                                    </div>
                                   </div>
                                 </div>
-                              </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        {/* 统计信息 */}
+                        <div className="p-4 bg-slate-50 rounded-xl border border-slate-200">
+                          <div className="grid grid-cols-3 gap-4 text-center">
+                            <div>
+                              <div className="text-2xl font-bold text-emerald-600">{fieldMappings.filter(m => m.sourceField !== null).length}</div>
+                              <div className="text-xs text-gray-500">已映射字段</div>
                             </div>
-                          ))}
+                            <div>
+                              <div className="text-2xl font-bold text-amber-600">{fieldMappings.filter(m => m.isRequired && !m.sourceField && !m.defaultValue).length}</div>
+                              <div className="text-xs text-gray-500">缺少必填映射</div>
+                            </div>
+                            <div>
+                              <div className="text-2xl font-bold text-gray-600">{parsedFields.length - fieldMappings.filter(m => m.sourceField !== null).length}</div>
+                              <div className="text-xs text-gray-500">额外字段</div>
+                            </div>
+                          </div>
                         </div>
                       </div>
                     )}
@@ -2321,12 +2930,40 @@ export default function SmartParser() {
               className="bg-white border border-gray-200 rounded-2xl p-6 w-full max-w-lg max-h-[80vh] overflow-auto shadow-2xl"
               onClick={e => e.stopPropagation()}
             >
-              <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center justify-between mb-4">
                 <h2 className="text-lg font-semibold text-gray-900">{selectedPipeline.name}</h2>
                 <button onClick={() => setShowDetailModal(false)} className="p-2 text-gray-400 hover:text-gray-600 rounded-xl hover:bg-gray-100 transition-colors">
                   <X className="w-5 h-5" />
                 </button>
               </div>
+              
+              {/* 操作按钮 */}
+              <div className="flex gap-2 mb-4">
+                <button
+                  onClick={() => { setShowDetailModal(false); openEdit(selectedPipeline); }}
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-600 rounded-xl hover:bg-indigo-100 transition-colors text-sm font-medium"
+                >
+                  <Edit3 className="w-4 h-4" /> 编辑
+                </button>
+                <button
+                  onClick={() => { toggleActive(selectedPipeline.id!); setShowDetailModal(false); }}
+                  className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-xl transition-colors text-sm font-medium ${
+                    selectedPipeline.isActive 
+                      ? 'bg-amber-50 text-amber-600 hover:bg-amber-100' 
+                      : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100'
+                  }`}
+                >
+                  {selectedPipeline.isActive ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+                  {selectedPipeline.isActive ? '暂停' : '启用'}
+                </button>
+                <button
+                  onClick={() => { setShowDetailModal(false); setShowDeleteConfirm(selectedPipeline); }}
+                  className="flex items-center justify-center gap-2 px-4 py-2 bg-rose-50 text-rose-600 rounded-xl hover:bg-rose-100 transition-colors text-sm font-medium"
+                >
+                  <Trash2 className="w-4 h-4" /> 删除
+                </button>
+              </div>
+              
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-4 text-sm">
                   <div className="p-4 bg-gray-50 rounded-xl">
@@ -2348,6 +2985,13 @@ export default function SmartParser() {
                     <div className="text-gray-900 font-semibold">{selectedPipeline.mode === 'multi' ? '智能多格式' : '单一格式'}</div>
                   </div>
                 </div>
+
+                {selectedPipeline.description && (
+                  <div className="p-4 bg-gray-50 rounded-xl">
+                    <div className="text-gray-500 text-xs mb-1">描述</div>
+                    <div className="text-gray-900 text-sm">{selectedPipeline.description}</div>
+                  </div>
+                )}
 
                 {(selectedPipeline.logTypeName || selectedPipeline.storageTableName || selectedPipeline.formatTemplateName) && (
                   <div className="p-4 bg-gray-50 rounded-xl">
@@ -2387,6 +3031,9 @@ export default function SmartParser() {
                           <span className="text-gray-600 font-mono">{fm.sourceField}</span>
                           <ChevronRight className="w-4 h-4 text-gray-400" />
                           <span className="text-gray-900 font-mono">{fm.targetField}</span>
+                          {fm.defaultValue && (
+                            <span className="text-xs text-amber-600" title="默认值">= {fm.defaultValue}</span>
+                          )}
                           <span className="px-2 py-0.5 text-xs bg-indigo-100 text-indigo-600 rounded-lg font-medium">{fm.type}</span>
                         </div>
                       ))}

@@ -11,58 +11,15 @@ import FormatTemplate from '../components/FormatTemplate';
 import StorageConfig from '../components/StorageConfig';
 import { dataSourcesApi } from '../services/api';
 
-// ==================== Mock数据 ====================
-
-const mockDataSources: any[] = [
-  {
-    id: 1,
-    name: 'Kafka-安全日志',
-    type: 'pull',
-    protocol: 'kafka',
-    status: 'connected',
-    lastSync: '2026-05-01T10:30:00Z',
-    totalEvents: 156729384,
-    health: 99
-  },
-  {
-    id: 2,
-    name: 'Syslog-网络设备',
-    type: 'push',
-    protocol: 'syslog',
-    status: 'connected',
-    lastSync: '2026-05-01T10:29:45Z',
-    totalEvents: 28473920,
-    health: 95
-  },
-  {
-    id: 3,
-    name: 'S3-审计日志',
-    type: 'pull',
-    protocol: 's3',
-    status: 'syncing',
-    lastSync: '2026-05-01T10:28:00Z',
-    totalEvents: 89347291,
-    health: 92
-  },
-  {
-    id: 4,
-    name: 'Webhook-告警推送',
-    type: 'push',
-    protocol: 'webhook',
-    status: 'error',
-    lastSync: '2026-05-01T09:15:00Z',
-    totalEvents: 45238901,
-    health: 45
-  }
-];
-
 export default function DataIngestion() {
   const [activeSection, setActiveSection] = useState('sources');
   const [dataSources, setDataSources] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
 
   // 从后端 API 获取数据源
   useEffect(() => {
     const fetchDataSources = async () => {
+      setLoading(true);
       try {
         const response = await dataSourcesApi.getDataSources({ page_size: 100 });
         if (response.success && response.data) {
@@ -71,27 +28,34 @@ export default function DataIngestion() {
           const formattedSources: any[] = items.map((item: any) => ({
             id: String(item.id),
             name: item.name || item.source_name || `数据源 ${item.id}`,
-            type: item.type === 'pull' ? 'pull' : item.type === 'push' ? 'push' : 'pull',
+            type: item.source_type === 'pull' ? 'pull' : item.source_type === 'push' ? 'push' : 'pull',
             protocol: item.protocol || item.source_type || 'unknown',
             status: item.status === 'active' ? 'connected' : 
                     item.status === 'inactive' ? 'disconnected' : 
                     item.status || 'connected',
-            lastSync: item.last_sync || item.updated_at || new Date().toISOString(),
+            lastSync: item.last_read_at || item.updated_at || new Date().toISOString(),
             eventsPerSecond: item.events_per_second || 0,
-            totalEvents: item.total_events || 0,
-            health: item.health || 100,
+            totalEvents: item.message_count || 0,
+            health: 100,
             config: item.config || {},
-            parsePipelines: item.parse_pipelines || [],
-            storageConfig: item.storage_config || { hypertable: '', retentionDays: 30, compression: true, indexes: [], partitionInterval: '1 day' },
-            productMappings: item.product_mappings || [],
-            stats: item.stats || { parsedSuccess: 0, parsedFailed: 0 }
+            parsePipelines: item.pipeline_ids || [],
+            storageConfig: item.storage_config || { 
+              hypertable: item.storage_table_name || '', 
+              retentionDays: item.storage_retention_days || 30, 
+              compression: item.storage_compression ?? true, 
+              indexes: item.storage_indexes || [], 
+              partitionInterval: item.storage_partition || '1 day' 
+            },
+            productMappings: [],
+            stats: { parsedSuccess: 0, parsedFailed: 0 }
           }));
           setDataSources(formattedSources);
         }
       } catch (error) {
         console.error('获取数据源失败:', error);
-        // 如果 API 失败，使用 mock 数据作为后备
-        setDataSources(mockDataSources);
+        setDataSources([]);
+      } finally {
+        setLoading(false);
       }
     };
 

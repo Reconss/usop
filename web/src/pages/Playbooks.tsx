@@ -1,19 +1,14 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Plus, Play, Edit2, Trash2, Copy, X, Save, Clock, Zap, GitBranch, AlertCircle, Mail,
   Shield, Ban, FileText, Globe, Database, Server, Code, Settings, ChevronRight,
   ChevronDown, LayoutGrid, Maximize2, Minimize2, Download, Upload, Eye, EyeOff,
   Terminal, FileCode, Variable, PlayCircle, PauseCircle, RotateCcw, CheckCircle2,
-  AlertTriangle, Info, Layers, Box, Cpu, Workflow
+  AlertTriangle, Info, Layers, Box, Cpu, Workflow, RefreshCw
 } from 'lucide-react';
 import type { Playbook } from '../types';
-
-const mockPlaybooks: Playbook[] = [
-  { id: 'PB-001', name: '自动封堵恶意IP', triggerType: '事件触发', status: 'enabled', lastModified: '2026-04-26T15:00:00Z', nodeCount: 5 },
-  { id: 'PB-002', name: '高危事件工单创建', triggerType: '事件触发', status: 'enabled', lastModified: '2026-04-25T10:00:00Z', nodeCount: 3 },
-  { id: 'PB-003', name: '每日安全报告', triggerType: '定时触发', status: 'disabled', lastModified: '2026-04-24T09:00:00Z', nodeCount: 4 }
-];
+import { playbooksApi } from '../services/api';
 
 interface PlaybookNode {
   id: string;
@@ -214,7 +209,8 @@ const defaultParams: Record<string, ParamDefinition[]> = {
 };
 
 export default function Playbooks() {
-  const [playbooks, setPlaybooks] = useState<Playbook[]>(mockPlaybooks);
+  const [playbooks, setPlaybooks] = useState<Playbook[]>([]);
+  const [loading, setLoading] = useState(true);
   const [showEditor, setShowEditor] = useState(false);
   const [editingPlaybook, setEditingPlaybook] = useState<Playbook | null>(null);
   const [activeTab, setActiveTab] = useState<'visual' | 'code' | 'execute'>('visual');
@@ -235,6 +231,28 @@ export default function Playbooks() {
     description: '',
     cron: ''
   });
+
+  const fetchPlaybooks = async () => {
+    setLoading(true);
+    try {
+      const res = await playbooksApi.getPlaybooks({ page_size: 100 });
+      if (res.success && res.data) {
+        const items = Array.isArray(res.data) ? res.data : res.data.items || [];
+        setPlaybooks(items);
+      } else {
+        setPlaybooks([]);
+      }
+    } catch (error) {
+      console.error('获取剧本列表失败:', error);
+      setPlaybooks([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchPlaybooks();
+  }, []);
 
   const toggleStatus = (id: string) => {
     setPlaybooks(prev => prev.map(pb =>

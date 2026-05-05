@@ -46,7 +46,7 @@ COMPONENTS = {
     'timescale': Component(
         name='TimescaleDB',
         host=os.getenv('TSDB_HOST', 'localhost'),
-        port=int(os.getenv('TSDB_PORT', '5432')),
+        port=int(os.getenv('TSDB_PORT', '5433')),
         check_type='tcp',
         timeout=60
     ),

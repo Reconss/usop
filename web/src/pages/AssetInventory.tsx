@@ -1,52 +1,10 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Search, Filter, Plus, Download, Scan, MoreHorizontal, X, Globe, Server, Shield, Tag, User, Clock, Edit2, Trash2, Check, Copy, Eye, EyeOff, ChevronRight, ChevronDown, FileText, Activity, MapPin, Cpu, Database, Layers, AlertCircle, Loader2, CheckCircle2
 } from 'lucide-react';
 import type { Asset } from '../types';
-
-const mockAssets: Asset[] = [
-  {
-    id: '1',
-    name: 'web-server-01.company.com',
-    type: 'domain',
-    status: 'verified',
-    riskScore: 85,
-    assessedRiskScore: 92,
-    ports: [
-      { port: 80, service: 'HTTP', version: 'nginx/1.20' },
-      { port: 443, service: 'HTTPS', version: 'nginx/1.20' },
-      { port: 22, service: 'SSH', version: 'OpenSSH 8.2' }
-    ],
-    owner: '张运维',
-    lastScan: '2026-04-27T10:00:00Z',
-    tags: ['production', 'web', 'critical'],
-    vulnStats: { critical: 2, high: 3, medium: 5, low: 2, total: 12 },
-    vulnerabilities: [
-      { vulnId: 'VULN-001', name: 'OpenSSL 缓冲区溢出', severity: 'critical', cvssScore: 9.8, assessedScore: 9.5, status: 'open', discoveredAt: '2026-05-01T10:00:00Z' },
-      { vulnId: 'VULN-003', name: '弱密码策略', severity: 'medium', cvssScore: 5.3, assessedScore: 4.2, status: 'fixed', discoveredAt: '2026-04-20T09:00:00Z' }
-    ]
-  },
-  {
-    id: '2',
-    name: '192.168.1.50',
-    type: 'ip',
-    status: 'verified',
-    riskScore: 45,
-    assessedRiskScore: 38,
-    ports: [
-      { port: 3306, service: 'MySQL', version: '8.0.32' },
-      { port: 22, service: 'SSH', version: 'OpenSSH 8.2' }
-    ],
-    owner: '李数据库',
-    lastScan: '2026-04-27T09:30:00Z',
-    tags: ['production', 'database'],
-    vulnStats: { critical: 0, high: 1, medium: 2, low: 3, total: 6 },
-    vulnerabilities: [
-      { vulnId: 'VULN-003', name: '弱密码策略', severity: 'medium', cvssScore: 5.3, assessedScore: 3.8, status: 'fixed', discoveredAt: '2026-04-20T09:00:00Z' }
-    ]
-  }
-];
+import { assetsApi } from '../services/api';
 
 const RiskRing = ({ score, assessedScore }: { score: number; assessedScore?: number }) => {
   const radius = 16;
@@ -119,8 +77,27 @@ export default function AssetInventory() {
   const [searchQuery, setSearchQuery] = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
   const [showDetail, setShowDetail] = useState(false);
-  const [assets, setAssets] = useState<Asset[]>(mockAssets);
-  const [loading, setLoading] = useState(false);
+  const [assets, setAssets] = useState<Asset[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  // 从API获取资产数据
+  useEffect(() => {
+    const fetchAssets = async () => {
+      setLoading(true);
+      try {
+        const response = await assetsApi.getAssets({ page_size: 100 });
+        if (response.success && response.data) {
+          const items = Array.isArray(response.data) ? response.data : response.data.items || [];
+          setAssets(items);
+        }
+      } catch (error) {
+        console.error('获取资产列表失败:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchAssets();
+  }, []);
   const [activeTab, setActiveTab] = useState<'basic' | 'ports' | 'vulnerabilities' | 'history'>('basic');
   const [selectedAssets, setSelectedAssets] = useState<string[]>([]);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);

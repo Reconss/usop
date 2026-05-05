@@ -16,17 +16,12 @@ def get_metrics():
     today_start = datetime.combine(today, datetime.min.time())
     today_end = datetime.combine(today + timedelta(days=1), datetime.min.time())
 
-    # 告警总数: 安全告警页面当天所有的数据
-    today_alerts = Alert.query.filter(
-        Alert.created_at >= today_start,
-        Alert.created_at < today_end
-    ).count()
+    # 告警总数: 改为统计所有告警（不再限制当天）
+    total_alerts = Alert.query.count()
 
-    # 待处置事件: 工作台中当天未处置的事件 (status='new' and created today)
+    # 待处置事件: 统计所有状态为 new 或 investigating 的事件
     pending_events = Event.query.filter(
-        Event.status == 'new',
-        Event.timestamp >= today_start,
-        Event.timestamp < today_end
+        Event.status.in_(['new', 'investigating'])
     ).count()
 
     # 资产总数: 资产清单中资产的数据 (all assets)
@@ -38,7 +33,7 @@ def get_metrics():
     return jsonify({
         'success': True,
         'data': {
-            'todayAlerts': today_alerts,
+            'todayAlerts': total_alerts,
             'pendingEvents': pending_events,
             'totalAssets': total_assets,
             'highRiskAssets': high_risk_assets,

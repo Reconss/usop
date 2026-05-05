@@ -1,4 +1,7 @@
-const API_BASE = 'http://localhost:5002/api';
+// API 基础路径配置
+// 开发环境：优先走 webpack 代理（同源），失败时 fallback 到后端直连
+const API_BASE = '/api';
+const BACKEND_FALLBACK = 'http://localhost:5001';
 
 interface RequestOptions {
   method?: string;
@@ -20,31 +23,38 @@ export async function request<T = any>(
     headers['Authorization'] = `Bearer ${token}`;
   }
 
-  try {
-    const response = await fetch(`${API_BASE}${endpoint}`, {
-      method: options.method || 'GET',
-      headers,
-      body: options.body ? JSON.stringify(options.body) : undefined,
-    });
+  const fetchOptions = {
+    method: options.method || 'GET',
+    headers,
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  };
 
-    const data = await response.json();
-    
-    if (!response.ok) {
-      // 401 未授权，跳转到登录页
-      if (response.status === 401) {
-        localStorage.removeItem('token');
-        localStorage.removeItem('user');
-        window.location.href = '/login';
-        throw new Error('登录已过期，请重新登录');
-      }
-      throw new Error(data.error || `请求失败 (${response.status})`);
+  // 尝试通过代理请求（同源），失败则 fallback 到直连后端
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}${endpoint}`, fetchOptions);
+  } catch (proxyError) {
+    // 代理不可用时（如 IDE 预览环境），直接连接后端
+    try {
+      response = await fetch(`${BACKEND_FALLBACK}${API_BASE}${endpoint}`, fetchOptions);
+    } catch (directError) {
+      throw new Error(`无法连接后端服务 (${BACKEND_FALLBACK})`);
     }
-    
-    return data;
-  } catch (error) {
-    console.error(`API Error [${options.method || 'GET'} ${endpoint}]:`, error);
-    throw error;
   }
+
+  const data = await response.json();
+  
+  if (!response.ok) {
+    if (response.status === 401) {
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
+      window.dispatchEvent(new CustomEvent('auth:expired'));
+      throw new Error('登录已过期，请重新登录');
+    }
+    throw new Error(data.error || `请求失败 (${response.status})`);
+  }
+  
+  return data;
 }
 
 // Auth API
@@ -102,14 +112,72 @@ export const userApi = {
 // Dashboard API
 export const dashboardApi = {
   getMetrics: () => request('/dashboard-api/metrics'),
-  getAlertsTrend: (days?: number) => request(`/dashboard-api/alerts-trend?days=${days || 7}`),
-  getEventDistribution: () => request('/dashboard-api/event-distribution'),
-  getTopAlerts: (limit?: number) => request(`/dashboard-api/top-alerts?limit=${limit || 10}`),
+  getAlertsTrend: (days?: number) => request(`/dashboard-api/event-trend?days=${days || 7}`),
+  getEventDistribution: () => request('/dashboard-api/event-types'),
+  getTopAlerts: (limit?: number) => request(`/dashboard-api/recent-alerts?limit=${limit || 10}`),
 };
 
-// Alerts API (使用 events API 作为后端)
+// Alerts API (使用 TimescaleDB 存储)
 export const alertsApi = {
-  getAlerts: (params?: { page?: number; page_size?: number; severity?: string; status?: string; search?: string }) => {
+  getAlerts: (params?: {
+    page?: number;
+    page_size?: number;
+    severity?: string;
+    status?: string;
+    search?: string;
+    source?: string;
+    src_ip?: string;
+    dst_ip?: string;
+    start_time?: string;
+    end_time?: string;
+  }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.page) searchParams.append('page', String(params.page));
+    if (params?.page_size) searchParams.append('page_size', String(params.page_size));
+    if (params?.severity) searchParams.append('severity', params.severity);
+    if (params?.status) searchParams.append('status', params.status);
+    if (params?.search) searchParams.append('search', params.search);
+    if (params?.source) searchParams.append('source', params.source);
+    if (params?.src_ip) searchParams.append('src_ip', params.src_ip);
+    if (params?.dst_ip) searchParams.append('dst_ip', params.dst_ip);
+    if (params?.start_time) searchParams.append('start_time', params.start_time);
+    if (params?.end_time) searchParams.append('end_time', params.end_time);
+    return request(`/alerts-api/alerts?${searchParams.toString()}`);
+  },
+
+  getAlert: (id: string | number) => request(`/alerts-api/alerts/${id}`),
+  updateAlert: (id: number, data: any) => request(`/alerts-api/alerts/${id}`, { method: 'PUT', body: data }),
+  updateAlertStatus: (id: number, status: string) =>
+    request(`/alerts-api/alerts/${id}/status`, { method: 'PUT', body: { status } }),
+  batchUpdateStatus: (alert_ids: number[], status: string) =>
+    request('/alerts-api/alerts/batch/status', { method: 'PUT', body: { alert_ids, status } }),
+  deleteAlert: (id: number) => request(`/alerts-api/alerts/${id}`, { method: 'DELETE' }),
+  batchDelete: (alert_ids: number[]) =>
+    request('/alerts-api/alerts/batch', { method: 'DELETE', body: { alert_ids } }),
+  aggregateAlerts: (data: { alert_ids: number[]; title: string; severity?: string; description?: string }) =>
+    request('/alerts-api/alerts/aggregate', { method: 'POST', body: data }),
+  getAlertStats: () => request('/alerts-api/alerts/stats'),
+  getAlertTrend: (bucket?: string, start_time?: string, end_time?: string) => {
+    const params = new URLSearchParams();
+    if (bucket) params.append('bucket', bucket);
+    if (start_time) params.append('start_time', start_time);
+    if (end_time) params.append('end_time', end_time);
+    return request(`/alerts-api/alerts/trend?${params.toString()}`);
+  },
+  exportAlerts: (params?: { severity?: string; status?: string; start_time?: string; end_time?: string }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.severity) searchParams.append('severity', params.severity);
+    if (params?.status) searchParams.append('status', params.status);
+    if (params?.start_time) searchParams.append('start_time', params.start_time);
+    if (params?.end_time) searchParams.append('end_time', params.end_time);
+    return request(`/alerts-api/alerts/export?${searchParams.toString()}`);
+  },
+  initHypertable: () => request('/alerts-api/alerts/init-hypertable', { method: 'POST' }),
+};
+
+// Events API (使用 events API 作为后端)
+export const eventsApi = {
+  getEvents: (params?: { page?: number; page_size?: number; severity?: string; status?: string; search?: string }) => {
     const searchParams = new URLSearchParams();
     if (params?.page) searchParams.append('page', String(params.page));
     if (params?.page_size) searchParams.append('page_size', String(params.page_size));
@@ -118,10 +186,21 @@ export const alertsApi = {
     if (params?.search) searchParams.append('search', params.search);
     return request(`/event-actions-api/events?${searchParams.toString()}`);
   },
-  
-  getAlert: (id: string | number) => request(`/event-actions-api/events/${id}`),
-  updateAlert: (id: number, data: any) => request(`/event-actions-api/events/${id}`, { method: 'PUT', body: data }),
-  deleteAlert: (id: number) => request(`/event-actions-api/events/${id}`, { method: 'DELETE' }),
+
+  getEvent: (id: string | number) => request(`/event-actions-api/events/${id}`),
+  createEvent: (data: {
+    title: string;
+    description?: string;
+    severity?: string;
+    category?: string;
+    alert_ids?: number[];
+    sourceIp?: string;
+  }) => request('/event-actions-api/events', { method: 'POST', body: data }),
+  updateEvent: (id: number, data: any) => request(`/event-actions-api/events/${id}`, { method: 'PUT', body: data }),
+  updateEventStatus: (id: number, status: string) =>
+    request(`/event-actions-api/events/${id}/status`, { method: 'PUT', body: { status } }),
+  deleteEvent: (id: number) => request(`/event-actions-api/events/${id}`, { method: 'DELETE' }),
+  getEventStats: () => request('/event-actions-api/events/stats'),
 };
 
 // Assets API
@@ -173,6 +252,7 @@ export const rulesApi = {
   updateRule: (id: number, data: any) => request(`/rules-api/rules/${id}`, { method: 'PUT', body: data }),
   deleteRule: (id: number) => request(`/rules-api/rules/${id}`, { method: 'DELETE' }),
   toggleRule: (id: number) => request(`/rules-api/rules/${id}/toggle`, { method: 'POST' }),
+  testRule: (id: number) => request(`/rules-api/rules/${id}/test`, { method: 'POST' }),
 };
 
 // Playbooks API
@@ -235,6 +315,20 @@ export const auditApi = {
   },
 };
 
+// Roles API
+export const rolesApi = {
+  getRoles: (params?: { page?: number; page_size?: number }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.page) searchParams.append('page', String(params.page));
+    if (params?.page_size) searchParams.append('page_size', String(params.page_size));
+    return request(`/roles-api/roles?${searchParams.toString()}`);
+  },
+  getRole: (id: string) => request(`/roles-api/roles/${id}`),
+  createRole: (data: any) => request('/roles-api/roles', { method: 'POST', body: data }),
+  updateRole: (id: string, data: any) => request(`/roles-api/roles/${id}`, { method: 'PUT', body: data }),
+  deleteRole: (id: string) => request(`/roles-api/roles/${id}`, { method: 'DELETE' }),
+};
+
 // Data Sources API
 export const dataSourcesApi = {
   getDataSources: (params?: { page?: number; page_size?: number; type?: string }) => {
@@ -250,6 +344,42 @@ export const dataSourcesApi = {
   updateDataSource: (id: number, data: any) => request(`/datasources-api/datasources/${id}`, { method: 'PUT', body: data }),
   deleteDataSource: (id: number) => request(`/datasources-api/datasources/${id}`, { method: 'DELETE' }),
   testConnection: (id: number) => request(`/datasources-api/datasources/${id}/test`, { method: 'POST' }),
+  
+  // 保存数据流关联配置
+  saveMappingConfig: (dataSourceId: number, mappingConfig: {
+    logTypeId?: string;
+    logTypeName?: string;
+    logTypeDescription?: string;
+    pipelineIds?: string[];
+    pipelineNames?: string[];
+    storageConfigId?: string;
+    storageTableName?: string;
+    storageRetentionDays?: number;
+    storagePartition?: string;
+    storageCompression?: boolean;
+    storageIndexes?: string[];
+    formatTemplateId?: string;
+    formatTemplateName?: string;
+  }) => request(`/datasources-api/datasources/${dataSourceId}/mapping`, { 
+    method: 'POST', 
+    body: mappingConfig 
+  }),
+  
+  // 启动 Flink 任务
+  startFlinkJob: (dataSourceId: number) => request(`/datasources-api/datasources/${dataSourceId}/start`, { 
+    method: 'POST' 
+  }),
+  
+  // 停止 Flink 任务
+  stopFlinkJob: (dataSourceId: number) => request(`/datasources-api/datasources/${dataSourceId}/stop`, { 
+    method: 'POST' 
+  }),
+  
+  // 获取 Flink 任务状态
+  getFlinkStatus: (dataSourceId: number) => request(`/datasources-api/datasources/${dataSourceId}/status`),
+  
+  // 批量启动所有已配置的数据源
+  startAllDatasources: () => request(`/datasources-api/datasources/batch/start`, { method: 'POST' }),
 };
 
 // Log Types API
@@ -297,6 +427,65 @@ export const productsApi = {
     if (params?.page_size) searchParams.append('page_size', String(params.page_size));
     return request(`/products-api/products?${searchParams.toString()}`);
   },
+};
+
+// 告警标准字段定义 API（从数据库加载，供 SmartParser 解析管道使用）
+export const alertFieldsApi = {
+  /** 获取所有启用的标准字段定义（按分类分组） */
+  getFields: (category?: string) => {
+    const params = category ? `?category=${encodeURIComponent(category)}` : '';
+    return request(`/alert-fields/fields${params}`);
+  },
+  /** 获取所有字段（含禁用的，管理用） */
+  getAllFields: () => request('/alert-fields/fields/all'),
+  /** 更新字段定义 */
+  updateField: (id: number, data: any) => request(`/alert-fields/fields/${id}`, { method: 'PUT', body: data }),
+  /** 删除字段定义 */
+  deleteField: (id: number) => request(`/alert-fields/fields/${id}`, { method: 'DELETE' }),
+  /** 自动映射匹配 */
+  resolveMapping: (fields: string[]) => request('/alert-fields/fields/mapping', { method: 'POST', body: { fields } }),
+};
+
+// 解析管道字段映射 API
+export const pipelineMappingsApi = {
+  /** 获取管道的字段映射 */
+  getMappings: (pipelineId: number) => 
+    request(`/pipeline-config/pipelines/${pipelineId}/mappings`),
+  
+  /** 批量保存字段映射 */
+  saveMappings: (pipelineId: number, mappings: Array<{
+    target_field: string;
+    source_field: string;
+    field_type: string;
+    default_value?: string;
+    is_required?: boolean;
+    sort_order?: number;
+  }>) => request(`/pipeline-config/pipelines/${pipelineId}/mappings`, { 
+    method: 'POST', 
+    body: { mappings } 
+  }),
+  
+  /** 删除单个字段映射 */
+  deleteMapping: (pipelineId: number, mappingId: number) => 
+    request(`/pipeline-config/pipelines/${pipelineId}/mappings/${mappingId}`, { method: 'DELETE' }),
+  
+  /** 获取管道配置 */
+  getConfig: (pipelineId: number) => 
+    request(`/pipeline-config/pipelines/${pipelineId}/config`),
+  
+  /** 更新管道配置 */
+  updateConfig: (pipelineId: number, config: any) => 
+    request(`/pipeline-config/pipelines/${pipelineId}/config`, { method: 'PUT', body: config }),
+  
+  /** 自动映射字段 */
+  autoMap: (pipelineId: number, parsedFields: Array<{name: string; type: string}>) => 
+    request(`/pipeline-config/pipelines/${pipelineId}/auto-map`, { 
+      method: 'POST', 
+      body: { parsed_fields: parsedFields } 
+    }),
+  
+  /** 获取映射建议 */
+  getSuggestions: () => request('/pipeline-config/mappings/suggestions'),
 };
 
 // Notifications API
@@ -385,4 +574,43 @@ export const eventActionsApi = {
   // 批量删除
   batchDelete: (eventIds: string[]) =>
     request('/event-actions-api/events/batch', { method: 'DELETE', body: { event_ids: eventIds } }),
+};
+
+// Storage Tables API
+export const storageTablesApi = {
+  // 获取所有存储表
+  getTables: (params?: { auto_created?: boolean }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.auto_created !== undefined) {
+      searchParams.append('auto_created', String(params.auto_created));
+    }
+    const query = searchParams.toString();
+    return request(`/storage-tables${query ? `?${query}` : ''}`);
+  },
+
+  // 获取单个存储表
+  getTable: (id: number) => request(`/storage-tables/${id}`),
+
+  // 创建存储表
+  createTable: (data: {
+    name: string;
+    displayName?: string;
+    dataSource?: string;
+    logType?: string;
+    retentionDays?: number;
+    partitionInterval?: string;
+    indexes?: string[];
+    compression?: boolean;
+  }) => request('/storage-tables', { method: 'POST', body: data }),
+
+  // 更新存储表
+  updateTable: (id: number, data: any) =>
+    request(`/storage-tables/${id}`, { method: 'PUT', body: data }),
+
+  // 删除存储表
+  deleteTable: (id: number) => request(`/storage-tables/${id}`, { method: 'DELETE' }),
+
+  // 批量删除存储表
+  batchDelete: (ids: number[]) =>
+    request('/storage-tables/batch-delete', { method: 'POST', body: { ids } }),
 };

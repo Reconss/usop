@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { AuthProvider, useAuth } from './contexts/AuthContext';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import Dashboard from './pages/Dashboard';
@@ -23,59 +24,63 @@ import Login from './pages/Login';
 import Profile from './pages/Profile';
 import Settings from './pages/Settings';
 
-function App() {
+function AppContent() {
+  const { isAuthenticated } = useAuth();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  // 从 localStorage 恢复登录状态
-  const [isAuthenticated, setIsAuthenticated] = useState(() => {
-    return !!localStorage.getItem('token');
-  });
 
   if (!isAuthenticated) {
     return (
-      <HashRouter>
-        <Routes>
-          <Route path="/login" element={<Login onLogin={() => setIsAuthenticated(true)} />} />
-          <Route path="*" element={<Navigate to="/login" replace />} />
-        </Routes>
-      </HashRouter>
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route path="*" element={<Navigate to="/login" replace />} />
+      </Routes>
     );
   }
 
   return (
-    <HashRouter>
-      <div className="flex h-screen bg-page-bg overflow-hidden">
-        <Sidebar collapsed={sidebarCollapsed} onCollapse={setSidebarCollapsed} />
-        <div className="flex-1 flex flex-col overflow-hidden">
-          <Header onMenuClick={() => setSidebarCollapsed(!sidebarCollapsed)} />
-          <main className="flex-1 overflow-auto p-6 scrollbar-thin">
-            <Routes>
-              <Route path="/" element={<Dashboard />} />
-              <Route path="/detection/events" element={<EventWorkspace />} />
-              <Route path="/detection/investigation" element={<SecurityAlerts />} />
-              <Route path="/assets/inventory" element={<AssetInventory />} />
-              <Route path="/assets/scans" element={<ScanTasks />} />
-              <Route path="/response/rules" element={<DetectionRules />} />
-              <Route path="/response/playbooks" element={<Playbooks />} />
-              <Route path="/system/users" element={<UserManagement />} />
-              <Route path="/system/audit" element={<AuditLogs />} />
-              <Route path="/detection/hunting" element={<ThreatHunting />} />
-              <Route path="/detection/ai" element={<AICenter />} />
-              <Route path="/data/ingestion" element={<DataIngestion />} />
-              <Route path="/system/roles" element={<RoleManagement />} />
-              <Route path="/system/config" element={<GlobalConfig />} />
-              <Route path="/vulnerabilities/host" element={<VulnerabilityManagement type="host" />} />
-              <Route path="/vulnerabilities/application" element={<VulnerabilityManagement type="application" />} />
-              <Route path="/vulnerabilities/assessment" element={<VulnerabilityAssessment />} />
-              <Route path="/vulnerabilities" element={<Navigate to="/vulnerabilities/host" replace />} />
-              <Route path="/system/notifications" element={<NotificationSettings />} />
-              <Route path="/profile" element={<Profile />} />
-              <Route path="/settings" element={<Settings />} />
-              <Route path="/login" element={<Navigate to="/" replace />} />
-            </Routes>
-          </main>
-        </div>
+    <div className="flex h-screen bg-page-bg overflow-hidden">
+      <Sidebar collapsed={sidebarCollapsed} onCollapse={setSidebarCollapsed} />
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <Header onMenuClick={() => setSidebarCollapsed(!sidebarCollapsed)} />
+        <main className="flex-1 overflow-auto p-6 scrollbar-thin">
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/detection/events" element={<EventWorkspace />} />
+            <Route path="/detection/investigation" element={<SecurityAlerts />} />
+            <Route path="/detection/alerts" element={<Navigate to="/detection/investigation" replace />} />
+            <Route path="/assets/inventory" element={<AssetInventory />} />
+            <Route path="/assets/scans" element={<ScanTasks />} />
+            <Route path="/response/rules" element={<DetectionRules />} />
+            <Route path="/response/playbooks" element={<Playbooks />} />
+            <Route path="/system/users" element={<UserManagement />} />
+            <Route path="/system/audit" element={<AuditLogs />} />
+            <Route path="/detection/hunting" element={<ThreatHunting />} />
+            <Route path="/detection/ai" element={<AICenter />} />
+            <Route path="/data/ingestion" element={<DataIngestion />} />
+            <Route path="/system/roles" element={<RoleManagement />} />
+            <Route path="/system/config" element={<GlobalConfig />} />
+            <Route path="/vulnerabilities/host" element={<VulnerabilityManagement type="host" />} />
+            <Route path="/vulnerabilities/application" element={<VulnerabilityManagement type="application" />} />
+            <Route path="/vulnerabilities/assessment" element={<VulnerabilityAssessment />} />
+            <Route path="/vulnerabilities" element={<Navigate to="/vulnerabilities/host" replace />} />
+            <Route path="/system/notifications" element={<NotificationSettings />} />
+            <Route path="/profile" element={<Profile />} />
+            <Route path="/settings" element={<Settings />} />
+            <Route path="/login" element={<Navigate to="/" replace />} />
+          </Routes>
+        </main>
       </div>
-    </HashRouter>
+    </div>
+  );
+}
+
+function App() {
+  return (
+    <AuthProvider>
+      <HashRouter>
+        <AppContent />
+      </HashRouter>
+    </AuthProvider>
   );
 }
 

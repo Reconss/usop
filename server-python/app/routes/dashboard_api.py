@@ -18,7 +18,10 @@ def get_metrics():
     today = datetime.utcnow().date()
     today_start = datetime.combine(today, datetime.min.time())
     
-    # 今日告警数
+    # 总告警数 (改为统计所有告警)
+    total_alerts = Alert.query.count()
+    
+    # 今日告警数 (保留用于趋势分析)
     today_alerts = Alert.query.filter(
         func.date(Alert.created_at) == today
     ).count()
@@ -49,7 +52,7 @@ def get_metrics():
     return jsonify({
         'success': True,
         'data': {
-            'todayAlerts': today_alerts,
+            'todayAlerts': total_alerts,  # 返回总告警数
             'pendingEvents': pending_events,
             'totalAssets': total_assets,
             'highRiskAssets': high_risk_assets,

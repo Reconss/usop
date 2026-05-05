@@ -35,27 +35,23 @@ const sections: ConfigSection[] = [
   { id: 'advanced', name: '高级设置', icon: Zap, description: '高级系统参数' }
 ];
 
-const mockConfigs: ConfigItem[] = [
-  // 基础设置
+// 默认配置（用于本地配置管理）
+const defaultConfigs: ConfigItem[] = [
   { id: '1', section: 'general', key: 'system.name', label: '系统名称', description: '显示在页面标题和邮件中的系统名称', type: 'text', value: 'USOP安全运营平台' },
   { id: '2', section: 'general', key: 'system.logo', label: '系统Logo', description: '系统Logo图片URL', type: 'text', value: '', placeholder: 'https://example.com/logo.png' },
   { id: '3', section: 'general', key: 'system.timezone', label: '默认时区', description: '系统默认时区设置', type: 'select', value: 'Asia/Shanghai', options: [{ label: '北京时间', value: 'Asia/Shanghai' }, { label: '东京时间', value: 'Asia/Tokyo' }, { label: '纽约时间', value: 'America/New_York' }, { label: '伦敦时间', value: 'Europe/London' }] },
   { id: '4', section: 'general', key: 'system.language', label: '默认语言', description: '系统默认显示语言', type: 'select', value: 'zh-CN', options: [{ label: '简体中文', value: 'zh-CN' }, { label: 'English', value: 'en-US' }] },
   { id: '5', section: 'general', key: 'system.session_timeout', label: '会话超时(分钟)', description: '用户无操作自动登出时间', type: 'number', value: 30 },
   { id: '6', section: 'general', key: 'system.max_login_attempts', label: '最大登录尝试次数', description: '超过次数将锁定账户', type: 'number', value: 5 },
-
-  // 通知配置
   { id: '7', section: 'notification', key: 'email.enabled', label: '启用邮件通知', description: '是否通过邮件发送告警通知', type: 'boolean', value: true },
-  { id: '8', section: 'notification', key: 'email.smtp_host', label: 'SMTP服务器', description: '邮件服务器地址', type: 'text', value: 'smtp.company.com' },
+  { id: '8', section: 'notification', key: 'email.smtp_host', label: 'SMTP服务器', description: '邮件服务器地址', type: 'text', value: '' },
   { id: '9', section: 'notification', key: 'email.smtp_port', label: 'SMTP端口', description: '邮件服务器端口', type: 'number', value: 587 },
-  { id: '10', section: 'notification', key: 'email.username', label: '邮箱账号', description: '发件邮箱账号', type: 'text', value: 'security@company.com' },
-  { id: '11', section: 'notification', key: 'email.password', label: '邮箱密码', description: '发件邮箱密码或授权码', type: 'password', value: '********' },
+  { id: '10', section: 'notification', key: 'email.username', label: '邮箱账号', description: '发件邮箱账号', type: 'text', value: '' },
+  { id: '11', section: 'notification', key: 'email.password', label: '邮箱密码', description: '发件邮箱密码或授权码', type: 'password', value: '' },
   { id: '12', section: 'notification', key: 'dingtalk.enabled', label: '启用钉钉通知', description: '是否通过钉钉发送告警', type: 'boolean', value: true },
-  { id: '13', section: 'notification', key: 'dingtalk.webhook', label: '钉钉Webhook', description: '钉钉机器人Webhook地址', type: 'text', value: 'https://oapi.dingtalk.com/robot/send?access_token=xxx' },
+  { id: '13', section: 'notification', key: 'dingtalk.webhook', label: '钉钉Webhook', description: '钉钉机器人Webhook地址', type: 'text', value: '' },
   { id: '14', section: 'notification', key: 'wechat.enabled', label: '启用企业微信', description: '是否通过企业微信发送告警', type: 'boolean', value: false },
   { id: '15', section: 'notification', key: 'sms.enabled', label: '启用短信通知', description: '是否通过短信发送紧急告警', type: 'boolean', value: true },
-
-  // 安全设置
   { id: '16', section: 'security', key: 'auth.mfa_enabled', label: '启用MFA', description: '是否强制开启多因素认证', type: 'boolean', value: false },
   { id: '17', section: 'security', key: 'auth.password_min_length', label: '密码最小长度', description: '用户密码最小字符数', type: 'number', value: 8 },
   { id: '18', section: 'security', key: 'auth.password_complexity', label: '密码复杂度', description: '密码复杂度要求', type: 'select', value: 'medium', options: [{ label: '低', value: 'low' }, { label: '中', value: 'medium' }, { label: '高', value: 'high' }] },
@@ -64,25 +60,19 @@ const mockConfigs: ConfigItem[] = [
   { id: '21', section: 'security', key: 'audit.retention_days', label: '审计日志保留(天)', description: '审计日志保留天数', type: 'number', value: 90 },
   { id: '22', section: 'security', key: 'ip_whitelist.enabled', label: '启用IP白名单', description: '是否限制访问IP', type: 'boolean', value: false },
   { id: '23', section: 'security', key: 'ip_whitelist.ips', label: '白名单IP', description: '允许的IP地址，多个用逗号分隔', type: 'textarea', value: '', placeholder: '192.168.1.0/24, 10.0.0.0/8' },
-
-  // 集成配置
   { id: '24', section: 'integration', key: 'itsm.enabled', label: '启用ITSM集成', description: '是否集成ITSM工单系统', type: 'boolean', value: true },
-  { id: '25', section: 'integration', key: 'itsm.url', label: 'ITSM地址', description: 'ITSM系统API地址', type: 'text', value: 'https://itsm.company.com/api/v1' },
-  { id: '26', section: 'integration', key: 'itsm.api_key', label: 'ITSM API Key', description: 'ITSM系统API密钥', type: 'password', value: '********' },
+  { id: '25', section: 'integration', key: 'itsm.url', label: 'ITSM地址', description: 'ITSM系统API地址', type: 'text', value: '' },
+  { id: '26', section: 'integration', key: 'itsm.api_key', label: 'ITSM API Key', description: 'ITSM系统API密钥', type: 'password', value: '' },
   { id: '27', section: 'integration', key: 'cmdb.enabled', label: '启用CMDB集成', description: '是否集成CMDB资产系统', type: 'boolean', value: true },
-  { id: '28', section: 'integration', key: 'cmdb.url', label: 'CMDB地址', description: 'CMDB系统API地址', type: 'text', value: 'https://cmdb.company.com/api/v2' },
+  { id: '28', section: 'integration', key: 'cmdb.url', label: 'CMDB地址', description: 'CMDB系统API地址', type: 'text', value: '' },
   { id: '29', section: 'integration', key: 'threat_intel.enabled', label: '启用威胁情报', description: '是否集成威胁情报源', type: 'boolean', value: true },
   { id: '30', section: 'integration', key: 'threat_intel.sources', label: '情报源', description: '启用的威胁情报源', type: 'textarea', value: 'alienvault, virustotal, abuse.ch', placeholder: '多个源用逗号分隔' },
-
-  // 存储配置
-  { id: '31', section: 'storage', key: 'es.host', label: 'Elasticsearch地址', description: 'ES集群地址', type: 'text', value: 'es.company.com:9200' },
+  { id: '31', section: 'storage', key: 'es.host', label: 'Elasticsearch地址', description: 'ES集群地址', type: 'text', value: '' },
   { id: '32', section: 'storage', key: 'es.index_prefix', label: '索引前缀', description: 'ES索引名称前缀', type: 'text', value: 'usop-' },
   { id: '33', section: 'storage', key: 'es.retention_days', label: '数据保留(天)', description: '安全数据保留天数', type: 'number', value: 180 },
   { id: '34', section: 'storage', key: 'backup.enabled', label: '启用自动备份', description: '是否自动备份配置数据', type: 'boolean', value: true },
   { id: '35', section: 'storage', key: 'backup.cron', label: '备份周期', description: '自动备份Cron表达式', type: 'text', value: '0 2 * * *', placeholder: '0 2 * * *' },
   { id: '36', section: 'storage', key: 'backup.retention', label: '备份保留(份)', description: '保留的备份数量', type: 'number', value: 7 },
-
-  // 高级设置
   { id: '37', section: 'advanced', key: 'performance.cache_enabled', label: '启用缓存', description: '是否启用数据缓存', type: 'boolean', value: true },
   { id: '38', section: 'advanced', key: 'performance.cache_ttl', label: '缓存TTL(秒)', description: '缓存过期时间', type: 'number', value: 300 },
   { id: '39', section: 'advanced', key: 'performance.max_query_limit', label: '最大查询条数', description: '单次查询返回最大条数', type: 'number', value: 10000 },
@@ -92,7 +82,7 @@ const mockConfigs: ConfigItem[] = [
 
 export default function GlobalConfig() {
   const [activeSection, setActiveSection] = useState('general');
-  const [configs, setConfigs] = useState<ConfigItem[]>(mockConfigs);
+  const [configs, setConfigs] = useState<ConfigItem[]>(defaultConfigs);
   const [saving, setSaving] = useState(false);
   const [savedSection, setSavedSection] = useState<string | null>(null);
   const [showTestModal, setShowTestModal] = useState(false);

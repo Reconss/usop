@@ -10,7 +10,7 @@ import {
   ArrowRight
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { dashboardApi } from '../services/api';
+import { dashboardApi, assetsApi } from '../services/api';
 import MetricCard from '../components/MetricCard';
 import EventTrendChart from '../components/EventTrendChart';
 import EventTypeChart from '../components/EventTypeChart';
@@ -254,8 +254,5 @@ const Dashboard: React.FC = () => {
     </div>
   );
 };
-
-// 导入assetsApi
-import { assetsApi } from '../services/api';
 
 export default Dashboard;

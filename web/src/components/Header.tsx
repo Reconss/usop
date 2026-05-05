@@ -57,9 +57,16 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
   const [loadingNotifications, setLoadingNotifications] = useState(false);
   const notificationRef = React.useRef<HTMLDivElement>(null);
   const userMenuRef = React.useRef<HTMLDivElement>(null);
+  // 后端可用性标记：连续失败后暂停通知轮询，避免刷屏报错
+  const backendUnavailableRef = React.useRef(false);
+  const consecutiveErrorsRef = React.useRef(0);
+  const [notifyInterval, setNotifyInterval] = useState<number | null>(60000);
 
   // 获取通知列表
-  const fetchNotifications = async () => {
+  const fetchNotifications = async (isRetry = false) => {
+    // 后端已确认不可用时，跳过请求（除非是手动重试）
+    if (backendUnavailableRef.current && !isRetry) return;
+
     try {
       setLoadingNotifications(true);
       const res = await notificationsApi.getNotifications();
@@ -67,9 +74,28 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
         const items = Array.isArray(res.data) ? res.data : res.data.items || [];
         setNotifications(items);
       }
-    } catch (error) {
-      console.error('获取通知失败:', error);
+      // 成功后重置错误计数
+      consecutiveErrorsRef.current = 0;
+      backendUnavailableRef.current = false;
+      if (notifyInterval !== 60000) setNotifyInterval(60000);
+    } catch (error: any) {
+      consecutiveErrorsRef.current += 1;
+      // 仅首次和每第 10 次打印日志，避免刷屏
+      if (consecutiveErrorsRef.current <= 1 || consecutiveErrorsRef.current % 10 === 0) {
+        console.warn(`[通知服务] 后端不可用 (${consecutiveErrorsRef.current}次)，将自动降级`);
+      }
       setNotifications([]);
+      // 连续 3 次失败后暂停轮询（60 秒后自动尝试恢复）
+      if (consecutiveErrorsRef.current >= 3) {
+        backendUnavailableRef.current = true;
+        setNotifyInterval(null); // 停止定时器
+        setTimeout(() => {
+          backendUnavailableRef.current = false;
+          consecutiveErrorsRef.current = 0;
+          setNotifyInterval(60000);
+          fetchNotifications(true); // 尝试恢复
+        }, 60000);
+      }
     } finally {
       setLoadingNotifications(false);
     }
@@ -78,9 +104,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
   // 初始加载和定时刷新通知
   useEffect(() => {
     fetchNotifications();
-    const interval = setInterval(fetchNotifications, 60000);
-    return () => clearInterval(interval);
-  }, []);
+    if (notifyInterval) {
+      const interval = setInterval(() => fetchNotifications(), notifyInterval);
+      return () => clearInterval(interval);
+    }
+  }, [notifyInterval]);
 
   const handleLogout = async () => {
     try {

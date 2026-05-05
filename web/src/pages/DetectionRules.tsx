@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, Search, Edit2, Trash2, Play, X, Code, FileText, Clock, AlertTriangle, Database, Server, CheckCircle, ChevronRight, Globe, MessageSquare, Terminal, Cloud, Lock, FolderOpen, Wifi, Workflow } from 'lucide-react';
+import { Plus, Search, Edit2, Trash2, Play, X, Code, FileText, Clock, AlertTriangle, Database, Server, CheckCircle, ChevronRight, Globe, MessageSquare, Terminal, Cloud, Lock, FolderOpen, Wifi, Workflow, Loader2, CheckCircle2 } from 'lucide-react';
 import { rulesApi, dataSourcesApi, playbooksApi } from '../services/api';
 
 interface DetectionRule {
@@ -77,6 +77,10 @@ export default function DetectionRules() {
   const [showForm, setShowForm] = useState(false);
   const [editingRule, setEditingRule] = useState<DetectionRule | null>(null);
   const [selectedPlaybookId, setSelectedPlaybookId] = useState<string | number | null>(null);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isTesting, setIsTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; matched: number; logs: any[] } | null>(null);
 
   // 获取数据
   const fetchData = async () => {
@@ -130,12 +134,19 @@ export default function DetectionRules() {
   useEffect(() => {
     fetchData();
   }, []);
+
+  const showToast = (message: string, type: 'success' | 'error' = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
+  };
+
   const [formData, setFormData] = useState<Partial<DetectionRule>>({
     name: '',
     type: 'single',
     description: '',
     status: 'disabled'
   });
+  const [selectedSeverity, setSelectedSeverity] = useState<string>('medium');
   const [activeTab, setActiveTab] = useState<'basic' | 'condition' | 'action' | 'datasource'>('basic');
   const [selectedDataSources, setSelectedDataSources] = useState<string[]>([]);
 
@@ -180,9 +191,11 @@ export default function DetectionRules() {
       description: '',
       status: 'disabled'
     });
+    setSelectedSeverity('medium');
     setSelectedDataSources([]);
     setSelectedPlaybookId(null);
     setActiveTab('basic');
+    setTestResult(null);
     setShowForm(true);
   };
 
@@ -192,44 +205,128 @@ export default function DetectionRules() {
     setSelectedDataSources((rule.dataSourceIds || []).map(id => String(id)));
     setSelectedPlaybookId(rule.playbookId || null);
     setActiveTab('basic');
+    setTestResult(null);
     setShowForm(true);
   };
 
-  const handleSave = () => {
-    if (!formData.name) return;
-
-    if (editingRule) {
-      setRules(prev => prev.map(rule =>
-        rule.id === editingRule.id
-          ? { ...rule, ...formData, dataSourceIds: selectedDataSources, playbookId: selectedPlaybookId } as DetectionRule
-          : rule
-      ));
-    } else {
-      const newRule: DetectionRule = {
-        id: `RULE-${new Date().getFullYear()}-${String(rules.length + 1).padStart(3, '0')}`,
-        name: formData.name!,
-        type: formData.type as 'single' | 'correlation' | 'sequence',
-        status: 'disabled',
-        hitCount: 0,
-        description: formData.description,
-        dataSourceIds: selectedDataSources,
-        playbookId: selectedPlaybookId || undefined
-      };
-      setRules(prev => [...prev, newRule]);
+  const handleSave = async () => {
+    if (!formData.name) {
+      showToast('请输入规则名称', 'error');
+      return;
     }
-    setShowForm(false);
+
+    setIsSaving(true);
+    try {
+      const ruleData = {
+        name: formData.name,
+        type: formData.type || 'single',
+        description: formData.description,
+        severity: selectedSeverity,
+        data_source_ids: selectedDataSources.map(id => Number(id)),
+        playbook_id: selectedPlaybookId ? Number(selectedPlaybookId) : null,
+        status: 'disabled'
+      };
+
+      if (editingRule) {
+        // 更新现有规则
+        await rulesApi.updateRule(Number(editingRule.id), ruleData);
+        setRules(prev => prev.map(rule =>
+          rule.id === editingRule.id
+            ? { ...rule, ...formData, dataSourceIds: selectedDataSources, playbookId: selectedPlaybookId } as DetectionRule
+            : rule
+        ));
+        showToast('规则已更新');
+      } else {
+        // 创建新规则
+        const res = await rulesApi.createRule(ruleData);
+        if (res.success && res.data) {
+          const newRule: DetectionRule = {
+            id: res.data.id || res.data.rule_id || `RULE-${new Date().getFullYear()}-${String(rules.length + 1).padStart(3, '0')}`,
+            name: formData.name!,
+            type: formData.type as 'single' | 'correlation' | 'sequence',
+            status: 'disabled',
+            hitCount: 0,
+            description: formData.description,
+            dataSourceIds: selectedDataSources,
+            playbookId: selectedPlaybookId || undefined
+          };
+          setRules(prev => [...prev, newRule]);
+          showToast('规则已创建');
+        }
+      }
+      setShowForm(false);
+    } catch (error: any) {
+      console.error('保存规则失败:', error);
+      showToast(error?.message || '保存失败', 'error');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
-  const handleDelete = (id: string | number) => {
-    setRules(prev => prev.filter(rule => rule.id !== id));
+  const handleDelete = async (id: string | number) => {
+    if (!confirm('确定要删除此规则吗？')) return;
+    try {
+      await rulesApi.deleteRule(Number(id));
+      setRules(prev => prev.filter(rule => rule.id !== id));
+      showToast('规则已删除');
+    } catch (error) {
+      console.error('删除规则失败:', error);
+      showToast('删除失败', 'error');
+    }
   };
 
-  const handleTest = (rule: DetectionRule) => {
-    alert(`正在测试规则: ${rule.name}`);
+  const handleTest = async (rule: DetectionRule) => {
+    setIsTesting(true);
+    setTestResult(null);
+    try {
+      // 调用规则测试 API
+      const res = await rulesApi.testRule(Number(rule.id));
+      if (res.success && res.data) {
+        setTestResult({
+          success: true,
+          matched: res.data.matched_count || 0,
+          logs: res.data.matched_logs || []
+        });
+        showToast(`测试完成，匹配 ${res.data.matched_count || 0} 条日志`);
+      } else {
+        setTestResult({
+          success: false,
+          matched: 0,
+          logs: []
+        });
+        showToast(res.error || '测试失败', 'error');
+      }
+    } catch (error: any) {
+      console.error('测试规则失败:', error);
+      setTestResult({
+        success: false,
+        matched: 0,
+        logs: []
+      });
+      showToast(error?.message || '测试失败', 'error');
+    } finally {
+      setIsTesting(false);
+    }
   };
 
   return (
     <div className="space-y-6">
+      <AnimatePresence>
+        {toast && (
+          <motion.div
+            initial={{ opacity: 0, y: -50 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -50 }}
+            className={`fixed top-4 right-4 z-50 px-4 py-3 rounded-xl shadow-lg ${
+              toast.type === 'success' ? 'bg-emerald-500/90' : 'bg-rose-500/90'
+            } text-white flex items-center gap-2`}
+          >
+            {toast.type === 'success' ? <CheckCircle2 className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
+            <span className="text-sm font-medium">{toast.message}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-text-primary">规则管理</h1>
@@ -308,6 +405,7 @@ export default function DetectionRules() {
                       whileTap={{ scale: 0.9 }}
                       onClick={() => handleEdit(rule)}
                       className="p-2 text-text-secondary hover:text-primary transition-colors"
+                      title="编辑规则"
                     >
                       <Edit2 className="w-4 h-4" />
                     </motion.button>
@@ -315,15 +413,18 @@ export default function DetectionRules() {
                       whileHover={{ scale: 1.1 }}
                       whileTap={{ scale: 0.9 }}
                       onClick={() => handleTest(rule)}
-                      className="p-2 text-text-secondary hover:text-success transition-colors"
+                      disabled={isTesting}
+                      className="p-2 text-text-secondary hover:text-success transition-colors disabled:opacity-50"
+                      title="测试规则"
                     >
-                      <Play className="w-4 h-4" />
+                      {isTesting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
                     </motion.button>
                     <motion.button
                       whileHover={{ scale: 1.1 }}
                       whileTap={{ scale: 0.9 }}
                       onClick={() => handleDelete(rule.id)}
                       className="p-2 text-text-secondary hover:text-critical transition-colors"
+                      title="删除规则"
                     >
                       <Trash2 className="w-4 h-4" />
                     </motion.button>
@@ -425,7 +526,13 @@ export default function DetectionRules() {
                           {severityOptions.map((sev) => (
                             <button
                               key={sev.value}
-                              className="flex-1 px-3 py-2 rounded-lg border border-border-color text-sm transition-colors hover:border-primary"
+                              type="button"
+                              onClick={() => setSelectedSeverity(sev.value)}
+                              className={`flex-1 px-3 py-2 rounded-lg border text-sm transition-all hover:border-primary ${
+                                selectedSeverity === sev.value
+                                  ? 'border-primary bg-primary/10 text-primary'
+                                  : 'border-border-color text-text-secondary hover:bg-white/5'
+                              }`}
                             >
                               <span className="inline-block w-2 h-2 rounded-full mr-2" style={{ backgroundColor: sev.color }} />
                               {sev.label}
@@ -672,6 +779,31 @@ export default function DetectionRules() {
                   )}
                 </div>
 
+                {/* 测试结果展示 */}
+                {testResult && (
+                  <div className="mx-6 mb-4 p-4 rounded-lg border">
+                    <div className="flex items-center gap-2 mb-2">
+                      {testResult.success ? (
+                        <CheckCircle className="w-4 h-4 text-emerald-400" />
+                      ) : (
+                        <AlertTriangle className="w-4 h-4 text-rose-400" />
+                      )}
+                      <span className={`text-sm font-medium ${testResult.success ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        测试结果：匹配 {testResult.matched} 条日志
+                      </span>
+                    </div>
+                    {testResult.logs.length > 0 && (
+                      <div className="mt-2 space-y-1 max-h-32 overflow-auto">
+                        {testResult.logs.slice(0, 5).map((log: any, idx: number) => (
+                          <div key={idx} className="text-xs font-mono text-text-muted bg-page-bg p-2 rounded truncate">
+                            {log.message || log.raw_message || JSON.stringify(log)}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <div className="flex justify-end gap-3 p-6 border-t border-border-color">
                   <button
                     onClick={() => setShowForm(false)}
@@ -681,9 +813,10 @@ export default function DetectionRules() {
                   </button>
                   <button
                     onClick={handleSave}
-                    disabled={!formData.name}
-                    className="px-4 py-2 bg-primary hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition-colors"
+                    disabled={!formData.name || isSaving}
+                    className="px-4 py-2 bg-primary hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition-colors flex items-center gap-2"
                   >
+                    {isSaving && <Loader2 className="w-4 h-4 animate-spin" />}
                     {editingRule ? '保存' : '创建'}
                   </button>
                 </div>

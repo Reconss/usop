@@ -325,9 +325,9 @@ export default function NotificationSettings() {
           </div>
           <div className="mt-4 p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg">
             <div className="text-xs text-blue-300">
-              <strong>变量说明：</strong> 可使用 {{`{{severity}}`}}, {{`{{event_title}}`}}, {{`{{timestamp}}`}}, 
-              {{`{{confidence}}`}}, {{`{{event_type}}`}}, {{`{{source_ip}}`}}, 
-              {{`{{affected_assets}}`}}, {{`{{description}}`}}, {{`{{recommended_action}}`}} 等变量
+              <strong>变量说明：</strong> 可使用 {'{{severity}}'}, {'{{event_title}}'}, {'{{timestamp}}'}, 
+              {'{{confidence}}'}, {'{{event_type}}'}, {'{{source_ip}}'}, 
+              {'{{affected_assets}}'}, {'{{description}}'}, {'{{recommended_action}}'} 等变量
             </div>
           </div>
         </motion.div>

@@ -1,28 +1,49 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Search, Filter, Download, Calendar, User, Eye } from 'lucide-react';
+import { Search, Filter, Download, Calendar, User, Eye, RefreshCw } from 'lucide-react';
 import type { AuditLog } from '../types';
-
-const mockLogs: AuditLog[] = [
-  { id: '1', timestamp: '2026-04-27T10:30:00Z', user: 'admin', action: '用户登录', details: { ip: '192.168.1.10' }, ip: '192.168.1.10' },
-  { id: '2', timestamp: '2026-04-27T10:25:00Z', user: 'analyst01', action: '事件确认', details: { eventId: 'EVT-001' }, ip: '192.168.1.20' },
-  { id: '3', timestamp: '2026-04-27T10:20:00Z', user: 'admin', action: '规则更新', details: { ruleId: 'RULE-001' }, ip: '192.168.1.10' },
-  { id: '4', timestamp: '2026-04-27T10:15:00Z', user: 'operator01', action: '资产扫描', details: { target: '192.168.1.0/24' }, ip: '192.168.1.30' },
-  { id: '5', timestamp: '2026-04-27T10:10:00Z', user: 'admin', action: '用户创建', details: { username: 'newuser' }, ip: '192.168.1.10' }
-];
+import { auditApi } from '../services/api';
 
 const actionColors: Record<string, string> = {
   '用户登录': 'text-green-400',
+  '登录': 'text-green-400',
   '事件确认': 'text-blue-400',
   '规则更新': 'text-orange-400',
   '资产扫描': 'text-purple-400',
-  '用户创建': 'text-primary'
+  '用户创建': 'text-primary',
+  '创建': 'text-primary',
+  '更新': 'text-orange-400',
+  '删除': 'text-red-400',
+  '登录失败': 'text-red-400'
 };
 
 export default function AuditLogs() {
-  const [logs] = useState<AuditLog[]>(mockLogs);
+  const [logs, setLogs] = useState<AuditLog[]>([]);
+  const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedLog, setSelectedLog] = useState<AuditLog | null>(null);
+
+  const fetchLogs = async () => {
+    setLoading(true);
+    try {
+      const res = await auditApi.getLogs({ page_size: 100 });
+      if (res.success && res.data) {
+        const items = Array.isArray(res.data) ? res.data : res.data.items || [];
+        setLogs(items);
+      } else {
+        setLogs([]);
+      }
+    } catch (error) {
+      console.error('获取审计日志失败:', error);
+      setLogs([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchLogs();
+  }, []);
 
   const filteredLogs = logs.filter(log =>
     log.user.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -39,6 +60,9 @@ export default function AuditLogs() {
         </div>
         <button className="flex items-center gap-2 px-4 py-2 bg-card-bg border border-border-color rounded-lg text-text-secondary hover:border-primary transition-colors">
           <Download className="w-4 h-4" />导出
+        </button>
+        <button onClick={fetchLogs} disabled={loading} className="flex items-center gap-2 px-4 py-2 bg-card-bg border border-border-color rounded-lg text-text-secondary hover:border-primary transition-colors">
+          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />刷新
         </button>
       </div>
 

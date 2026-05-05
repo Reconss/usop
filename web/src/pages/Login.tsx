@@ -1,18 +1,15 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Shield, Eye, EyeOff, Lock, User, AlertCircle } from 'lucide-react';
-import { authApi } from '../services/api';
+import { useAuth } from '../contexts/AuthContext';
 
-interface LoginProps {
-  onLogin: () => void;
-}
+const API_BASE = '/api';
+const BACKEND_FALLBACK = 'http://localhost:5001';
 
-export default function Login({ onLogin }: LoginProps) {
-  const navigate = useNavigate();
+export default function Login() {
+  const { login: authLogin } = useAuth();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [rememberMe, setRememberMe] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -20,35 +17,31 @@ export default function Login({ onLogin }: LoginProps) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-
-    if (!username.trim()) {
-      setError('请输入用户名');
-      return;
-    }
-    if (!password.trim()) {
-      setError('请输入密码');
-      return;
-    }
+    if (!username.trim()) { setError('请输入用户名'); return; }
+    if (!password.trim()) { setError('请输入密码'); return; }
 
     setIsLoading(true);
-    
     try {
-      const response = await authApi.login(username, password);
-      
-      // API 返回格式: {success: true, data: {token: ..., user: ...}}
-      if (response.success && response.data?.token) {
-        // 保存 token 和用户信息
-        localStorage.setItem('token', response.data.token);
-        localStorage.setItem('user', JSON.stringify(response.data.user));
-        if (rememberMe) {
-          localStorage.setItem('rememberMe', 'true');
-        }
-        onLogin();
+      // 登录请求：优先走 webpack 代理，失败时直连后端
+      const fetchOpts = {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      };
+      let res: Response;
+      try {
+        res = await fetch(`${API_BASE}/auth/login`, fetchOpts);
+      } catch {
+        res = await fetch(`${BACKEND_FALLBACK}${API_BASE}/auth/login`, fetchOpts);
+      }
+      const data = await res.json();
+      if (data.success && data.data?.token) {
+        authLogin(data.data.token, data.data.user);
       } else {
-        setError(response.error || '用户名或密码错误');
+        setError(data.error || '用户名或密码错误');
       }
     } catch (err: any) {
-      setError(err.message || '登录失败，请检查用户名和密码');
+      setError('连接后端失败，请检查服务是否运行');
     } finally {
       setIsLoading(false);
     }
@@ -126,21 +119,6 @@ export default function Login({ onLogin }: LoginProps) {
               </motion.div>
             )}
 
-            <div className="flex items-center justify-between">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={rememberMe}
-                  onChange={e => setRememberMe(e.target.checked)}
-                  className="w-4 h-4 rounded border-white/30 bg-white/10 text-indigo-500 focus:ring-indigo-400"
-                />
-                <span className="text-white/70 text-sm">记住密码</span>
-              </label>
-              <button type="button" className="text-indigo-400 hover:text-indigo-300 text-sm transition-colors">
-                忘记密码？
-              </button>
-            </div>
-
             <motion.button
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
@@ -153,7 +131,7 @@ export default function Login({ onLogin }: LoginProps) {
           </form>
 
           <div className="mt-6 text-center text-white/40 text-xs">
-            2026 USOP Security Platform. All rights reserved.
+            USOP Security Platform
           </div>
         </div>
       </motion.div>

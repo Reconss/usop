@@ -1,0 +1,482 @@
+{
+  "testData": {
+    "description": "检测规则和告警聚合功能测试数据",
+    "version": "1.0",
+    "date": "2026-05-05"
+  },
+  
+  "dataSources": {
+    "count": 5,
+    "items": [
+      {
+        "id": 101,
+        "name": "测试-防火墙日志",
+        "type": "firewall",
+        "protocol": "syslog",
+        "host": "192.168.100.10",
+        "port": 514,
+        "status": "active",
+        "totalEvents": 1500000,
+        "parsePipelines": [1, 2]
+      },
+      {
+        "id": 102,
+        "name": "测试-IDS日志",
+        "type": "ids",
+        "protocol": "syslog",
+        "host": "192.168.100.11",
+        "port": 514,
+        "status": "active",
+        "totalEvents": 850000,
+        "parsePipelines": [3]
+      },
+      {
+        "id": 103,
+        "name": "测试-认证日志",
+        "type": "auth",
+        "protocol": "filebeat",
+        "host": "10.10.10.50",
+        "port": 5044,
+        "status": "active",
+        "totalEvents": 3200000,
+        "parsePipelines": [4, 5]
+      },
+      {
+        "id": 104,
+        "name": "测试-Web日志",
+        "type": "web",
+        "protocol": "api",
+        "host": "elk.test.local",
+        "port": 9200,
+        "status": "connected",
+        "totalEvents": 5200000,
+        "parsePipelines": [6]
+      },
+      {
+        "id": 105,
+        "name": "测试-主机日志",
+        "type": "host",
+        "protocol": "filebeat",
+        "host": "10.10.10.100",
+        "port": 5044,
+        "status": "syncing",
+        "totalEvents": 980000,
+        "parsePipelines": [7]
+      }
+    ]
+  },
+
+  "detectionRules": {
+    "count": 8,
+    "items": [
+      {
+        "id": 1001,
+        "name": "测试-暴力破解检测",
+        "type": "single",
+        "content": "event_type=\"login\" AND status=\"failed\" AND count(5m) >= 5",
+        "description": "检测5分钟内登录失败超过5次的暴力破解行为",
+        "severity": "high",
+        "dataSourceIds": [103, 105],
+        "playbookId": 1002,
+        "status": "active",
+        "hitCount": 156,
+        "lastHitTime": "2026-05-04T15:30:00Z",
+        "tags": ["暴力破解", "登录安全", "测试规则"]
+      },
+      {
+        "id": 1002,
+        "name": "测试-异常登录时间",
+        "type": "single",
+        "content": "event_type=\"login\" AND time NOT BETWEEN \"08:00\" AND \"18:00\"",
+        "description": "检测非工作时间的异常登录行为",
+        "severity": "medium",
+        "dataSourceIds": [103],
+        "playbookId": null,
+        "status": "active",
+        "hitCount": 42,
+        "lastHitTime": "2026-05-04T03:30:00Z",
+        "tags": ["异常登录", "登录安全", "测试规则"]
+      },
+      {
+        "id": 1003,
+        "name": "测试-可疑网络连接",
+        "type": "single",
+        "content": "network_connection AND dst_port IN [4444, 5555, 6666, 7777] AND suspicious_process",
+        "description": "检测常见后门程序使用的可疑端口连接",
+        "severity": "critical",
+        "dataSourceIds": [101, 102],
+        "playbookId": 1001,
+        "status": "active",
+        "hitCount": 23,
+        "lastHitTime": "2026-05-04T10:15:00Z",
+        "tags": ["后门", "网络攻击", "测试规则"]
+      },
+      {
+        "id": 1004,
+        "name": "测试-敏感文件访问",
+        "type": "correlation",
+        "content": "sequence: file_access(path=\"/etc/shadow\") -> privilege_check -> failed",
+        "description": "检测对敏感系统文件的未授权访问尝试",
+        "severity": "high",
+        "dataSourceIds": [105],
+        "playbookId": 1004,
+        "status": "active",
+        "hitCount": 8,
+        "lastHitTime": "2026-05-03T22:45:00Z",
+        "tags": ["权限提升", "文件安全", "测试规则"]
+      },
+      {
+        "id": 1005,
+        "name": "测试-数据外泄检测",
+        "type": "sequence",
+        "content": "sequence: large_upload(>100MB) -> external_destination -> process_termination",
+        "description": "检测大量数据外传的异常行为",
+        "severity": "critical",
+        "dataSourceIds": [101, 104],
+        "playbookId": 1003,
+        "status": "disabled",
+        "hitCount": 0,
+        "lastHitTime": null,
+        "tags": ["数据泄露", "数据安全", "测试规则"]
+      },
+      {
+        "id": 1006,
+        "name": "测试-SQL注入检测",
+        "type": "single",
+        "content": "http_request AND sql_keywords AND error_response",
+        "description": "检测Web请求中的SQL注入攻击特征",
+        "severity": "high",
+        "dataSourceIds": [104],
+        "playbookId": null,
+        "status": "active",
+        "hitCount": 89,
+        "lastHitTime": "2026-05-04T14:20:00Z",
+        "tags": ["Web安全", "SQL注入", "测试规则"]
+      },
+      {
+        "id": 1007,
+        "name": "测试-横向移动检测",
+        "type": "correlation",
+        "content": "event_type=\"lateral_movement\" AND internal_ip_scan",
+        "description": "检测内网横向移动行为",
+        "severity": "critical",
+        "dataSourceIds": [101, 102],
+        "playbookId": 1004,
+        "status": "active",
+        "hitCount": 5,
+        "lastHitTime": "2026-05-02T18:30:00Z",
+        "tags": ["横向移动", "APT", "测试规则"]
+      },
+      {
+        "id": 1008,
+        "name": "测试-高危命令执行",
+        "type": "single",
+        "content": "command IN [\"rm -rf /\", \"mkfs\", \":(){ :|: & };:\", \"nc -e /bin/sh\"]",
+        "description": "检测系统高危命令的执行",
+        "severity": "critical",
+        "dataSourceIds": [105],
+        "playbookId": 1004,
+        "status": "active",
+        "hitCount": 12,
+        "lastHitTime": "2026-05-04T16:00:00Z",
+        "tags": ["命令注入", "应急响应", "测试规则"]
+      }
+    ]
+  },
+
+  "playbooks": {
+    "count": 4,
+    "items": [
+      {
+        "id": 1001,
+        "name": "测试-恶意IP自动封堵",
+        "description": "检测到恶意IP时自动在防火墙上封堵",
+        "triggerType": "malicious_ip_detected",
+        "status": "published",
+        "version": "1.0"
+      },
+      {
+        "id": 1002,
+        "name": "测试-暴力破解响应",
+        "description": "检测到暴力破解攻击时的自动响应",
+        "triggerType": "brute_force_detected",
+        "status": "published",
+        "version": "1.0"
+      },
+      {
+        "id": 1003,
+        "name": "测试-数据泄露应急",
+        "description": "检测到数据泄露时的应急响应流程",
+        "triggerType": "data_exfiltration",
+        "status": "published",
+        "version": "1.0"
+      },
+      {
+        "id": 1004,
+        "name": "测试-主机隔离响应",
+        "description": "主机被入侵时的隔离和响应",
+        "triggerType": "host_compromised",
+        "status": "published",
+        "version": "1.0"
+      }
+    ]
+  },
+
+  "alerts": {
+    "count": 12,
+    "items": [
+      {
+        "id": 2001,
+        "alertCode": "ALT-2026-0001",
+        "title": "测试-暴力破解攻击告警",
+        "description": "检测到来自 192.168.2.100 的暴力破解尝试，5分钟内失败登录 15 次",
+        "severity": "high",
+        "status": "new",
+        "source": "测试-认证日志",
+        "assignedTo": 2,
+        "eventIds": [1, 2, 3, 4, 5],
+        "createdAt": "2026-05-04T15:30:00Z"
+      },
+      {
+        "id": 2002,
+        "alertCode": "ALT-2026-0002",
+        "title": "测试-异常登录时间告警",
+        "description": "用户 admin 在凌晨 03:30 从 192.168.2.50 登录系统",
+        "severity": "medium",
+        "status": "new",
+        "source": "测试-认证日志",
+        "assignedTo": 2,
+        "eventIds": [6, 7],
+        "createdAt": "2026-05-04T03:30:00Z"
+      },
+      {
+        "id": 2003,
+        "alertCode": "ALT-2026-0003",
+        "title": "测试-可疑端口连接告警",
+        "description": "主机 192.168.1.30 检测到到可疑端口 4444 的网络连接",
+        "severity": "critical",
+        "status": "investigating",
+        "source": "测试-防火墙日志",
+        "assignedTo": 1,
+        "eventIds": [8, 9, 10],
+        "createdAt": "2026-05-04T10:15:00Z"
+      },
+      {
+        "id": 2004,
+        "alertCode": "ALT-2026-0004",
+        "title": "测试-敏感文件访问告警",
+        "description": "用户 test_user 尝试访问 /etc/shadow 文件",
+        "severity": "high",
+        "status": "new",
+        "source": "测试-主机日志",
+        "assignedTo": 3,
+        "eventIds": [11, 12],
+        "createdAt": "2026-05-03T22:45:00Z"
+      },
+      {
+        "id": 2005,
+        "alertCode": "ALT-2026-0005",
+        "title": "测试-SQL注入告警",
+        "description": "Web服务器检测到来自 203.0.113.50 的SQL注入尝试",
+        "severity": "high",
+        "status": "resolved",
+        "source": "测试-Web日志",
+        "assignedTo": 2,
+        "eventIds": [13, 14, 15, 16, 17],
+        "createdAt": "2026-05-04T14:20:00Z"
+      },
+      {
+        "id": 2006,
+        "alertCode": "ALT-2026-0006",
+        "title": "测试-横向移动告警",
+        "description": "检测到内网横向移动行为: 192.168.1.50 -> 192.168.1.60",
+        "severity": "critical",
+        "status": "new",
+        "source": "测试-防火墙日志",
+        "assignedTo": 1,
+        "eventIds": [18, 19, 20],
+        "createdAt": "2026-05-02T18:30:00Z"
+      },
+      {
+        "id": 2007,
+        "alertCode": "ALT-2026-0007",
+        "title": "测试-高危命令执行告警",
+        "description": "主机 192.168.1.100 执行了危险命令: rm -rf /tmp/test*",
+        "severity": "critical",
+        "status": "investigating",
+        "source": "测试-主机日志",
+        "assignedTo": 1,
+        "eventIds": [21],
+        "createdAt": "2026-05-04T16:00:00Z"
+      },
+      {
+        "id": 2008,
+        "alertCode": "ALT-2026-0008",
+        "title": "测试-数据外泄风险告警",
+        "description": "检测到大量数据外传，从 192.168.1.20 外传超过 500MB 数据",
+        "severity": "critical",
+        "status": "new",
+        "source": "测试-Web日志",
+        "assignedTo": 1,
+        "eventIds": [22, 23, 24, 25],
+        "createdAt": "2026-05-01T12:00:00Z"
+      },
+      {
+        "id": 2009,
+        "alertCode": "ALT-2026-0009",
+        "title": "测试-Web扫描告警",
+        "description": "检测到来自 198.51.100.25 的Web目录扫描行为",
+        "severity": "medium",
+        "status": "resolved",
+        "source": "测试-Web日志",
+        "assignedTo": 4,
+        "eventIds": [26, 27, 28],
+        "createdAt": "2026-05-03T09:00:00Z"
+      },
+      {
+        "id": 2010,
+        "alertCode": "ALT-2026-0010",
+        "title": "测试-权限变更告警",
+        "description": "用户 operator01 被提升为管理员权限",
+        "severity": "medium",
+        "status": "new",
+        "source": "测试-认证日志",
+        "assignedTo": 2,
+        "eventIds": [29, 30],
+        "createdAt": "2026-05-02T11:00:00Z"
+      },
+      {
+        "id": 2011,
+        "alertCode": "ALT-2026-0011",
+        "title": "测试-可疑进程告警",
+        "description": "主机 192.168.1.80 检测到可疑进程正在运行",
+        "severity": "high",
+        "status": "investigating",
+        "source": "测试-主机日志",
+        "assignedTo": 3,
+        "eventIds": [31, 32],
+        "createdAt": "2026-05-04T08:00:00Z"
+      },
+      {
+        "id": 2012,
+        "alertCode": "ALT-2026-0012",
+        "title": "测试-账户锁定告警",
+        "description": "账户 admin 因连续登录失败被临时锁定",
+        "severity": "low",
+        "status": "false_positive",
+        "source": "测试-认证日志",
+        "assignedTo": 5,
+        "eventIds": [33],
+        "createdAt": "2026-05-03T14:00:00Z"
+      }
+    ]
+  },
+
+  "testScenarios": [
+    {
+      "id": "TS-001",
+      "name": "规则创建测试",
+      "description": "测试新建检测规则功能",
+      "steps": [
+        "1. 点击「新建规则」按钮",
+        "2. 在基本信息Tab填写规则名称、选择类型、设置严重度",
+        "3. 切换到数据源Tab，选择关联的数据源",
+        "4. 切换到检测条件Tab，编写检测逻辑",
+        "5. 切换到响应动作Tab，选择关联剧本",
+        "6. 点击「创建」按钮",
+        "7. 验证Toast提示「规则已创建」"
+      ],
+      "expectedResult": "规则成功创建并显示在列表中"
+    },
+    {
+      "id": "TS-002",
+      "name": "规则编辑测试",
+      "description": "测试编辑现有规则功能",
+      "steps": [
+        "1. 在规则列表中找到「测试-暴力破解检测」(ID: 1001)",
+        "2. 点击编辑按钮打开编辑弹窗",
+        "3. 修改规则描述",
+        "4. 切换严重度选择",
+        "5. 点击「保存」按钮",
+        "6. 验证Toast提示「规则已更新」"
+      ],
+      "expectedResult": "规则信息成功更新"
+    },
+    {
+      "id": "TS-003",
+      "name": "规则删除测试",
+      "description": "测试删除规则功能",
+      "steps": [
+        "1. 在规则列表中找到「测试-数据外泄检测」(ID: 1005)",
+        "2. 点击删除按钮",
+        "3. 在确认对话框中点击「确定」",
+        "4. 验证Toast提示「规则已删除」"
+      ],
+      "expectedResult": "规则从列表中移除"
+    },
+    {
+      "id": "TS-004",
+      "name": "规则测试功能",
+      "description": "测试规则匹配测试功能",
+      "steps": [
+        "1. 在规则列表中找到「测试-SQL注入检测」(ID: 1006)",
+        "2. 点击测试按钮(播放图标)",
+        "3. 等待测试完成",
+        "4. 查看测试结果弹窗中的匹配数量和日志"
+      ],
+      "expectedResult": "显示测试匹配结果，包括匹配数量和日志样本"
+    },
+    {
+      "id": "TS-005",
+      "name": "规则搜索测试",
+      "description": "测试规则搜索和筛选功能",
+      "steps": [
+        "1. 在搜索框输入「暴力破解」",
+        "2. 验证只显示包含该关键词的规则",
+        "3. 清空搜索框，输入「单事件」",
+        "4. 验证只显示类型为单事件的规则"
+      ],
+      "expectedResult": "搜索和筛选功能正常工作"
+    },
+    {
+      "id": "TS-006",
+      "name": "规则启用/禁用",
+      "description": "测试规则状态切换功能",
+      "steps": [
+        "1. 找到「测试-数据外泄检测」(ID: 1005)，状态当前为「禁用」",
+        "2. 点击状态开关启用规则",
+        "3. 验证规则状态变为「启用」",
+        "4. 再次点击开关禁用规则"
+      ],
+      "expectedResult": "规则状态正常切换"
+    },
+    {
+      "id": "TS-007",
+      "name": "告警聚合功能测试",
+      "description": "测试将多个告警聚合生成事件",
+      "steps": [
+        "1. 进入告警管理页面",
+        "2. 选择以下告警: 2003, 2006, 2007, 2008 (均为critical级别)",
+        "3. 点击「聚合生成事件」按钮",
+        "4. 在弹窗中填写: 标题「测试-重大安全事件」、描述、严重度",
+        "5. 点击「生成」按钮",
+        "6. 验证成功后跳转到事件工作台"
+      ],
+      "expectedResult": "事件成功创建，相关告警关联到该事件"
+    },
+    {
+      "id": "TS-008",
+      "name": "数据源关联测试",
+      "description": "测试规则与数据源的关联",
+      "steps": [
+        "1. 编辑规则「测试-暴力破解检测」",
+        "2. 切换到数据源Tab",
+        "3. 勾选「测试-防火墙日志」和「测试-主机日志」",
+        "4. 保存规则",
+        "5. 重新编辑该规则",
+        "6. 验证已选择的数据源正确显示"
+      ],
+      "expectedResult": "数据源关联信息正确保存和显示"
+    }
+  ]
+}

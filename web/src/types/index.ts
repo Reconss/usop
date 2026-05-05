@@ -52,7 +52,6 @@ export interface SecurityEvent {
   eventCode?: string;
   title: string;
   severity: 'critical' | 'high' | 'medium' | 'low';
-  confidence: number;
   affectedAssets: string[];
   sourceIp: string;
   timestamp: string;
@@ -300,6 +299,10 @@ export interface DataSource {
   storageConfig?: StorageConfigType;
   productMappings?: ProductMapping[];
   stats?: ParseStats;
+  // 关联配置
+  logTypeId?: string;
+  logTypeName?: string;
+  logTypeDescription?: string;
 }
 
 // ==================== 格式模板类型 ====================
@@ -390,7 +393,54 @@ export interface AlertLog {
   duration?: number;
 }
 
-// ==================== 事件处置记录类型 ====================
+// ==================== 安全告警与事件管理类型 (从 security-alert.ts 导出) ====================
+// 请参考 src/types/security-alert.ts 获取完整的类型定义
+
+export {
+  // 类型
+  type Severity,
+  type AlertStatus,
+  type DataSourceType,
+  type DataSourceProtocol,
+  type DataSourceStatus,
+  type ParserFormat,
+  type RuleType,
+  type PlaybookStatus,
+  type EventActionType,
+  type FilterOperator,
+  type FilterRule,
+  type DataSourceConfig,
+  type DataSource,
+  type FieldMapping,
+  type TransformRule,
+  type Pipeline,
+  type Alert,
+  type AlertStats,
+  type AlertQueryParams,
+  type Event,
+  type RelatedAlert,
+  type EventStats,
+  type EventQueryParams,
+  type EventAction,
+  type PlaybookExecutionResult,
+  type StorageConfig,
+  type PaginatedResponse,
+  type ApiResponse,
+  type CreateEventRequest,
+  type UpdateEventStatusRequest,
+  type AggregateAlertsRequest,
+  type AssignEventRequest,
+  type CreateAlertRequest,
+  // 常量
+  EventActionLabels,
+  EventActionColors,
+  SeverityLabels,
+  SeverityConfig,
+  StatusLabels,
+  StatusConfig,
+} from './security-alert';
+
+// ==================== 事件处置记录类型 (兼容旧代码) ====================
 
 export interface EventActionRecord {
   id: string;

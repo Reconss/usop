@@ -11,6 +11,94 @@ import {
 import { dataSourcesApi } from '../services/api';
 import { DataSource } from '../types';
 
+// 关联配置保存函数
+const saveMappingConfig = async (
+  dataSourceId: string | number,
+  mappingConfig: {
+    logTypeId?: string;
+    logTypeName?: string;
+    pipelineIds?: string[];
+    pipelineNames?: string[];
+    storageConfigId?: string;
+    storageTableName?: string;
+    storageRetentionDays?: number;
+    formatTemplateId?: string;
+    formatTemplateName?: string;
+  }
+) => {
+  try {
+    await dataSourcesApi.saveMappingConfig(Number(dataSourceId), mappingConfig);
+    return { success: true };
+  } catch (error) {
+    console.error('保存关联配置失败:', error);
+    return { success: false, error };
+  }
+};
+
+// 启动 Flink 任务
+const handleStartFlinkJob = async (source: DataSource) => {
+  try {
+    // 设置加载状态
+    setDataSources(prev => prev.map(s => 
+      s.id === source.id ? { ...s, isLoading: true } : s
+    ));
+    
+    const res = await dataSourcesApi.startFlinkJob(Number(source.id));
+    if (res.success) {
+      setDataSources(prev => prev.map(s => 
+        s.id === source.id ? { 
+          ...s, 
+          isLoading: false,
+          flinkJobId: res.data.flink_job_id,
+          flinkJobStatus: 'running',
+          status: 'active'
+        } : s
+      ));
+    } else {
+      console.error('启动失败:', res.error);
+      setDataSources(prev => prev.map(s => 
+        s.id === source.id ? { ...s, isLoading: false } : s
+      ));
+    }
+  } catch (error) {
+    console.error('启动 Flink 任务失败:', error);
+    setDataSources(prev => prev.map(s => 
+      s.id === source.id ? { ...s, isLoading: false } : s
+    ));
+  }
+};
+
+// 停止 Flink 任务
+const handleStopFlinkJob = async (source: DataSource) => {
+  try {
+    setDataSources(prev => prev.map(s => 
+      s.id === source.id ? { ...s, isLoading: true } : s
+    ));
+    
+    const res = await dataSourcesApi.stopFlinkJob(Number(source.id));
+    if (res.success) {
+      setDataSources(prev => prev.map(s => 
+        s.id === source.id ? { 
+          ...s, 
+          isLoading: false,
+          flinkJobStatus: 'stopped',
+          status: 'inactive'
+        } : s
+      ));
+    } else {
+      console.error('停止失败:', res.error);
+      setDataSources(prev => prev.map(s => 
+        s.id === source.id ? { ...s, isLoading: false } : s
+      ));
+    }
+  } catch (error) {
+    console.error('停止 Flink 任务失败:', error);
+    setDataSources(prev => prev.map(s => 
+      s.id === source.id ? { ...s, isLoading: false } : s
+    ));
+  }
+};
+
 interface DataSourceManagerProps {
   dataSources?: any[];
   onAddSource?: () => void;
@@ -67,6 +155,37 @@ const availablePipelines = [
   { id: 'p3', name: 'CEF安全事件', parser: 'cef', priority: 3 },
   { id: 'p4', name: 'Grok自定义', parser: 'grok', priority: 4 },
   { id: 'p5', name: '智能识别', parser: 'auto', priority: 5 }
+];
+
+// 日志类型列表
+const availableLogTypes = [
+  { id: 'lt1', name: '系统日志', description: '操作系统和系统服务日志', category: 'system' },
+  { id: 'lt2', name: '应用日志', description: '应用程序运行日志', category: 'application' },
+  { id: 'lt3', name: '安全日志', description: '安全审计和告警日志', category: 'security' },
+  { id: 'lt4', name: '网络日志', description: '网络设备和流量日志', category: 'network' },
+  { id: 'lt5', name: '数据库日志', description: '数据库操作和审计日志', category: 'database' },
+  { id: 'lt6', name: 'Web日志', description: 'Web服务器和访问日志', category: 'web' },
+  { id: 'lt7', name: '容器日志', description: 'Docker和Kubernetes日志', category: 'container' },
+  { id: 'lt8', name: '云平台日志', description: '云服务商审计日志', category: 'cloud' }
+];
+
+// 存储配置列表
+const availableStorageConfigs = [
+  { id: 'sc1', name: '长期存储表', tableName: 'logs_long_term', retentionDays: 365, description: '365天保留策略' },
+  { id: 'sc2', name: '短期存储表', tableName: 'logs_short_term', retentionDays: 30, description: '30天保留策略' },
+  { id: 'sc3', name: '热数据存储', tableName: 'logs_hot', retentionDays: 7, description: '7天高频访问' },
+  { id: 'sc4', name: '审计日志表', tableName: 'audit_logs', retentionDays: 730, description: '2年合规保留' },
+  { id: 'sc5', name: '安全告警表', tableName: 'security_alerts', retentionDays: 90, description: '90天告警保留' }
+];
+
+// 格式模板列表
+const availableFormatTemplates = [
+  { id: 'ft1', name: '标准JSON', format: 'json', description: '标准JSON格式日志' },
+  { id: 'ft2', name: 'Syslog标准', format: 'syslog', description: 'RFC5424 Syslog格式' },
+  { id: 'ft3', name: 'CEF标准', format: 'cef', description: 'Common Event Format' },
+  { id: 'ft4', name: 'Apache日志', format: 'apache', description: 'Apache Combined Log' },
+  { id: 'ft5', name: 'Nginx日志', format: 'nginx', description: 'Nginx Access Log' },
+  { id: 'ft6', name: '自定义Grok', format: 'grok', description: 'Grok正则解析' }
 ];
 
 const protocolConfigFields: Record<string, { label: string; placeholder: string; type: 'text' | 'number' | 'password' | 'textarea' }[]> = {
@@ -149,8 +268,8 @@ const protocolConfigFields: Record<string, { label: string; placeholder: string;
 };
 
 export default function DataSourceManager(props: DataSourceManagerProps) {
-  const [dataSources, setDataSources] = useState<DataSource[]>(props.dataSources || []);
-  const [loading, setLoading] = useState(!props.dataSources);
+  const [dataSources, setDataSources] = useState<DataSource[]>([]);
+  const [loading, setLoading] = useState(true);
   const [filterType, setFilterType] = useState<'all' | 'pull' | 'push'>('all');
   const [showAddModal, setShowAddModal] = useState(false);
   const [showDetailModal, setShowDetailModal] = useState(false);
@@ -164,17 +283,27 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
   const [testSuccess, setTestSuccess] = useState(false);
   const [selectedPipelines, setSelectedPipelines] = useState<string[]>([]);
   const [formData, setFormData] = useState<Record<string, string>>({});
+  
+  // 关联配置状态
+  const [showMappingModal, setShowMappingModal] = useState(false);
+  const [selectedLogType, setSelectedLogType] = useState<string>('');
+  const [selectedStorageConfig, setSelectedStorageConfig] = useState<string>('');
+  const [selectedFormatTemplate, setSelectedFormatTemplate] = useState<string>('');
 
   const filteredSources = dataSources.filter(source => {
     if (filterType === 'all') return true;
     return source.type === filterType;
   });
 
+  // 优先使用 props 数据，否则自行获取
   useEffect(() => {
-    if (!props.dataSources) {
+    if (props.dataSources && props.dataSources.length > 0) {
+      setDataSources(props.dataSources);
+      setLoading(false);
+    } else {
       fetchData();
     }
-  }, []);
+  }, [props.dataSources]);
 
   const fetchData = async () => {
     try {
@@ -183,15 +312,36 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
       if (res.success && res.data) {
         const items = Array.isArray(res.data) ? res.data : res.data.items || [];
         setDataSources(items.map((item: any) => ({
-          id: item.id,
-          name: item.name || item.source_name,
-          type: item.type || item.source_type,
-          status: item.status || 'disconnected',
+          id: String(item.id),
+          name: item.name || item.source_name || `数据源 ${item.id}`,
+          type: item.source_type === 'pull' ? 'pull' : item.source_type === 'push' ? 'push' : (item.type || 'pull'),
+          status: item.status === 'active' ? 'connected' :
+                  item.status === 'inactive' ? 'disconnected' :
+                  item.status === 'error' ? 'error' :
+                  item.status || 'disconnected',
           host: item.host,
           port: item.port,
+          protocol: item.protocol || item.source_type || 'unknown',
           description: item.description,
-          created_at: item.created_at || item.createdAt,
-          protocol: item.protocol
+          created_at: item.created_at || item.updated_at,
+          lastSync: item.last_read_at || item.updated_at,
+          totalEvents: item.message_count || 0,
+          eventsPerSecond: item.events_per_second || 0,
+          logTypeId: item.log_type_id,
+          logTypeName: item.log_type_name,
+          parsePipelines: [],
+          storageConfig: {
+            hypertable: item.storage_table_name || '',
+            retentionDays: item.storage_retention_days || 30,
+            compression: item.storage_compression ?? true,
+            indexes: item.storage_indexes || [],
+            partitionInterval: item.storage_partition || '1d',
+            tableName: item.storage_table_name || '',
+          },
+          storageTableName: item.storage_table_name,
+          formatTemplateId: item.format_template_id,
+          formatTemplateName: item.format_template_name,
+          flinkJobStatus: item.flink_job_status || 'stopped',
         })));
       }
     } catch (error) {
@@ -292,9 +442,9 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
               <tr>
                 <th className="px-6 py-4 text-left text-sm font-medium text-text-secondary">数据源</th>
                 <th className="px-6 py-4 text-left text-sm font-medium text-text-secondary">类型</th>
-                <th className="px-6 py-4 text-left text-sm font-medium text-text-secondary">协议</th>
-                <th className="px-6 py-4 text-left text-sm font-medium text-text-secondary">状态</th>
+                <th className="px-6 py-4 text-left text-sm font-medium text-text-secondary">日志类型</th>
                 <th className="px-6 py-4 text-left text-sm font-medium text-text-secondary">解析管道</th>
+                <th className="px-6 py-4 text-left text-sm font-medium text-text-secondary">状态</th>
                 <th className="px-6 py-4 text-left text-sm font-medium text-text-secondary">健康度</th>
                 <th className="px-6 py-4 text-right text-sm font-medium text-text-secondary">操作</th>
               </tr>
@@ -333,7 +483,23 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
                         {source.type === 'pull' ? 'Pull' : 'Push'}
                       </span>
                     </td>
-                    <td className="px-6 py-4 text-sm text-text-secondary">{(source.protocol || 'unknown').toUpperCase()}</td>
+                    <td className="px-6 py-4">
+                      <button
+                        onClick={() => {
+                          setSelectedSource(source);
+                          setSelectedLogType((source as any).logTypeId || '');
+                          const pipeIds = (source as any).parsePipelines?.map((p: any) => p.id) || (source as any).pipelineIds || (source as any).pipeline_ids || [];
+                          setSelectedPipelines(pipeIds);
+                          setSelectedStorageConfig(source.storageConfig ? 'sc1' : '');
+                          setSelectedFormatTemplate((source as any).formatTemplateId || '');
+                          setShowMappingModal(true);
+                        }}
+                        className="flex items-center gap-1.5 text-sm hover:text-blue-700"
+                      >
+                        <FileText className="w-3.5 h-3.5" />
+                        <span>{(source as any).logTypeName || '未设置'}</span>
+                      </button>
+                    </td>
                     <td className="px-6 py-4">
                       <span className={`text-xs px-2 py-1 rounded-full border ${getStatusColor(source.status)}`}>
                         {getStatusText(source.status)}
@@ -345,8 +511,18 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
                         className="flex items-center gap-1.5 text-sm text-blue-600 hover:text-blue-700"
                       >
                         <GitBranch className="w-3.5 h-3.5" />
-                        <span>{source.parsePipelines?.length || 0} 个管道</span>
+                        <span>{(() => {
+                          const count = (source as any).parsePipelines?.length || ((source as any).pipelineIds || (source as any).pipeline_ids || []).length;
+                          return `${count} 个管道`;
+                        })()}</span>
                       </button>
+                    </td>
+                    <td className="px-6 py-4">
+                      <span className={`text-xs px-2 py-1 rounded-full border ${
+                        source.logTypeId ? 'bg-emerald-50 text-emerald-600 border-emerald-200' : 'bg-gray-100 text-gray-500 border-gray-200'
+                      }`}>
+                        {source.logTypeId ? '已配置' : '未配置'}
+                      </span>
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-2">
@@ -361,11 +537,38 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex items-center justify-end gap-1">
+                        {/* Flink 任务控制按钮 */}
+                        {source.logTypeId && source.storageTableName && (
+                          source.flinkJobStatus === 'running' ? (
+                            <button
+                              onClick={() => handleStopFlinkJob(source)}
+                              disabled={source.isLoading}
+                              className="p-1.5 text-emerald-600 hover:text-emerald-700 rounded-lg hover:bg-emerald-50"
+                              title="停止 Flink 任务"
+                            >
+                              {source.isLoading ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                              ) : (
+                                <Pause className="w-4 h-4" />
+                              )}
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => handleStartFlinkJob(source)}
+                              disabled={source.isLoading}
+                              className="p-1.5 text-blue-600 hover:text-blue-700 rounded-lg hover:bg-blue-50"
+                              title="启动 Flink 任务"
+                            >
+                              {source.isLoading ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                              ) : (
+                                <Play className="w-4 h-4" />
+                              )}
+                            </button>
+                          )
+                        )}
                         <button onClick={() => handleViewClick(source)} className="p-1.5 text-gray-400 hover:text-blue-600 rounded-lg hover:bg-blue-50">
                           <Eye className="w-4 h-4" />
-                        </button>
-                        <button onClick={() => props.onToggleStatus && props.onToggleStatus(source)} className="p-1.5 text-gray-400 hover:text-blue-600 rounded-lg hover:bg-blue-50">
-                          {source.status === 'paused' ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
                         </button>
                         <button onClick={() => props.onEditSource && props.onEditSource(source)} className="p-1.5 text-gray-400 hover:text-blue-600 rounded-lg hover:bg-blue-50">
                           <Edit3 className="w-4 h-4" />
@@ -606,6 +809,294 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
         )}
       </AnimatePresence>
 
+      {/* 数据流关联配置弹窗 */}
+      <AnimatePresence>
+        {showMappingModal && selectedSource && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+            onClick={() => setShowMappingModal(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-card-bg border border-border-color rounded-xl p-6 w-[850px] max-h-[90vh] overflow-auto shadow-xl"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h2 className="text-lg font-semibold text-text-primary">数据流关联配置</h2>
+                  <p className="text-sm text-text-muted mt-1">为 {selectedSource.name} 配置完整的日志处理链路</p>
+                </div>
+                <button onClick={() => setShowMappingModal(false)} className="p-2 text-gray-400 hover:text-text-secondary rounded-lg hover:bg-page-bg">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* 关联链路流程图 */}
+              <div className="flex items-center gap-3 mb-8 p-4 bg-gradient-to-r from-blue-50 via-emerald-50 to-purple-50 rounded-xl">
+                <div className="flex items-center gap-2 px-4 py-2 bg-white rounded-lg shadow-sm">
+                  <Database className="w-5 h-5 text-blue-600" />
+                  <span className="text-sm font-medium text-text-primary">数据源</span>
+                </div>
+                <ChevronRight className="w-5 h-5 text-gray-400" />
+                <div className="flex items-center gap-2 px-4 py-2 bg-white rounded-lg shadow-sm">
+                  <FileText className="w-5 h-5 text-emerald-600" />
+                  <span className="text-sm font-medium text-text-primary">日志类型</span>
+                </div>
+                <ChevronRight className="w-5 h-5 text-gray-400" />
+                <div className="flex items-center gap-2 px-4 py-2 bg-white rounded-lg shadow-sm">
+                  <GitBranch className="w-5 h-5 text-amber-600" />
+                  <span className="text-sm font-medium text-text-primary">解析管道</span>
+                </div>
+                <ChevronRight className="w-5 h-5 text-gray-400" />
+                <div className="flex items-center gap-2 px-4 py-2 bg-white rounded-lg shadow-sm">
+                  <HardDrive className="w-5 h-5 text-purple-600" />
+                  <span className="text-sm font-medium text-text-primary">存储配置</span>
+                </div>
+              </div>
+
+              {/* 1. 日志类型选择 */}
+              <div className="mb-6">
+                <h3 className="text-sm font-medium text-text-primary mb-3 flex items-center gap-2">
+                  <span className="w-6 h-6 flex items-center justify-center bg-emerald-100 text-emerald-600 rounded-full text-xs font-bold">1</span>
+                  选择日志类型
+                  <span className="text-xs text-text-muted font-normal ml-2">日志类型定义数据的结构和语义</span>
+                </h3>
+                <div className="grid grid-cols-4 gap-3">
+                  {availableLogTypes.map(logType => (
+                    <div
+                      key={logType.id}
+                      onClick={() => setSelectedLogType(logType.id)}
+                      className={`p-3 rounded-lg border cursor-pointer transition-all ${
+                        selectedLogType === logType.id
+                          ? 'border-emerald-500 bg-emerald-50'
+                          : 'border-border-color hover:border-emerald-300'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 mb-1">
+                        <div className={`w-4 h-4 rounded border flex items-center justify-center ${
+                          selectedLogType === logType.id ? 'bg-emerald-500 border-emerald-500' : 'border-border-color'
+                        }`}>
+                          {selectedLogType === logType.id && <CheckCircle className="w-3 h-3 text-white" />}
+                        </div>
+                        <span className="text-sm font-medium text-text-primary">{logType.name}</span>
+                      </div>
+                      <p className="text-xs text-text-muted pl-6">{logType.description}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* 2. 解析管道选择 */}
+              <div className="mb-6">
+                <h3 className="text-sm font-medium text-text-primary mb-3 flex items-center gap-2">
+                  <span className="w-6 h-6 flex items-center justify-center bg-amber-100 text-amber-600 rounded-full text-xs font-bold">2</span>
+                  选择解析管道
+                  <span className="text-xs text-text-muted font-normal ml-2">解析管道定义日志格式的解析规则</span>
+                </h3>
+                <div className="grid grid-cols-3 gap-3">
+                  {availablePipelines.map((pipeline, index) => (
+                    <div
+                      key={pipeline.id}
+                      onClick={() => {
+                        if (selectedPipelines.includes(pipeline.id)) {
+                          setSelectedPipelines(selectedPipelines.filter(id => id !== pipeline.id));
+                        } else {
+                          setSelectedPipelines([...selectedPipelines, pipeline.id]);
+                        }
+                      }}
+                      className={`p-3 rounded-lg border cursor-pointer transition-all ${
+                        selectedPipelines.includes(pipeline.id)
+                          ? 'border-amber-500 bg-amber-50'
+                          : 'border-border-color hover:border-amber-300'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 mb-1">
+                        <div className={`w-4 h-4 rounded border flex items-center justify-center ${
+                          selectedPipelines.includes(pipeline.id) ? 'bg-amber-500 border-amber-500' : 'border-border-color'
+                        }`}>
+                          {selectedPipelines.includes(pipeline.id) && <CheckCircle className="w-3 h-3 text-white" />}
+                        </div>
+                        <span className="text-sm font-medium text-text-primary">{pipeline.name}</span>
+                        <span className="px-1.5 py-0.5 text-xs bg-page-bg text-text-secondary rounded ml-auto">
+                          #{index + 1}
+                        </span>
+                      </div>
+                      <p className="text-xs text-text-muted pl-6">解析器: {pipeline.parser.toUpperCase()}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* 3. 格式模板选择（可选） */}
+              <div className="mb-6">
+                <h3 className="text-sm font-medium text-text-primary mb-3 flex items-center gap-2">
+                  <span className="w-6 h-6 flex items-center justify-center bg-purple-100 text-purple-600 rounded-full text-xs font-bold">3</span>
+                  选择格式模板
+                  <span className="text-xs text-purple-400 font-normal ml-2">(可选)</span>
+                </h3>
+                <div className="grid grid-cols-3 gap-3">
+                  {availableFormatTemplates.map(template => (
+                    <div
+                      key={template.id}
+                      onClick={() => setSelectedFormatTemplate(
+                        selectedFormatTemplate === template.id ? '' : template.id
+                      )}
+                      className={`p-3 rounded-lg border cursor-pointer transition-all ${
+                        selectedFormatTemplate === template.id
+                          ? 'border-purple-500 bg-purple-50'
+                          : 'border-border-color hover:border-purple-300'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 mb-1">
+                        <div className={`w-4 h-4 rounded border flex items-center justify-center ${
+                          selectedFormatTemplate === template.id ? 'bg-purple-500 border-purple-500' : 'border-border-color'
+                        }`}>
+                          {selectedFormatTemplate === template.id && <CheckCircle className="w-3 h-3 text-white" />}
+                        </div>
+                        <span className="text-sm font-medium text-text-primary">{template.name}</span>
+                      </div>
+                      <p className="text-xs text-text-muted pl-6">{template.description}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* 4. 存储配置 */}
+              <div className="mb-6">
+                <h3 className="text-sm font-medium text-text-primary mb-3 flex items-center gap-2">
+                  <span className="w-6 h-6 flex items-center justify-center bg-purple-100 text-purple-600 rounded-full text-xs font-bold">4</span>
+                  选择存储配置
+                  <span className="text-xs text-text-muted font-normal ml-2">定义数据保留策略和存储位置</span>
+                </h3>
+                <div className="grid grid-cols-3 gap-3">
+                  {availableStorageConfigs.map(storage => (
+                    <div
+                      key={storage.id}
+                      onClick={() => setSelectedStorageConfig(storage.id)}
+                      className={`p-3 rounded-lg border cursor-pointer transition-all ${
+                        selectedStorageConfig === storage.id
+                          ? 'border-purple-500 bg-purple-50'
+                          : 'border-border-color hover:border-purple-300'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 mb-1">
+                        <div className={`w-4 h-4 rounded border flex items-center justify-center ${
+                          selectedStorageConfig === storage.id ? 'bg-purple-500 border-purple-500' : 'border-border-color'
+                        }`}>
+                          {selectedStorageConfig === storage.id && <CheckCircle className="w-3 h-3 text-white" />}
+                        </div>
+                        <span className="text-sm font-medium text-text-primary">{storage.name}</span>
+                      </div>
+                      <p className="text-xs text-text-muted pl-6">{storage.tableName}</p>
+                      <p className="text-xs text-purple-600 pl-6">{storage.description}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* 配置摘要 */}
+              <div className="mb-6 p-4 bg-page-bg/50 rounded-lg">
+                <h4 className="text-sm font-medium text-text-primary mb-3">配置摘要</h4>
+                <div className="grid grid-cols-4 gap-4">
+                  <div className="text-center p-2 bg-white rounded-lg">
+                    <div className="text-xs text-text-muted mb-1">数据源</div>
+                    <div className="text-sm font-medium text-text-primary truncate">{selectedSource.name}</div>
+                  </div>
+                  <div className="text-center p-2 bg-white rounded-lg">
+                    <div className="text-xs text-text-muted mb-1">日志类型</div>
+                    <div className="text-sm font-medium text-emerald-600 truncate">
+                      {availableLogTypes.find(l => l.id === selectedLogType)?.name || '-'}
+                    </div>
+                  </div>
+                  <div className="text-center p-2 bg-white rounded-lg">
+                    <div className="text-xs text-text-muted mb-1">解析管道</div>
+                    <div className="text-sm font-medium text-amber-600 truncate">
+                      {selectedPipelines.length > 0 ? `${selectedPipelines.length} 个` : '-'}
+                    </div>
+                  </div>
+                  <div className="text-center p-2 bg-white rounded-lg">
+                    <div className="text-xs text-text-muted mb-1">存储配置</div>
+                    <div className="text-sm font-medium text-purple-600 truncate">
+                      {availableStorageConfigs.find(s => s.id === selectedStorageConfig)?.name || '-'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-3 pt-4 border-t border-border-color">
+                <button 
+                  onClick={() => setShowMappingModal(false)} 
+                  className="px-4 py-2 text-text-secondary hover:text-text-primary text-sm"
+                >
+                  取消
+                </button>
+                <button 
+                  onClick={async () => {
+                    const logType = availableLogTypes.find(l => l.id === selectedLogType);
+                    const storage = availableStorageConfigs.find(s => s.id === selectedStorageConfig);
+                    const template = availableFormatTemplates.find(t => t.id === selectedFormatTemplate);
+                    const pipelines = availablePipelines.filter(p => selectedPipelines.includes(p.id));
+                    
+                    // 构建关联配置
+                    const mappingConfig = {
+                      logTypeId: selectedLogType,
+                      logTypeName: logType?.name,
+                      pipelineIds: selectedPipelines,
+                      pipelineNames: pipelines.map(p => p.name),
+                      storageConfigId: selectedStorageConfig,
+                      storageTableName: storage?.tableName,
+                      storageRetentionDays: storage?.retentionDays,
+                      formatTemplateId: selectedFormatTemplate,
+                      formatTemplateName: template?.name
+                    };
+                    
+                    // 调用API保存配置
+                    const result = await saveMappingConfig(selectedSource.id, mappingConfig);
+                    
+                    // 更新数据源 - 包含所有 API 字段，确保详情弹窗能正确显示
+                    const updatedSource: any = {
+                      ...selectedSource,
+                      logTypeId: selectedLogType,
+                      logTypeName: logType?.name,
+                      parsePipelines: pipelines,
+                      pipelineIds: selectedPipelines,
+                      pipelineNames: pipelines.map(p => p.name),
+                      storageConfig: storage ? {
+                        tableName: storage.tableName,
+                        retentionDays: storage.retentionDays,
+                        partitionInterval: '1d',
+                        indexes: [],
+                        compression: true,
+                      } : selectedSource.storageConfig,
+                      storageTableName: storage?.tableName || (selectedSource as any).storageTableName,
+                      storageRetentionDays: storage?.retentionDays || (selectedSource as any).storageRetentionDays,
+                      formatTemplateId: selectedFormatTemplate,
+                      formatTemplateName: template?.name,
+                    };
+                    
+                    setDataSources(prev => prev.map(s => 
+                      s.id === selectedSource.id ? updatedSource : s
+                    ));
+                    // 关键：同步更新 selectedSource，让再次打开详情时显示最新数据
+                    setSelectedSource(updatedSource);
+                    props.onEditSource && props.onEditSource(updatedSource);
+                    setShowMappingModal(false);
+                  }}
+                  className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium"
+                >
+                  保存配置
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <AnimatePresence>
         {showDetailModal && selectedSource && (
           <motion.div
@@ -630,10 +1121,26 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
               </div>
 
               <div className="space-y-6">
+                {/* 从 API 数据构建管道对象数组 */}
+                {(function() {
+                  const pipeIds = (selectedSource as any).pipelineIds || (selectedSource as any).pipeline_ids || [];
+                  const pipeNames = (selectedSource as any).pipelineNames || (selectedSource as any).pipeline_names || [];
+                  const pipelines = pipeIds.map((id: string, i: number) => ({
+                    id,
+                    name: pipeNames[i] || id,
+                    parser: id?.includes('json') ? 'json' : id?.includes('syslog') ? 'syslog' : id?.includes('cef') ? 'cef' : id?.includes('grok') ? 'grok' : 'auto',
+                  }));
+                  return null;
+                })()}
+
                 <div className="grid grid-cols-4 gap-4">
                   <div className="p-3 bg-page-bg/50 rounded-lg">
                     <div className="text-xs text-text-muted mb-1">总事件数</div>
-                    <div className="text-lg font-semibold text-text-primary">-</div>
+                    <div className="text-lg font-semibold text-text-primary">
+                      {(selectedSource as any).totalEvents
+                        ? ((selectedSource as any).totalEvents > 1000000 ? `${(((selectedSource as any).totalEvents / 1000000)).toFixed(1)}M` : (selectedSource as any).totalEvents)
+                        : '-'}
+                    </div>
                   </div>
                   <div className="p-3 bg-page-bg/50 rounded-lg">
                     <div className="text-xs text-text-muted mb-1">解析成功</div>
@@ -644,27 +1151,91 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
                     <div className="text-lg font-semibold text-red-600">-</div>
                   </div>
                   <div className="p-3 bg-page-bg/50 rounded-lg">
-                    <div className="text-xs text-text-muted mb-1">成功率</div>
-                    <div className="text-lg font-semibold text-blue-600">-</div>
+                    <div className="text-xs text-text-muted mb-1">状态</div>
+                    <div className={`text-lg font-semibold ${getStatusColor((selectedSource as any).status || '').includes('emerald') ? 'text-emerald-600' : 'text-blue-600'}`}>
+                      {getStatusText((selectedSource as any).status || '-')}
+                    </div>
                   </div>
                 </div>
 
                 <div>
                   <h3 className="text-sm font-medium text-text-primary mb-3 flex items-center gap-2">
-                    <GitBranch className="w-4 h-4" /> 解析管道 ({selectedSource.parsePipelines?.length || 0})
+                    <FileText className="w-4 h-4" /> 日志类型
                   </h3>
+                  <div className={`p-3 rounded-lg border ${(selectedSource as any).logTypeName ? 'bg-emerald-50/50 border-emerald-100' : 'bg-page-bg/50 border-border-color'}`}>
+                    <div className={`text-sm font-medium ${(selectedSource as any).logTypeName ? 'text-emerald-700' : 'text-text-muted'}`}>{(selectedSource as any).logTypeName || '未配置'}</div>
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className="text-sm font-medium text-text-primary mb-3 flex items-center gap-2">
+                    <GitBranch className="w-4 h-4" /> 解析管道 ({(() => {
+                      const ids = (selectedSource as any).pipelineIds || (selectedSource as any).pipeline_ids || [];
+                      return ids.length;
+                    })()})
+                  </h3>
+                  {(() => {
+                    const pipeIds = (selectedSource as any).pipelineIds || (selectedSource as any).pipeline_ids || [];
+                    const pipeNames = (selectedSource as any).pipelineNames || (selectedSource as any).pipeline_names || [];
+                    if (pipeIds.length === 0) return <div className="text-sm text-text-muted">未配置解析管道</div>;
+                    return (
+                      <div className="space-y-2">
+                        {pipeIds.map((id: string, index: number) => (
+                          <div key={id} className="flex items-center gap-2 p-2 bg-page-bg/50 rounded-lg">
+                            <span className="w-5 h-5 flex items-center justify-center bg-amber-100 text-amber-600 rounded text-xs font-bold">
+                              {index + 1}
+                            </span>
+                            <span className="text-sm font-medium text-text-primary">{pipeNames[index] || id}</span>
+                            <span className="px-1.5 py-0.5 text-xs bg-page-bg text-text-secondary rounded ml-auto capitalize">
+                              {id?.includes('json') ? 'json' : id?.includes('syslog') ? 'syslog' : id?.includes('cef') ? 'cef' : id?.includes('grok') ? 'grok' : 'auto'}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                <div>
+                  <h3 className="text-sm font-medium text-text-primary mb-3 flex items-center gap-2">
+                    <FileText className="w-4 h-4" /> 格式模板
+                  </h3>
+                  <div className={`p-3 rounded-lg border ${(selectedSource as any).formatTemplateName ? 'bg-purple-50/50 border-purple-100' : 'bg-page-bg/50 border-border-color'}`}>
+                    <div className={`text-sm font-medium ${(selectedSource as any).formatTemplateName ? 'text-text-primary' : 'text-text-muted'}`}>{(selectedSource as any).formatTemplateName || '未使用模板'}</div>
+                  </div>
                 </div>
 
                 <div>
                   <h3 className="text-sm font-medium text-text-primary mb-3">存储配置</h3>
                   <div className="grid grid-cols-2 gap-3">
                     <div className="p-3 bg-page-bg/50 rounded-lg">
-                      <div className="text-xs text-text-muted mb-1">Hypertable</div>
-                      <div className="text-sm font-medium text-text-primary">-</div>
+                      <div className="text-xs text-text-muted mb-1">存储表</div>
+                      <div className="text-sm font-medium text-text-primary">
+                        {(selectedSource as any).storageConfig?.tableName || (selectedSource as any).storageTableName || '-'}
+                      </div>
                     </div>
                     <div className="p-3 bg-page-bg/50 rounded-lg">
                       <div className="text-xs text-text-muted mb-1">保留策略</div>
-                      <div className="text-sm font-medium text-text-primary">-</div>
+                      <div className="text-sm font-medium text-text-primary">
+                        {(selectedSource as any).storageConfig?.retentionDays
+                          ? `${(selectedSource as any).storageConfig.retentionDays} 天`
+                          : ((selectedSource as any).storageRetentionDays
+                            ? `${(selectedSource as any).storageRetentionDays} 天`
+                            : '-')
+                        }
+                      </div>
+                    </div>
+                    <div className="p-3 bg-page-bg/50 rounded-lg">
+                      <div className="text-xs text-text-muted mb-1">压缩</div>
+                      <div className={`text-sm font-medium ${(selectedSource as any).storageConfig?.compression ?? (selectedSource as any).storageCompression !== false ? 'text-emerald-600' : 'text-red-600'}`}>
+                        {((selectedSource as any).storageConfig?.compression ?? (selectedSource as any).storageCompression) !== false ? '启用' : '禁用'}
+                      </div>
+                    </div>
+                    <div className="p-3 bg-page-bg/50 rounded-lg">
+                      <div className="text-xs text-text-muted mb-1">分区策略</div>
+                      <div className="text-sm font-medium text-text-primary">
+                        {(selectedSource as any).storageConfig?.partitionInterval || (selectedSource as any).storagePartition || '-'}
+                      </div>
                     </div>
                   </div>
                 </div>

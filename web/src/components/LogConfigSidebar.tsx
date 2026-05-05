@@ -1,9 +1,10 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import {
   Server, Workflow, FileText, Code, Database,
   ArrowRight, Layers, GitBranch, FileJson, HardDrive
 } from 'lucide-react';
+import { request } from '../services/api';
 
 interface LogConfigSidebarProps {
   activeSection: string;
@@ -11,12 +12,20 @@ interface LogConfigSidebarProps {
   dataSourceCount?: number;
 }
 
-const menuItems = [
+interface MenuItem {
+  id: string;
+  label: string;
+  icon: any;
+  count: number;
+  desc: string;
+}
+
+const menuItems: MenuItem[] = [
   { id: 'sources', label: '数据源管理', icon: Server, count: 0, desc: '配置接入方式和解析规则' },
   { id: 'parsing', label: '智能解析', icon: Workflow, count: 0, desc: '定义解析规则和字段映射' },
-  { id: 'logtypes', label: '日志类型', icon: FileText, count: 5, desc: '定义日志分类标准' },
-  { id: 'templates', label: '格式模板', icon: Code, count: 4, desc: '定义解析格式规则' },
-  { id: 'storage', label: '存储配置', icon: Database, count: 3, desc: '配置日志存储设置' },
+  { id: 'logtypes', label: '日志类型', icon: FileText, count: 0, desc: '定义日志分类标准' },
+  { id: 'templates', label: '格式模板', icon: Code, count: 0, desc: '定义解析格式规则' },
+  { id: 'storage', label: '存储配置', icon: Database, count: 0, desc: '配置日志存储设置' },
 ];
 
 const flowNodes = [
@@ -28,6 +37,58 @@ const flowNodes = [
 ];
 
 export default function LogConfigSidebar({ activeSection, onSectionChange, dataSourceCount = 0 }: LogConfigSidebarProps) {
+  const [counts, setCounts] = useState<Record<string, number>>({
+    sources: dataSourceCount,
+    parsing: 0,
+    logtypes: 0,
+    templates: 0,
+    storage: 0,
+  });
+
+  // 从API获取各配置项数量
+  useEffect(() => {
+    const fetchCounts = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+
+        // 并行请求所有配置项数量
+        const [
+          dataSourcesRes,
+          pipelinesRes,
+          logTypesRes,
+          formatsRes,
+          storageRes,
+        ] = await Promise.all([
+          fetch('/api/datasources-api/datasources?page_size=1', { headers }).then(r => r.json()).catch(() => ({ success: false, data: { total: 0 } })),
+          fetch('/api/pipelines?page_size=1', { headers }).then(r => r.json()).catch(() => ({ success: false, data: { total: 0 } })),
+          fetch('/api/log-types-api/log-types?page_size=1', { headers }).then(r => r.json()).catch(() => ({ success: false, data: { total: 0 } })),
+          fetch('/api/ingestion/formats?page_size=1', { headers }).then(r => r.json()).catch(() => ({ success: false, data: [] })),
+          fetch('/api/storage-tables?page_size=1', { headers }).then(r => r.json()).catch(() => ({ code: 200, data: [] })),
+        ]);
+
+        // 处理不同API的返回格式
+        const getCount = (res: any): number => {
+          if (res?.data?.total !== undefined) return res.data.total;
+          if (Array.isArray(res?.data)) return res.data.length;
+          return 0;
+        };
+
+        setCounts({
+          sources: dataSourcesRes?.data?.total ?? dataSourceCount ?? 0,
+          parsing: pipelinesRes?.data?.total ?? 0,
+          logtypes: logTypesRes?.data?.total ?? 0,
+          templates: getCount(formatsRes),
+          storage: getCount(storageRes),
+        });
+      } catch (error) {
+        console.error('获取配置项数量失败:', error);
+      }
+    };
+
+    fetchCounts();
+  }, [dataSourceCount]);
+
   return (
     <div className="w-72 bg-card-bg rounded-2xl shadow-sm border border-border-color flex flex-col h-full overflow-hidden">
       {/* Header */}
@@ -48,8 +109,8 @@ export default function LogConfigSidebar({ activeSection, onSectionChange, dataS
         {menuItems.map((item) => {
           const Icon = item.icon;
           const isActive = activeSection === item.id;
-          // 数据源管理使用传入的数量
-          const displayCount = item.id === 'sources' ? dataSourceCount : item.count;
+          // 使用从API获取的数量
+          const displayCount = counts[item.id] ?? item.count;
           return (
             <motion.button
               key={item.id}

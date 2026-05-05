@@ -1,10 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Shield, Users, Key, Check, X, Plus, Search, Edit2, Trash2,
-  ChevronRight, ChevronDown, Lock, Eye, Edit, Trash, Settings,
-  FileText, Bell, Database, Server, Activity, UserCheck, UserX
+  ChevronDown, Settings, Bell, Database, Server, Activity, UserCheck, UserX
 } from 'lucide-react';
+import { rolesApi } from '../services/api';
 
 interface Permission {
   id: string;
@@ -64,14 +64,6 @@ const allPermissions: Permission[] = [
   { id: 'config.manage', name: '管理配置', description: '修改系统配置', module: 'system', actions: ['edit'] }
 ];
 
-const mockRoles: Role[] = [
-  { id: '1', name: '超级管理员', description: '拥有系统所有权限', userCount: 2, permissions: allPermissions.map(p => p.id), status: 'active', createdAt: '2026-01-01T00:00:00Z', isSystem: true },
-  { id: '2', name: '安全分析师', description: '负责安全事件分析和处置', userCount: 8, permissions: ['dashboard.view', 'events.view', 'events.edit', 'alerts.view', 'alerts.manage', 'hunting.view', 'ai.view', 'playbooks.view', 'playbooks.execute', 'rules.view', 'assets.view', 'scans.view', 'data.view'], status: 'active', createdAt: '2026-01-15T00:00:00Z' },
-  { id: '3', name: '安全运营', description: '负责日常安全运营和监控', userCount: 5, permissions: ['dashboard.view', 'events.view', 'events.create', 'alerts.view', 'alerts.manage', 'assets.view', 'scans.view', 'scans.manage', 'data.view'], status: 'active', createdAt: '2026-02-01T00:00:00Z' },
-  { id: '4', name: '审计员', description: '负责安全审计和合规检查', userCount: 3, permissions: ['dashboard.view', 'events.view', 'alerts.view', 'audit.view', 'config.view'], status: 'active', createdAt: '2026-02-15T00:00:00Z' },
-  { id: '5', name: '访客', description: '只读权限，用于演示和培训', userCount: 1, permissions: ['dashboard.view', 'events.view', 'alerts.view'], status: 'inactive', createdAt: '2026-03-01T00:00:00Z' }
-];
-
 const actionLabels: Record<string, string> = {
   view: '查看',
   create: '创建',
@@ -81,7 +73,8 @@ const actionLabels: Record<string, string> = {
 };
 
 export default function RoleManagement() {
-  const [roles, setRoles] = useState<Role[]>(mockRoles);
+  const [roles, setRoles] = useState<Role[]>([]);
+  const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedRole, setSelectedRole] = useState<Role | null>(null);
   const [showForm, setShowForm] = useState(false);
@@ -92,6 +85,37 @@ export default function RoleManagement() {
     description: '',
     permissions: [] as string[]
   });
+
+  const fetchRoles = async () => {
+    setLoading(true);
+    try {
+      const res = await rolesApi.getRoles();
+      if (res.success && res.data) {
+        const rolesData = Array.isArray(res.data) ? res.data : [];
+        setRoles(rolesData.map((r: any) => ({
+          id: r.id,
+          name: r.name,
+          description: r.description || '',
+          userCount: 0,
+          permissions: r.permissions || [],
+          status: 'active' as const,
+          createdAt: r.created_at || new Date().toISOString(),
+          isSystem: r.is_system
+        })));
+      } else {
+        setRoles([]);
+      }
+    } catch (error) {
+      console.error('获取角色列表失败:', error);
+      setRoles([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchRoles();
+  }, []);
 
   const filteredRoles = roles.filter(r =>
     r.name.toLowerCase().includes(searchTerm.toLowerCase()) ||

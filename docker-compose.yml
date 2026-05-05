@@ -1,5 +1,28 @@
 services:
   # ==================== 核心服务（默认启动）====================
+  
+  # PostgreSQL - 用于关系型数据存储
+  postgres:
+    image: postgres:16-alpine
+    container_name: usop_postgres
+    environment:
+      POSTGRES_USER: usop
+      POSTGRES_PASSWORD: usop_password
+      POSTGRES_DB: usop_security
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - log-platform
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U usop -d usop_security"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # TimescaleDB - 用于时序数据存储（告警日志）
   timescale:
     image: timescale/timescaledb:latest-pg16
     container_name: timescale
@@ -8,7 +31,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_DB: postgres
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - timescale_data:/var/lib/postgresql/data
       - ./postgres/init.d:/docker-entrypoint-initdb.d
@@ -157,6 +180,7 @@ networks:
     driver: bridge
 
 volumes:
+  postgres_data:
   timescale_data:
   kafka_data:
   redis_data:

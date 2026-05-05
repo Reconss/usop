@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Database, HardDrive, Layers, Plus, CheckCircle, AlertCircle, Settings, Zap, Trash2, Edit3, Eye, X, Save, Play, Wrench, Sparkles, Bot, GitBranch } from 'lucide-react';
+import { Database, HardDrive, Layers, Plus, CheckCircle, AlertCircle, Settings, Zap, Trash2, Edit3, Eye, X, Save, Play, Wrench, Sparkles, Bot, GitBranch, Loader2 } from 'lucide-react';
+import { storageTablesApi } from '../services/api';
 
 interface StorageTable {
   id: string;
@@ -25,81 +26,9 @@ interface ParsePipeline {
   parser: string;
 }
 
-const mockTables: StorageTable[] = [
-  { 
-    id: 'st-001', 
-    name: 'alert_logs', 
-    displayName: '告警日志',
-    dataSource: 'Kafka-安全日志', 
-    logType: '安全日志',
-    retentionDays: 90, 
-    partitionInterval: '1天', 
-    indexes: ['timestamp', 'severity'], 
-    rowCount: 156729384, 
-    size: '2.3 GB', 
-    compression: true, 
-    autoCreated: false, 
-    lastOptimized: '2026-04-28T10:00:00Z' 
-  },
-  { 
-    id: 'st-002', 
-    name: 'security_events', 
-    displayName: '安全事件',
-    dataSource: 'Syslog-网络设备', 
-    logType: '系统日志',
-    retentionDays: 180, 
-    partitionInterval: '1天', 
-    indexes: ['timestamp', 'source_ip'], 
-    rowCount: 28473920, 
-    size: '890 MB', 
-    compression: true, 
-    autoCreated: false, 
-    lastOptimized: '2026-04-29T08:30:00Z' 
-  },
-  { 
-    id: 'st-003', 
-    name: 'raw_logs', 
-    displayName: '原始日志',
-    dataSource: 'S3-审计日志', 
-    logType: '审计日志',
-    retentionDays: 30, 
-    partitionInterval: '7天', 
-    indexes: ['timestamp'], 
-    rowCount: 89347291, 
-    size: '1.5 GB', 
-    compression: true, 
-    autoCreated: true, 
-    lastOptimized: '2026-04-30T15:20:00Z',
-    createdByPipeline: '智能识别'
-  },
-  { 
-    id: 'st-004', 
-    name: 'app_logs_json', 
-    displayName: '应用日志(JSON)',
-    dataSource: 'HTTP-应用日志', 
-    logType: '应用日志',
-    retentionDays: 60, 
-    partitionInterval: '1天', 
-    indexes: ['timestamp', 'app_name', 'level'], 
-    rowCount: 45283910, 
-    size: '3.1 GB', 
-    compression: true, 
-    autoCreated: true, 
-    lastOptimized: '2026-04-30T12:00:00Z',
-    createdByPipeline: 'JSON标准解析'
-  },
-];
-
-const mockPipelines: ParsePipeline[] = [
-  { id: 'p1', name: 'JSON标准解析', parser: 'json' },
-  { id: 'p2', name: 'Syslog RFC5424', parser: 'syslog' },
-  { id: 'p3', name: 'CEF安全事件', parser: 'cef' },
-  { id: 'p4', name: 'Grok自定义', parser: 'grok' },
-  { id: 'p5', name: '智能识别', parser: 'auto' }
-];
-
 export default function StorageConfig() {
-  const [tables, setTables] = useState<StorageTable[]>(mockTables);
+  const [tables, setTables] = useState<StorageTable[]>([]);
+  const [pipelines, setPipelines] = useState<ParsePipeline[]>([]);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDetailModal, setShowDetailModal] = useState(false);
@@ -116,68 +45,158 @@ export default function StorageConfig() {
     compression: true,
     logType: ''
   });
+  const [loading, setLoading] = useState(false);
 
-  const handleCreate = () => {
-    const newTable: StorageTable = {
-      id: `st-${Date.now()}`,
-      name: formData.name,
-      displayName: formData.displayName || formData.name,
-      dataSource: '手动创建',
-      logType: formData.logType,
-      retentionDays: formData.retentionDays,
-      partitionInterval: formData.partitionInterval,
-      indexes: formData.indexes.split(',').map(s => s.trim()),
-      rowCount: 0,
-      size: '0 MB',
-      compression: formData.compression,
-      autoCreated: false,
-      lastOptimized: new Date().toISOString()
+  // 加载存储表和解析管道
+  useEffect(() => {
+    const loadData = async () => {
+      setLoading(true);
+      try {
+        // 并行加载存储表和解析管道
+        const [tablesRes, pipelinesRes] = await Promise.all([
+          storageTablesApi.getTables({}),
+          // 从 pipelines API 获取解析管道
+          fetch('/api/pipelines?page_size=100').then(r => r.json()).catch(() => ({ success: false, data: [] }))
+        ]);
+        
+        // 处理存储表数据
+        if (tablesRes.code === 200 && tablesRes.data) {
+          const formattedTables = tablesRes.data.map((t: any) => ({
+            ...t,
+            partitionInterval: t.partitionInterval || '1天',
+            indexes: t.indexes || [],
+          }));
+          setTables(formattedTables);
+        }
+        
+        // 处理解析管道数据
+        if (pipelinesRes.success && pipelinesRes.data?.pipelines) {
+          setPipelines(pipelinesRes.data.pipelines.map((p: any) => ({
+            id: String(p.id),
+            name: p.name || '未命名管道',
+            parser: p.parser_type || p.type || 'auto',
+          })));
+        }
+      } catch (error) {
+        console.error('加载数据失败:', error);
+      } finally {
+        setLoading(false);
+      }
     };
-    setTables([...tables, newTable]);
-    setShowCreateModal(false);
-    setFormData({ name: '', displayName: '', retentionDays: 90, partitionInterval: '1天', indexes: 'timestamp', compression: true, logType: '' });
+    loadData();
+  }, []);
+
+  const handleCreate = async () => {
+    if (!formData.name) return;
+    setLoading(true);
+    try {
+      const response = await storageTablesApi.createTable({
+        name: formData.name,
+        displayName: formData.displayName || formData.name,
+        logType: formData.logType,
+        retentionDays: formData.retentionDays,
+        partitionInterval: formData.partitionInterval,
+        indexes: formData.indexes.split(',').map(s => s.trim()),
+        compression: formData.compression,
+      });
+      if (response.code === 200 && response.data) {
+        setTables([...tables, {
+          ...response.data,
+          dataSource: '手动创建',
+        }]);
+        setShowCreateModal(false);
+        setFormData({ name: '', displayName: '', retentionDays: 90, partitionInterval: '1天', indexes: 'timestamp', compression: true, logType: '' });
+      }
+    } catch (error) {
+      console.error('创建存储表失败:', error);
+      alert('创建失败，请重试');
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handleAutoCreate = () => {
-    const pipeline = mockPipelines.find(p => p.id === selectedPipeline);
+  const handleAutoCreate = async () => {
+    const pipeline = pipelines.find(p => p.id === selectedPipeline);
     if (!pipeline) return;
-    
-    const newTable: StorageTable = {
-      id: `st-${Date.now()}`,
-      name: `auto_${pipeline.parser}_logs`,
-      displayName: `${pipeline.name}存储表`,
-      dataSource: '自动创建',
-      retentionDays: 90, 
-      partitionInterval: '1天', 
-      indexes: ['timestamp', 'source'], 
-      rowCount: 0,
-      size: '0 MB',
-      compression: true,
-      autoCreated: true,
-      lastOptimized: new Date().toISOString(),
-      createdByPipeline: pipeline.name
-    };
-    setTables([...tables, newTable]);
-    setShowAutoCreateModal(false);
-    setSelectedPipeline('');
+    setLoading(true);
+    try {
+      const response = await storageTablesApi.createTable({
+        name: `auto_${pipeline.parser}_logs`,
+        displayName: `${pipeline.name}存储表`,
+        retentionDays: 90,
+        partitionInterval: '1天',
+        indexes: ['timestamp', 'source'],
+        compression: true,
+      });
+      if (response.code === 200 && response.data) {
+        setTables([...tables, {
+          ...response.data,
+          dataSource: '自动创建',
+          autoCreated: true,
+          createdByPipeline: pipeline.name,
+        }]);
+        setShowAutoCreateModal(false);
+        setSelectedPipeline('');
+      }
+    } catch (error) {
+      console.error('创建存储表失败:', error);
+      alert('创建失败，请重试');
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handleEdit = () => {
+  const handleEdit = async () => {
     if (!selectedTable) return;
-    setTables(tables.map(t => t.id === selectedTable.id ? { 
-      ...t, 
-      ...formData, 
-      displayName: formData.displayName || formData.name,
-      indexes: formData.indexes.split(',').map(s => s.trim()) 
-    } : t));
-    setShowEditModal(false);
-    setSelectedTable(null);
+    setLoading(true);
+    try {
+      // 如果是真实ID（数字），调用API更新
+      if (/^\d+$/.test(selectedTable.id)) {
+        const response = await storageTablesApi.updateTable(parseInt(selectedTable.id), {
+          displayName: formData.displayName || formData.name,
+          retentionDays: formData.retentionDays,
+          partitionInterval: formData.partitionInterval,
+          indexes: formData.indexes.split(',').map(s => s.trim()),
+          compression: formData.compression,
+        });
+        if (response.code === 200 && response.data) {
+          setTables(tables.map(t => t.id === selectedTable.id ? { ...t, ...response.data } : t));
+        }
+      } else {
+        // mock数据只更新本地状态
+        setTables(tables.map(t => t.id === selectedTable.id ? { 
+          ...t, 
+          ...formData, 
+          displayName: formData.displayName || formData.name,
+          indexes: formData.indexes.split(',').map(s => s.trim()) 
+        } : t));
+      }
+      setShowEditModal(false);
+      setSelectedTable(null);
+    } catch (error) {
+      console.error('更新存储表失败:', error);
+      alert('更新失败，请重试');
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handleDelete = () => {
-    if (showDeleteConfirm) {
+  const handleDelete = async () => {
+    if (!showDeleteConfirm) return;
+    setLoading(true);
+    try {
+      // 如果是真实ID（数字），调用API删除
+      if (/^\d+$/.test(showDeleteConfirm.id)) {
+        await storageTablesApi.deleteTable(parseInt(showDeleteConfirm.id));
+      }
+      // 从列表中移除
       setTables(tables.filter(t => t.id !== showDeleteConfirm.id));
       setShowDeleteConfirm(null);
+    } catch (error) {
+      console.error('删除存储表失败:', error);
+      alert('删除失败，请重试');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -273,22 +292,50 @@ export default function StorageConfig() {
                   <span className="font-medium text-text-primary">{table.retentionDays} 天</span>
                 </div>
                 <div className="flex items-center justify-between text-sm">
+                  <span className="text-text-muted">数据量</span>
+                  <span className="font-medium text-text-primary">{table.size}</span>
+                </div>
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-text-muted">行数</span>
+                  <span className="font-medium text-text-primary">{table.rowCount.toLocaleString()}</span>
+                </div>
+                <div className="flex items-center justify-between text-sm">
                   <span className="text-text-muted">压缩</span>
                   <span className="font-medium text-emerald-600">{table.compression ? '已启用' : '未启用'}</span>
                 </div>
                 <div className="flex items-center justify-between text-sm">
+                  <span className="text-text-muted">分区间隔</span>
+                  <span className="font-medium text-text-primary">{table.partitionInterval}</span>
+                </div>
+                <div className="text-sm">
                   <span className="text-text-muted">索引列</span>
-                  <span className="font-medium text-text-primary">{table.indexes.length}</span>
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {table.indexes.map((idx, i) => (
+                      <span key={i} className="px-2 py-0.5 bg-blue-50 text-blue-700 text-xs rounded">
+                        {idx}
+                      </span>
+                    ))}
+                  </div>
                 </div>
               </div>
 
               {/* Card Footer */}
-              <div className="mt-4 pt-4 border-t border-gray-100">
+              <div className="mt-4 pt-4 border-t border-gray-100 flex gap-2">
                 <button 
                   onClick={() => openEdit(table)}
-                  className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-page-bg/50 hover:bg-page-bg text-text-secondary text-sm font-medium rounded-lg transition-colors"
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-page-bg/50 hover:bg-page-bg text-text-secondary text-sm font-medium rounded-lg transition-colors"
                 >
                   <Wrench className="w-4 h-4" />配置
+                </button>
+                <button 
+                  onClick={() => setShowDeleteConfirm(table)}
+                  className="flex items-center justify-center gap-1 px-3 py-2 bg-red-50 hover:bg-red-100 text-red-600 text-sm font-medium rounded-lg transition-colors"
+                >
+                  {loading && showDeleteConfirm?.id === table.id ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="w-4 h-4" />
+                  )}
                 </button>
               </div>
             </motion.div>
@@ -345,12 +392,30 @@ export default function StorageConfig() {
                   <span className="font-medium text-text-primary">{table.retentionDays} 天</span>
                 </div>
                 <div className="flex items-center justify-between text-sm">
+                  <span className="text-text-muted">数据量</span>
+                  <span className="font-medium text-text-primary">{table.size}</span>
+                </div>
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-text-muted">行数</span>
+                  <span className="font-medium text-text-primary">{table.rowCount.toLocaleString()}</span>
+                </div>
+                <div className="flex items-center justify-between text-sm">
                   <span className="text-text-muted">压缩</span>
                   <span className="font-medium text-emerald-600">{table.compression ? '已启用' : '未启用'}</span>
                 </div>
                 <div className="flex items-center justify-between text-sm">
+                  <span className="text-text-muted">分区间隔</span>
+                  <span className="font-medium text-text-primary">{table.partitionInterval}</span>
+                </div>
+                <div className="text-sm">
                   <span className="text-text-muted">索引列</span>
-                  <span className="font-medium text-text-primary">{table.indexes.length}</span>
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {table.indexes.map((idx, i) => (
+                      <span key={i} className="px-2 py-0.5 bg-blue-50 text-blue-700 text-xs rounded">
+                        {idx}
+                      </span>
+                    ))}
+                  </div>
                 </div>
               </div>
 
@@ -446,7 +511,7 @@ export default function StorageConfig() {
               <div className="space-y-4">
                 <p className="text-sm text-text-secondary">选择解析管道，系统将自动根据管道配置生成对应的存储表结构</p>
                 <div className="space-y-2">
-                  {mockPipelines.map(pipeline => (
+                  {pipelines.map(pipeline => (
                     <button
                       key={pipeline.id}
                       onClick={() => setSelectedPipeline(pipeline.id)}

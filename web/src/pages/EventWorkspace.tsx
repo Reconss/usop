@@ -4,7 +4,7 @@ import {
   Search, Filter, Download, CheckCircle, XCircle, AlertTriangle,
   Shield, Clock, ChevronDown,
   Trash2, Plus, FileText, X, File, Image,
-  RotateCcw, Eye, History, Loader2, Zap,
+  Eye, History, Loader2, Zap,
   Play, BookOpen, Send
 } from 'lucide-react';
 import { alertsApi, eventActionsApi, playbooksApi } from '../services/api';
@@ -283,14 +283,21 @@ export default function EventWorkspace() {
   };
 
   // 删除事件
-  const handleDeleteEvent = async (eventId: string) => {
+  const handleDeleteEvent = async (event: SecurityEvent) => {
     try {
-      await eventActionsApi.deleteEvent(eventId);
-      setEvents(prev => prev.filter(e => e.id !== eventId));
-      if (detailEvent?.id === eventId) {
+      // 优先使用 eventCode 删除，如果没有则使用 id
+      const eventIdToDelete = event.eventCode || event.id;
+      await eventActionsApi.deleteEvent(eventIdToDelete);
+      const updatedEvents = events.filter(e => e.id !== event.id);
+      setEvents(updatedEvents);
+      // 同步更新 filteredEvents
+      applyFilters(updatedEvents, filters);
+      if (detailEvent?.id === event.id) {
         setDetailEvent(null);
         setActionRecords([]);
       }
+      // 清除选中状态
+      setSelectedEvents(prev => prev.filter(id => id !== event.id));
       showToast('事件已删除');
     } catch (error) {
       console.error('删除失败:', error);
@@ -307,19 +314,18 @@ export default function EventWorkspace() {
     await fetchPlaybooks();
   };
 
-  // 获取告警列表
+  // 获取事件列表
   const fetchEvents = async () => {
     try {
       setLoading(true);
-      const res = await alertsApi.getAlerts({ page_size: 100 });
+      const res = await eventActionsApi.getEvents({ page_size: 100 });
       if (res.success && res.data) {
         const items = Array.isArray(res.data) ? res.data : res.data.items || [];
         const mappedEvents: SecurityEvent[] = items.map((item: any) => ({
           id: String(item.id),
           eventCode: item.event_code,
-          title: item.title || item.name || '未命名告警',
+          title: item.title || item.name || '未命名事件',
           severity: item.severity || 'medium',
-          confidence: item.confidence || 80,
           affectedAssets: item.affected_assets || item.assets || [],
           sourceIp: item.source_ip || item.ip || '',
           timestamp: item.created_at || item.timestamp || new Date().toISOString(),
@@ -332,7 +338,7 @@ export default function EventWorkspace() {
         applyFilters(mappedEvents, filters);
       }
     } catch (error) {
-      console.error('获取告警失败:', error);
+      console.error('获取事件失败:', error);
       setEvents([]);
     } finally {
       setLoading(false);
@@ -644,7 +650,13 @@ export default function EventWorkspace() {
             <CheckCircle className="w-3 h-3" />批量关闭
           </button>
           <button
-            onClick={() => selectedEvents.forEach(id => handleDeleteEvent(id))}
+            onClick={async () => {
+              for (const id of selectedEvents) {
+                const event = events.find(e => e.id === id);
+                if (event) await handleDeleteEvent(event);
+              }
+              setSelectedEvents([]);
+            }}
             disabled={loading}
             className="flex items-center gap-1 px-3 py-1.5 bg-rose-500/20 text-rose-400 rounded-lg text-xs hover:bg-rose-500/30 transition-colors disabled:opacity-50"
           >
@@ -775,7 +787,7 @@ export default function EventWorkspace() {
                         <Eye className="w-4 h-4" />
                       </button>
                       <button
-                        onClick={() => handleDeleteEvent(event.id)}
+                        onClick={() => handleDeleteEvent(event)}
                         className="p-1.5 hover:bg-rose-500/10 rounded-lg text-text-secondary hover:text-rose-400 transition-colors"
                         title="删除"
                       >
@@ -960,10 +972,6 @@ export default function EventWorkspace() {
                     <span className="text-text-primary font-mono">{detailEvent.sourceIp || '-'}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-text-secondary">置信度:</span>
-                    <span className="text-text-primary">{detailEvent.confidence}%</span>
-                  </div>
-                  <div className="flex justify-between">
                     <span className="text-text-secondary">发生时间:</span>
                     <span className="text-text-primary">{new Date(detailEvent.timestamp).toLocaleString()}</span>
                   </div>
@@ -991,32 +999,26 @@ export default function EventWorkspace() {
                   </div>
                 </div>
 
-                {/* 操作按钮 */}
-                <div className="flex gap-3 pt-4 border-t border-border-color">
-                  {detailEvent.status !== 'investigating' && detailEvent.status !== 'closed' && (
-                    <button
-                      onClick={() => handleUpdateStatus(detailEvent.eventCode || detailEvent.id, 'investigating')}
-                      className="flex-1 py-2 bg-orange-500/20 text-orange-400 rounded-lg hover:bg-orange-500/30 transition-colors flex items-center justify-center gap-2"
-                    >
-                      <Clock className="w-4 h-4" />开始调查
-                    </button>
-                  )}
-                  {detailEvent.status !== 'closed' && (
-                    <button
-                      onClick={() => handleUpdateStatus(detailEvent.eventCode || detailEvent.id, 'closed')}
-                      className="flex-1 py-2 bg-emerald-500/20 text-emerald-400 rounded-lg hover:bg-emerald-500/30 transition-colors flex items-center justify-center gap-2"
-                    >
-                      <CheckCircle className="w-4 h-4" />关闭事件
-                    </button>
-                  )}
-                  {detailEvent.status === 'closed' && (
-                    <button
-                      onClick={() => handleUpdateStatus(detailEvent.eventCode || detailEvent.id, 'new')}
-                      className="flex-1 py-2 bg-primary/20 text-primary rounded-lg hover:bg-primary/30 transition-colors flex items-center justify-center gap-2"
-                    >
-                      <RotateCcw className="w-4 h-4" />重新打开
-                    </button>
-                  )}
+                {/* 状态切换（支持任意状态间切换） */}
+                <div className="pt-4 border-t border-border-color">
+                  <label className="block text-sm font-medium text-text-secondary mb-2">事件状态</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {Object.entries(statusConfig).map(([key, config]) => (
+                      <button
+                        key={key}
+                        onClick={() => handleUpdateStatus(detailEvent.eventCode || detailEvent.id, key)}
+                        disabled={detailEvent.status === key}
+                        className={`py-2 px-3 rounded-lg text-xs font-medium transition-all flex items-center justify-center gap-1.5 ${
+                          detailEvent.status === key
+                            ? `${config.bg} ${config.text} ring-1 ring-current/30 cursor-default opacity-70`
+                            : `bg-page-bg border border-border-color hover:${config.bg} hover:${config.text} text-text-secondary`
+                        }`}
+                      >
+                        <span className={`w-2 h-2 rounded-full ${config.color}`} />
+                        {config.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
                 {/* 剧本执行下拉框 */}

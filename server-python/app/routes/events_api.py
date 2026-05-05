@@ -134,7 +134,7 @@ def get_event(event_id):
 @events_api_bp.route('/events', methods=['POST'])
 @login_required
 def create_event():
-    """创建事件"""
+    """创建事件，可关联告警"""
     data = request.get_json()
     
     # 自动生成事件ID
@@ -143,6 +143,21 @@ def create_event():
     # 获取当前用户信息
     user_id = getattr(request, 'user_id', None)
     user_name = getattr(request, 'username', 'system')
+    
+    # 获取关联的告警信息
+    alert_ids = data.get('alert_ids', [])
+    alert_info = data.get('alerts', [])
+    
+    # 如果有告警ID但没有告警详情，尝试查询
+    if alert_ids and not alert_info:
+        alerts = Alert.query.filter(Alert.id.in_(alert_ids)).all()
+        alert_info = [{'id': a.id, 'alert_code': a.alert_code, 'title': a.title, 'severity': a.severity} for a in alerts]
+    
+    # 构建事件扩展数据
+    extra_data = {'event_type': data.get('category', data.get('event_type', '其他'))}
+    if alert_info:
+        extra_data['related_alerts'] = alert_info
+        extra_data['alert_count'] = len(alert_info)
     
     # 创建事件
     event = Event(
@@ -154,6 +169,7 @@ def create_event():
         source=data.get('source', 'manual'),
         status='new',
         raw_log=data.get('raw_log'),
+        extra_data=extra_data,
         timestamp=datetime.utcnow()
     )
     db.session.add(event)
@@ -166,8 +182,24 @@ def create_event():
         user_id=user_id,
         user_name=user_name,
         content=f'创建了事件：{event.title}',
-        extra_data={'event_type': event.category, 'severity': event.severity}
+        extra_data={'event_type': event.category, 'severity': event.severity, 'alert_count': len(alert_info)}
     )
+    
+    # 如果有告警，更新告警状态为 investigating
+    if alert_ids:
+        Alert.query.filter(Alert.id.in_(alert_ids)).update({
+            'status': 'investigating',
+            'updated_at': datetime.utcnow()
+        }, synchronize_session=False)
+        # 创建告警关联记录
+        create_action_record(
+            event_id=event.event_code,
+            action='enriched',
+            user_id=user_id,
+            user_name=user_name,
+            content=f'关联了 {len(alert_ids)} 条告警',
+            extra_data={'alert_ids': alert_ids, 'alert_count': len(alert_ids)}
+        )
     
     # 记录审计日志
     audit = AuditLog(
@@ -176,7 +208,7 @@ def create_event():
         action='创建事件',
         module='events',
         target=event.event_code,
-        details={'title': event.title, 'severity': event.severity},
+        details={'title': event.title, 'severity': event.severity, 'alert_count': len(alert_info)},
         ip=request.remote_addr
     )
     db.session.add(audit)
@@ -193,7 +225,12 @@ def create_event():
 @login_required
 def update_event(event_id):
     """更新事件"""
-    event = Event.query.filter_by(event_code=event_id).first()
+    # 支持数字ID和event_code
+    if event_id.isdigit():
+        event = Event.query.get(int(event_id))
+    else:
+        event = Event.query.filter_by(event_code=event_id).first()
+
     if not event:
         return jsonify({'success': False, 'error': '事件不存在'}), 404
     
@@ -266,7 +303,12 @@ def update_event(event_id):
 @login_required
 def update_event_status(event_id):
     """更新事件状态"""
-    event = Event.query.filter_by(event_code=event_id).first()
+    # 支持数字ID和event_code
+    if event_id.isdigit():
+        event = Event.query.get(int(event_id))
+    else:
+        event = Event.query.filter_by(event_code=event_id).first()
+
     if not event:
         return jsonify({'success': False, 'error': '事件不存在'}), 404
     
@@ -328,12 +370,25 @@ def update_event_status(event_id):
 @login_required
 def delete_event(event_id):
     """删除事件"""
+    # 优先通过 event_code 查找
     event = Event.query.filter_by(event_code=event_id).first()
+    
+    # 如果没找到，且 event_id 是数字，尝试通过 Event.id 查找
+    if not event and event_id.isdigit():
+        event = Event.query.get(int(event_id))
+    
+    # 如果还是没找到，尝试通过数字ID查找（兼容前端传递数字ID的情况）
+    if not event:
+        try:
+            event = Event.query.get(int(event_id))
+        except (ValueError, TypeError):
+            pass
+    
     if not event:
         return jsonify({'success': False, 'error': '事件不存在'}), 404
     
     # 删除关联的处置记录
-    EventAction.query.filter_by(event_id=event_id).delete()
+    EventAction.query.filter_by(event_id=event.event_code).delete()
     
     db.session.delete(event)
     db.session.commit()

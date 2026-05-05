@@ -8,28 +8,32 @@ from datetime import datetime
 def create_app():
     app = Flask(__name__)
 
-    # Database configuration (default to PostgreSQL)
+    # PostgreSQL 连接配置 (业务数据: 用户/事件/资产/规则等)
+    # 端口: 5432, 用户: usop, 密码: usop_password, 库: usop_security
     database_url = os.getenv('DATABASE_URL', 'postgresql://usop:usop_password@localhost:5432/usop_security')
     app.config['SQLALCHEMY_DATABASE_URI'] = database_url
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'usop-secret-key-change-in-production')
     app.config['JWT_SECRET'] = os.getenv('JWT_SECRET', 'usop-jwt-secret-key')
     
-    # TimescaleDB configuration for alert logs
-    app.config['TSDB_USER'] = os.getenv('TSDB_USER', 'timescale')
-    app.config['TSDB_PASSWORD'] = os.getenv('TSDB_PASSWORD', 'timescale_pass')
-    app.config['TSDB_NAME'] = os.getenv('TSDB_NAME', 'alerts')
+    # TimescaleDB 连接配置 (时序数据: 告警日志/统计/聚合)
+    # 端口: 5433, 用户: postgres, 密码: postgres, 库: postgres
+    app.config['TSDB_USER'] = os.getenv('TSDB_USER', 'postgres')
+    app.config['TSDB_PASSWORD'] = os.getenv('TSDB_PASSWORD', 'postgres')
+    app.config['TSDB_NAME'] = os.getenv('TSDB_NAME', 'postgres')
     app.config['TSDB_HOST'] = os.getenv('TSDB_HOST', 'localhost')
     app.config['TSDB_PORT'] = os.getenv('TSDB_PORT', '5433')
 
     # Initialize extensions
+    # CORS配置 - 允许所有来源以解决开发环境问题
     CORS(app, resources={
         r"/api/*": {
-            "origins": "*",
-            "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-            "allow_headers": ["Content-Type", "Authorization"],
+            "origins": ["*"],
+            "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+            "allow_headers": ["Content-Type", "Authorization", "X-Requested-With"],
             "expose_headers": ["Content-Range", "X-Content-Range"],
-            "supports_credentials": True
+            "supports_credentials": False,
+            "max_age": 3600
         }
     })
     db.init_app(app)
@@ -43,12 +47,9 @@ def create_app():
     @app.after_request
     def after_request(response):
         from flask import g, request
-        # Add CORS headers to all responses
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
-        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
-        response.headers['Access-Control-Max-Age'] = '3600'
-        
+        # CORS headers 已由 flask-cors 处理，不要覆盖
+        # 只添加请求日志
+
         if hasattr(g, 'start_time'):
             duration = (datetime.now() - g.start_time).total_seconds() * 1000
             print(f"{datetime.now().isoformat()} {request.method} {request.path} {response.status_code} {duration:.2f}ms")
@@ -64,7 +65,8 @@ def create_app():
             LogType, FormatTemplate, DataTable, LogClassifier, ClassifierRule, DataSourceConfig,
             Vulnerability, AssetVulnerability, ScanProfile, ScanAgent, HuntingResult,
             AIInsight, AIChatSession, AIChatMessage, AIAgent, Role, AssetPort,
-            ScanResult, DetectionRuleExtended, PlaybookExecution
+            ScanResult, DetectionRuleExtended, PlaybookExecution,
+            AlertFieldDefinition
         )
         db.create_all()
         # Initialize default admin user if not exists
@@ -80,6 +82,10 @@ def create_app():
             db.session.add(admin)
             db.session.commit()
             print("Default admin user created: admin / admin123")
+
+        # 初始化标准告警字段定义（幂等，已存在则跳过）
+        from app.routes.alert_fields import _seed_standard_fields
+        _seed_standard_fields()
 
     # Register blueprints
     from app.routes.dashboard import dashboard_bp
@@ -103,6 +109,9 @@ def create_app():
     from app.routes.ingestion import ingestion_bp
     from app.routes.log_management import log_management_bp
     from app.routes.intelligent_parse import intelligent_parse_bp
+    from app.routes.alert_fields import alert_fields_bp
+    from app.routes.pipeline_mappings import pipeline_mappings_bp
+    from app.routes.storage_tables import storage_bp
     
     # 新增 API 蓝图
     from app.routes.dashboard_api import dashboard_api_bp
@@ -121,12 +130,16 @@ def create_app():
     from app.routes.log_types_api import log_types_api_bp
     from app.routes.log_search import log_search_bp
     from app.routes.events_api import events_api_bp
+    from app.routes.roles_api import roles_api_bp
 
     app.register_blueprint(log_management_bp, url_prefix='/api/log-management')
     app.register_blueprint(data_sources_bp, url_prefix='/api/data-sources')
     app.register_blueprint(products_bp, url_prefix='/api/products')
     app.register_blueprint(pipelines_bp, url_prefix='/api/pipelines')
     app.register_blueprint(intelligent_parse_bp, url_prefix='/api/intelligent-parse')
+    app.register_blueprint(alert_fields_bp, url_prefix='/api/alert-fields')
+    app.register_blueprint(pipeline_mappings_bp, url_prefix='/api/pipeline-config')
+    app.register_blueprint(storage_bp, url_prefix='/api/storage-tables')
     app.register_blueprint(alert_logs_bp, url_prefix='/api/alert-logs')
     app.register_blueprint(ingestion_bp, url_prefix='/api/ingestion')
     app.register_blueprint(dashboard_bp, url_prefix='/api/dashboard')
@@ -161,6 +174,7 @@ def create_app():
     app.register_blueprint(log_types_api_bp, url_prefix='/api/log-types-api')
     app.register_blueprint(log_search_bp, url_prefix='/api/log-search')
     app.register_blueprint(events_api_bp, url_prefix='/api/event-actions-api')
+    app.register_blueprint(roles_api_bp, url_prefix='/api/roles-api')
 
     # Health check
     @app.route('/api/health')

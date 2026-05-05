@@ -22,6 +22,9 @@ from app.models.extensions import (
 # 导入事件处置记录模型
 from app.models.event_action import EventAction
 
+# 导入解析管道模型
+from app.models.pipeline_field_mapping import PipelineFieldMapping, PipelineConfig
+
 
 class User(db.Model):
     __tablename__ = 'users'
@@ -373,11 +376,40 @@ class DataSource(db.Model):
     last_read_at = db.Column(db.DateTime)
     last_error = db.Column(db.Text)
     
+    # ========== 新增：数据流关联配置 ==========
+    # 关联日志类型
+    log_type_id = db.Column(db.String(50), db.ForeignKey('log_types.id'))
+    log_type_name = db.Column(db.String(100))
+    
+    # 关联解析管道（多个，存储为JSON数组）
+    pipeline_ids = db.Column(db.JSON, default=list)  # [1, 2, 3]
+    pipeline_names = db.Column(db.JSON, default=list)  # ["JSON标准解析", "Syslog RFC5424"]
+    
+    # 关联格式模板
+    format_template_id = db.Column(db.String(50), db.ForeignKey('format_templates.id'))
+    format_template_name = db.Column(db.String(100))
+    
+    # 关联存储配置
+    storage_table_name = db.Column(db.String(100))  # logs_long_term
+    storage_retention_days = db.Column(db.Integer, default=90)
+    storage_partition = db.Column(db.String(50), default='1d')  # 分区间隔
+    storage_compression = db.Column(db.Boolean, default=True)
+    storage_indexes = db.Column(db.JSON, default=list)  # 索引字段
+    
+    # Flink任务状态
+    flink_job_id = db.Column(db.String(100))  # Flink任务ID
+    flink_job_status = db.Column(db.String(20), default='stopped')  # stopped, running, failed
+    flink_last_heartbeat = db.Column(db.DateTime)
+    
+    # 关联关系
+    log_type = db.relationship('LogType', backref='data_sources')
+    format_template = db.relationship('FormatTemplate', backref='data_sources')
+    
     # 元数据
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
-    # 关联
+    # 原有关联
     product_id = db.Column(db.Integer, db.ForeignKey('products.id'))
     pipeline_id = db.Column(db.Integer, db.ForeignKey('pipelines.id'))
     product = db.relationship('Product', backref='data_sources')
@@ -404,7 +436,23 @@ class DataSource(db.Model):
             'product_id': self.product_id,
             'pipeline_id': self.pipeline_id,
             'product_name': self.product.name if self.product else None,
-            'pipeline_name': self.pipeline.name if self.pipeline else None
+            'pipeline_name': self.pipeline.name if self.pipeline else None,
+            # 新增关联字段
+            'log_type_id': self.log_type_id,
+            'log_type_name': self.log_type_name,
+            'log_type': self.log_type.to_dict() if self.log_type else None,
+            'pipeline_ids': self.pipeline_ids or [],
+            'pipeline_names': self.pipeline_names or [],
+            'format_template_id': self.format_template_id,
+            'format_template_name': self.format_template_name,
+            'storage_table_name': self.storage_table_name,
+            'storage_retention_days': self.storage_retention_days,
+            'storage_partition': self.storage_partition,
+            'storage_compression': self.storage_compression,
+            'storage_indexes': self.storage_indexes or [],
+            'flink_job_id': self.flink_job_id,
+            'flink_job_status': self.flink_job_status,
+            'flink_last_heartbeat': self.flink_last_heartbeat.isoformat() if self.flink_last_heartbeat else None
         }
 
 
@@ -969,3 +1017,43 @@ class DataSourceConfig(db.Model):
             'createdAt': self.created_at.isoformat() if self.created_at else None,
             'updatedAt': self.updated_at.isoformat() if self.updated_at else None
         }
+
+
+class AlertFieldDefinition(db.Model):
+    """安全告警标准字段定义（单一事实来源）
+
+    存储告警标准字段的元数据配置，供日志解析管道和前端展示使用。
+    与 TimescaleDB alerts 表的列一一对应，排除系统管理字段（id, alert_code, status, 时间戳）。
+    """
+    __tablename__ = 'alert_field_definitions'
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(50), unique=True, nullable=False)          # 字段名（与DB列名一致，如 src_ip）
+    label = db.Column(db.String(50), nullable=False)                       # 中文标签（如"源地址"）
+    field_type = db.Column(db.String(20), default='string')               # 值类型：string/number/datetime/boolean
+    category = db.Column(db.String(50), nullable=False)                   # 分类分组（如"网络-五元组"、"告警属性"）
+    required = db.Column(db.Boolean, default=False)                        # 是否必填
+    description = db.Column(db.Text)                                       # 字段说明
+    aliases = db.Column(db.JSON, default=list)                             # 常见别名变体（用于自动映射匹配，如 ["source_ip","srcip","client_ip"]）
+    db_column = db.Column(db.String(50))                                   # 对应的 alerts 表列名（默认与 name 相同）
+    default_value = db.Column(db.String(255))                              # 默认值（当原始日志中无该字段时使用）
+    sort_order = db.Column(db.Integer, default=0)                          # 同分类内排序
+    enabled = db.Column(db.Boolean, default=True)                          # 是否启用
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'label': self.label,
+            'type': self.field_type,
+            'category': self.category,
+            'required': self.required,
+            'description': self.description,
+            'aliases': self.aliases or [],
+            'db_column': self.db_column or self.name,
+            'default_value': self.default_value,
+            'sort_order': self.sort_order,
+            'enabled': self.enabled
+        }
+
