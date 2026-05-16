@@ -105,33 +105,52 @@ class SyslogParser(ParserBase):
         # 尝试时间戳开头的自定义格式
         return self._parse_custom(raw_log, result)
     
+    @staticmethod
+    def _extract_kv_from_message(message: str) -> Dict[str, str]:
+        """从消息体中提取 key=value 对"""
+        kv = {}
+        if not message:
+            return kv
+        # 匹配 key=value 或 key="value" 或 key='value'
+        for m in re.finditer(r'(\w+)=("[^"]*"|\'[^\']*\'|\S+)', message):
+            key = m.group(1)
+            val = m.group(2).strip('"\'')
+            if val and len(val) < 500:
+                kv[key] = val
+        return kv
+
     def _parse_rfc5424(self, match, result: Dict) -> Dict[str, Any]:
         groups = match.groupdict()
         priority = int(groups.get('priority', 0))
-        
+        message = groups.get('message', '')
+
         result.update({
             'format': 'RFC5424',
             'hostname': groups.get('hostname'),
             'app_name': groups.get('app_name'),
             'procid': groups.get('procid'),
             'msgid': groups.get('msgid'),
-            'message': groups.get('message', ''),
+            'message': message,
             'facility': priority >> 3,
             'severity': priority & 7,
             'timestamp': self._parse_timestamp(groups.get('timestamp', ''))
         })
+        # 从消息体提取 key=value 对
+        result.update(self._extract_kv_from_message(message))
         return result
-    
+
     def _parse_rfc3164(self, match, result: Dict) -> Dict[str, Any]:
         groups = match.groupdict()
+        message = groups.get('message', '')
         result.update({
             'format': 'RFC3164',
             'hostname': groups.get('hostname'),
             'app_name': groups.get('app_name'),
             'procid': groups.get('procid'),
-            'message': groups.get('message', ''),
+            'message': message,
             'timestamp': self._parse_timestamp(groups.get('timestamp', ''))
         })
+        result.update(self._extract_kv_from_message(message))
         return result
     
     def _parse_cef(self, raw_log: str) -> Dict[str, Any]:
@@ -147,10 +166,18 @@ class SyslogParser(ParserBase):
                 'severity': self._cef_severity(int(groups.get('severity', 0))),
                 'timestamp': datetime.utcnow().isoformat()
             })
-            # 解析扩展字段 key=value
+            # 解析扩展字段 key=value（按空格分词后逐项解析，避免贪婪匹配）
             extension = groups.get('extension', '')
-            for pair in re.findall(r'(\w+)=([^\=]+)', extension):
-                result[pair[0]] = pair[1].strip()
+            tokens = extension.split()
+            current_key = None
+            for token in tokens:
+                if '=' in token:
+                    key, _, val = token.partition('=')
+                    result[key.strip()] = val.strip()
+                    current_key = key.strip()
+                elif current_key:
+                    # 续接上一字段的值（如含空格的 msg="..." 已按引号处理）
+                    result[current_key] += ' ' + token
         return result
     
     def _parse_custom(self, raw_log: str, result: Dict) -> Dict[str, Any]:
@@ -283,21 +310,21 @@ class Normalizer:
     
     # 字段映射表
     FIELD_MAPPING = {
-        'src_ip': ['source_ip', 'srcip', 'sourceip', 'client_ip', 'clientip', 'cip', 'src_ip', 'srcip', ' origination', 'orig_ip'],
-        'dst_ip': ['dest_ip', 'dstip', 'destination_ip', 'target_ip', 'targetip', 'dip', 'dst_ip', 'destination', 'destaddr'],
-        'src_port': ['source_port', 'srcport', 'sport', 'sourcePort', 'src_port', 'orig_port'],
-        'dst_port': ['dest_port', 'dstport', 'dport', 'destinationPort', 'dst_port', 'dest_port'],
-        'hostname': ['host', 'hostname', 'computer', 'server_name', 'device', 'endpoint'],
-        'username': ['user', 'username', 'account', 'login_name', 'usr', 'user_name', 'account_name'],
-        'severity': ['level', 'priority', 'risk_level', 'alert_level', 'criticity', 'threat_level'],
-        'alert_name': ['title', 'name', 'event_type', 'rule_name', 'alertname', 'signature', 'msg'],
-        'message': ['msg', 'description', 'detail', 'info', 'content', 'log', 'text'],
-        'protocol': ['proto', 'network_protocol', 'networkProtocol', 'l4_protocol'],
-        'action': ['action_taken', 'action_type', 'event_action', 'outcome', 'result'],
-        'url': ['uri', 'url', 'request_uri', 'path', 'request_path'],
-        'user_agent': ['user_agent', 'ua', 'http_user_agent', 'browser'],
-        'country': ['country', 'geo_country', 'src_country', 'location'],
-        'asn': ['asn', 'as_number', 'autonomous_system'],
+        'src_ip': ['source_ip', 'srcip', 'sourceip', 'client_ip', 'clientip', 'cip', 'src_ip', 'srcip', ' origination', 'orig_ip', 'src', 'sip'],
+        'dst_ip': ['dest_ip', 'dstip', 'destination_ip', 'target_ip', 'targetip', 'dip', 'dst_ip', 'destination', 'destaddr', 'dst', 'dip'],
+        'src_port': ['source_port', 'srcport', 'sport', 'sourcePort', 'src_port', 'orig_port', 'spt'],
+        'dst_port': ['dest_port', 'dstport', 'dport', 'destinationPort', 'dst_port', 'dest_port', 'dpt'],
+        'hostname': ['host', 'hostname', 'computer', 'server_name', 'device', 'endpoint', 'dhost', 'shost'],
+        'username': ['user', 'username', 'account', 'login_name', 'usr', 'user_name', 'account_name', 'suser', 'duser'],
+        'severity': ['level', 'priority', 'risk_level', 'alert_level', 'criticity', 'threat_level', 'sev', 'severity'],
+        'alert_name': ['title', 'name', 'event_type', 'rule_name', 'alertname', 'signature', 'msg', 'event_name'],
+        'message': ['msg', 'description', 'detail', 'info', 'content', 'log', 'text', 'message'],
+        'protocol': ['proto', 'network_protocol', 'networkProtocol', 'l4_protocol', 'protocol', 'app'],
+        'action': ['action_taken', 'action_type', 'event_action', 'outcome', 'result', 'act', 'action', 'deviceAction'],
+        'url': ['uri', 'url', 'request_uri', 'path', 'request_path', 'request'],
+        'user_agent': ['user_agent', 'ua', 'http_user_agent', 'browser', 'agent'],
+        'country': ['country', 'geo_country', 'src_country', 'location', 'srcGeo'],
+        'asn': ['asn', 'as_number', 'autonomous_system', 'srcASN'],
     }
     
     # 严重级别映射

@@ -42,7 +42,11 @@ module.exports = {
       spacing: {
         'page': '24px',
         'card': '20px',
-        'component': '16px'
+        'component': '16px',
+        'xs': '20rem',
+      },
+      maxWidth: {
+        'xs': '20rem',
       },
       borderRadius: {
         'card': '12px',

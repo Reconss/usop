@@ -1,0 +1,74 @@
+# 阶段1: 构建前端
+FROM node:20-alpine AS frontend
+WORKDIR /app
+RUN npm install -g pnpm
+COPY web/package.json web/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY web/ .
+RUN pnpm build
+
+# 阶段2: Python 后端
+FROM python:3.11-slim AS backend
+WORKDIR /app
+COPY server-python/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY server-python/ .
+
+# 阶段3: 合并
+FROM python:3.11-slim
+WORKDIR /app
+
+# 安装 nginx
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    nginx curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# 复制后端
+COPY --from=backend /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=backend /usr/local/bin /usr/local/bin
+COPY --from=backend /app /app
+
+# 复制前端构建文件
+COPY --from=frontend /app/dist /app/static
+
+# 配置 nginx
+RUN echo 'server {\
+    listen 3266;\
+    server_name localhost;\
+    root /app/static;\
+    index index.html;\
+    \
+    location / {\
+        try_files $uri $uri/ /index.html;\
+        add_header Cache-Control "no-cache, no-store, must-revalidate";\
+    }\
+    \
+    location ~* \.(js|css)$ {\
+        expires 1y;\
+        add_header Cache-Control "public, immutable";\
+    }\
+    \
+    location /api {\
+        proxy_pass http://127.0.0.1:5001;\
+        proxy_http_version 1.1;\
+        proxy_set_header Host $host;\
+        proxy_set_header X-Real-IP $remote_addr;\
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\
+        proxy_set_header X-Forwarded-Proto $scheme;\
+    }\
+}' > /etc/nginx/sites-available/usop
+
+RUN rm -f /etc/nginx/sites-enabled/default
+RUN ln -s /etc/nginx/sites-available/usop /etc/nginx/sites-enabled/
+
+# 环境变量
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    FLASK_PORT=5001 \
+    FLASK_APP=app \
+    SKIP_BIGDATA_CHECK=1
+
+EXPOSE 3266 5001
+
+# 启动 nginx 和 python
+CMD nginx & python run.py

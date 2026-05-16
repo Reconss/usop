@@ -12,11 +12,12 @@ import {
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { alertsApi } from '../services/api';
+import { FilterDropdown, TimeRangePicker } from '../components/FilterBar';
 
 // ==================== 类型定义 ====================
 
 type Severity = 'critical' | 'high' | 'medium' | 'low';
-type AlertStatus = 'new' | 'investigating' | 'closed' | 'false_positive';
+type AlertStatus = 'new' | 'investigating' | 'closed' | 'false_positive' | 'active' | 'resolved';
 type AggregationDimension = 'none' | 'src_ip' | 'category' | 'pattern';
 
 interface Alert {
@@ -142,7 +143,10 @@ const statusConfig: Record<AlertStatus, {
   new: { icon: Bell, color: 'text-blue-400', bg: 'bg-blue-500/10', label: '新告警' },
   investigating: { icon: Clock3, color: 'text-amber-400', bg: 'bg-amber-500/10', label: '调查中' },
   closed: { icon: CheckCircle, color: 'text-emerald-400', bg: 'bg-emerald-500/10', label: '已关闭' },
-  false_positive: { icon: XCircle, color: 'text-gray-400', bg: 'bg-gray-500/10', label: '误报' }
+  false_positive: { icon: XCircle, color: 'text-gray-400', bg: 'bg-gray-500/10', label: '误报' },
+  // 兼容 API 返回的额外状态
+  active: { icon: Clock3, color: 'text-amber-400', bg: 'bg-amber-500/10', label: '调查中' },
+  resolved: { icon: CheckCircle, color: 'text-emerald-400', bg: 'bg-emerald-500/10', label: '已关闭' }
 };
 
 // 数据源产品图标映射
@@ -309,8 +313,8 @@ const AlertDetailDrawer = ({
   onStatusChange: (status: AlertStatus) => void;
   onCreateEvent: (alert: Alert) => void;
 }) => {
-  const severity = severityConfig[alert.severity];
-  const StatusIcon = statusConfig[alert.status].icon;
+  const severity = severityConfig[alert.severity] || severityConfig.medium;
+  const StatusIcon = statusConfig[alert.status]?.icon || Bell;
   const ProductIcon = productIcons[alert.source]?.icon || AlertTriangle;
   const productColor = productIcons[alert.source]?.color || 'text-gray-400';
 
@@ -356,9 +360,9 @@ const AlertDetailDrawer = ({
             </div>
             <div className="p-4 rounded-xl bg-page-bg border border-border-color">
               <div className="text-xs text-text-muted mb-1">处理状态</div>
-              <div className={`flex items-center gap-2 text-lg font-semibold ${statusConfig[alert.status].color}`}>
+              <div className={`flex items-center gap-2 text-lg font-semibold ${statusConfig[alert.status]?.color || 'text-gray-400'}`}>
                 <StatusIcon className="w-5 h-5" />
-                {statusConfig[alert.status].label}
+                {statusConfig[alert.status]?.label || alert.status}
               </div>
             </div>
           </div>
@@ -497,8 +501,17 @@ export default function SecurityAlerts() {
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [selectedAlerts, setSelectedAlerts] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState('');
-  const [severityFilter, setSeverityFilter] = useState<Severity | 'all'>('all');
-  const [statusFilter, setStatusFilter] = useState<AlertStatus | 'all'>('all');
+  const [severityFilter, setSeverityFilter] = useState<Severity[]>([]);
+  const [statusFilter, setStatusFilter] = useState<AlertStatus[]>(['new', 'investigating']);
+  const [timeRange, setTimeRange] = useState<{ start: string; end: string }>(() => {
+    const end = new Date();
+    const start = new Date();
+    start.setDate(start.getDate() - 7);
+    return {
+      start: start.toISOString().slice(0, 10),
+      end: end.toISOString().slice(0, 10)
+    };
+  });
   const [showDetail, setShowDetail] = useState<Alert | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [aggregationKey, setAggregationKey] = useState<string>('none');
@@ -560,19 +573,25 @@ export default function SecurityAlerts() {
     fetchAlerts();
   }, [fetchAlerts]);
 
-  // 计算分诊统计
-  const triageStats: TriageStats = useMemo(() => ({
-    pending: alerts.filter(a => a.status === 'new').length,
-    critical: alerts.filter(a => a.severity === 'critical').length,
-    investigating: alerts.filter(a => a.status === 'investigating').length,
-    falsePositive: alerts.filter(a => a.status === 'false_positive').length,
-    resolved: alerts.filter(a => a.status === 'closed').length,
-    total24h: alerts.filter(a => {
-      const alertTime = new Date(a.createdAt).getTime();
-      const dayAgo = Date.now() - 86400000;
-      return alertTime > dayAgo;
-    }).length
-  }), [alerts]);
+  // 计算分诊统计 - 使用 filteredAlerts 以匹配当前过滤条件
+  const triageStats: TriageStats = useMemo(() => {
+    if (!filteredAlerts || !Array.isArray(filteredAlerts)) {
+      return { pending: 0, critical: 0, investigating: 0, falsePositive: 0, resolved: 0, total24h: 0 };
+    }
+    const now = Date.now();
+    const dayAgo = now - 86400000;
+    return {
+      pending: filteredAlerts.filter(a => a.status === 'new').length,
+      critical: filteredAlerts.filter(a => a.severity === 'critical').length,
+      investigating: filteredAlerts.filter(a => a.status === 'investigating' || a.status === 'active').length,
+      falsePositive: filteredAlerts.filter(a => a.status === 'false_positive').length,
+      resolved: filteredAlerts.filter(a => a.status === 'closed' || a.status === 'resolved').length,
+      total24h: filteredAlerts.filter(a => {
+        const alertTime = new Date(a.createdAt).getTime();
+        return alertTime > dayAgo;
+      }).length
+    };
+  }, [filteredAlerts]);
 
   // 动态智能聚合：按多维度指纹 + 动态时间窗口
   const alertGroups: AlertGroup[] = useMemo(() => {
@@ -720,10 +739,18 @@ export default function SecurityAlerts() {
       }
       
       // 严重度过滤
-      if (severityFilter !== 'all' && a.severity !== severityFilter) return false;
+      if (severityFilter.length > 0 && !severityFilter.includes(a.severity)) return false;
       
       // 状态过滤
-      if (statusFilter !== 'all' && a.status !== statusFilter) return false;
+      if (statusFilter.length > 0 && !statusFilter.includes(a.status)) return false;
+      
+      // 时间过滤
+      if (timeRange.start && timeRange.end) {
+        const alertTime = new Date(a.lastSeen).getTime();
+        const startTime = new Date(timeRange.start).getTime();
+        const endTime = new Date(timeRange.end).getTime() + 86400000; // 包含结束当天
+        if (alertTime < startTime || alertTime > endTime) return false;
+      }
       
       // Tab过滤
       if (activeTab === 'pending' && a.status !== 'new') return false;
@@ -754,7 +781,7 @@ export default function SecurityAlerts() {
     });
 
     return result;
-  }, [alerts, searchQuery, severityFilter, statusFilter, activeTab, aggregationKey, alertGroups]);
+  }, [alerts, searchQuery, severityFilter, statusFilter, timeRange, activeTab, aggregationKey, alertGroups]);
 
   // 选中操作
   const toggleSelect = (id: string) => {
@@ -785,20 +812,18 @@ export default function SecurityAlerts() {
 
   // 状态变更（禁止从非new状态退回new）
   const handleStatusChange = (alertId: string, newStatus: AlertStatus) => {
-    setAlerts(prev => prev.map(a => {
-      if (a.id !== alertId) return a;
-      if (newStatus === 'new' && a.status !== 'new') return a;
-      return { ...a, status: newStatus };
-    }));
     const alert = alerts.find(a => a.id === alertId);
-    if (alert && newStatus === 'new' && alert.status !== 'new') {
+    // 检查是否可以从非新告警改回新告警
+    if (newStatus === 'new' && alert && alert.status !== 'new') {
       showToast('已处理过的告警不能重置为新告警', 'error');
       return;
     }
-    showToast(`告警状态已更新为 ${statusConfig[newStatus].label}`);
-    if (showDetail?.id === alertId) {
-      setShowDetail(prev => prev ? { ...prev, status: newStatus } : null);
-    }
+    // 更新告警列表和详情
+    setAlerts(prev => prev.map(a => 
+      a.id === alertId ? { ...a, status: newStatus } : a
+    ));
+    setShowDetail(prev => prev ? (prev.id === alertId ? { ...prev, status: newStatus } : prev) : null);
+    showToast(`告警状态已更新为 ${statusConfig[newStatus]?.label || newStatus}`);
   };
 
   // 生成事件 - 详细描述
@@ -1042,28 +1067,31 @@ export default function SecurityAlerts() {
               className="w-full pl-12 pr-4 py-3 bg-page-bg border border-border-color rounded-xl text-text-primary focus:outline-none focus:border-primary"
             />
           </div>
-          <select
-            value={severityFilter}
-            onChange={(e) => setSeverityFilter(e.target.value as Severity | 'all')}
-            className="px-4 py-3 bg-page-bg border border-border-color rounded-xl text-text-primary"
-          >
-            <option value="all">全部严重度</option>
-            <option value="critical">危急</option>
-            <option value="high">高危</option>
-            <option value="medium">中危</option>
-            <option value="low">低危</option>
-          </select>
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value as AlertStatus | 'all')}
-            className="px-4 py-3 bg-page-bg border border-border-color rounded-xl text-text-primary"
-          >
-            <option value="all">全部状态</option>
-            <option value="new">新告警</option>
-            <option value="investigating">调查中</option>
-            <option value="closed">已关闭</option>
-            <option value="false_positive">误报</option>
-          </select>
+          <div className="flex items-center gap-2 flex-wrap">
+            <FilterDropdown
+              label="严重度"
+              options={[
+                { value: 'critical', label: '危急', color: 'bg-rose-500' },
+                { value: 'high', label: '高危', color: 'bg-orange-500' },
+                { value: 'medium', label: '中危', color: 'bg-amber-500' },
+                { value: 'low', label: '低危', color: 'bg-blue-500' }
+              ]}
+              selected={severityFilter}
+              onChange={(vals) => setSeverityFilter(vals as Severity[])}
+            />
+            <FilterDropdown
+              label="状态"
+              options={[
+                { value: 'new', label: '新告警', color: 'bg-blue-500' },
+                { value: 'investigating', label: '调查中', color: 'bg-amber-500' },
+                { value: 'closed', label: '已关闭', color: 'bg-emerald-500' },
+                { value: 'false_positive', label: '误报', color: 'bg-gray-500' }
+              ]}
+              selected={statusFilter}
+              onChange={(vals) => setStatusFilter(vals.length ? vals as AlertStatus[] : ['new', 'investigating'])}
+            />
+            <TimeRangePicker value={timeRange} onChange={setTimeRange} />
+          </div>
         </div>
       </div>
 
@@ -1243,7 +1271,7 @@ export default function SecurityAlerts() {
                     </div>
                     <div className="divide-y divide-border-color/30">
                       {group.alerts.map(alert => {
-                        const sev = severityConfig[alert.severity];
+                        const sev = severityConfig[alert.severity] || severityConfig.medium;
                         return (
                           <div key={alert.id} className="flex items-center gap-3 px-4 py-2 hover:bg-white/5 text-sm">
                             <span className={`w-2 h-2 rounded-full flex-shrink-0 ${sev.color}`} />
@@ -1273,7 +1301,7 @@ export default function SecurityAlerts() {
 
       {/* 告警列表 */}
         <div className="glass-card rounded-xl overflow-hidden">
-          <table className="w-full">
+          <table className="w-full table-fixed">
             <thead className="bg-page-bg/80 border-b border-border-color">
               <tr className="text-left text-xs text-text-muted uppercase tracking-wider">
                 <th className="p-4 w-10">
@@ -1285,18 +1313,18 @@ export default function SecurityAlerts() {
                   />
                 </th>
                 <th className="p-4 font-medium w-28">告警日志ID</th>
-                <th className="p-4 font-medium">告警信息</th>
+                <th className="p-2 font-medium w-24">告警信息</th>
                 <th className="p-4 font-medium w-20">严重度</th>
                 <th className="p-4 font-medium w-44">分类/资产</th>
                 <th className="p-4 font-medium w-20">状态</th>
-                <th className="p-4 font-medium w-32">告警时间</th>
+                <th className="p-4 font-medium w-24">告警时间</th>
                 <th className="p-4 font-medium w-20">操作</th>
               </tr>
             </thead>
             <tbody>
               {filteredAlerts.map((alert, index) => {
-                const severity = severityConfig[alert.severity];
-                const StatusIcon = statusConfig[alert.status].icon;
+                const severity = severityConfig[alert.severity] || severityConfig.medium;
+                const StatusIcon = statusConfig[alert.status]?.icon || Bell;
 
                 return (
                   <motion.tr
@@ -1316,13 +1344,13 @@ export default function SecurityAlerts() {
                         className="w-4 h-4 rounded border-border-color"
                       />
                     </td>
-                    <td className="p-4">
+                    <td className="p-2">
                       <span className="text-xs font-mono text-text-muted">{alert.alertCode}</span>
                     </td>
-                    <td className="p-4">
-                      <p className="text-sm font-medium text-text-primary line-clamp-1">{alert.title}</p>
+                    <td className="p-2 w-24">
+                      <p className="text-sm font-medium text-text-primary truncate">{alert.title}</p>
                     </td>
-                    <td className="p-4">
+                    <td className="p-2">
                       <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-lg ${severity.bg} ${severity.text}`}>
                         <span className={`w-1.5 h-1.5 rounded-full ${severity.color}`} />
                         {severity.label}
@@ -1331,13 +1359,13 @@ export default function SecurityAlerts() {
                     <td className="p-4">
                       <TagsDisplay category={alert.category} tags={alert.tags} hostname={alert.hostname} />
                     </td>
-                    <td className="p-4">
-                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-lg ${statusConfig[alert.status].bg} ${statusConfig[alert.status].color}`}>
+                    <td className="p-2">
+                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-lg ${statusConfig[alert.status]?.bg || 'bg-gray-500/10'} ${statusConfig[alert.status]?.color || 'text-gray-400'}`}>
                         <StatusIcon className="w-3 h-3" />
-                        {statusConfig[alert.status].label}
+                        {statusConfig[alert.status]?.label || alert.status}
                       </span>
                     </td>
-                    <td className="p-4 text-sm text-text-muted">
+                    <td className="p-2 text-sm text-text-muted">
                       {formatTime(alert.lastSeen)}
                     </td>
                     <td className="p-4">

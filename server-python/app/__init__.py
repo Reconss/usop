@@ -68,7 +68,18 @@ def create_app():
             ScanResult, DetectionRuleExtended, PlaybookExecution,
             AlertFieldDefinition
         )
+        # 导入路由文件中定义的模型（需在 create_all 之前注册）
+        from app.routes.storage_tables import StorageTable
         db.create_all()
+        # 迁移：为 detection_rules 表添加 playbook_id 列（幂等）
+        from sqlalchemy import inspect as sa_inspect, text as sa_text
+        inspector = sa_inspect(db.engine)
+        if 'detection_rules' in inspector.get_table_names():
+            existing_cols = [c['name'] for c in inspector.get_columns('detection_rules')]
+            if 'playbook_id' not in existing_cols:
+                with db.engine.begin() as conn:
+                    conn.execute(sa_text('ALTER TABLE detection_rules ADD COLUMN playbook_id VARCHAR(50)'))
+                    print("✓ 迁移: detection_rules 表添加 playbook_id 列")
         # Initialize default admin user if not exists
         from app.utils import hash_password
         if not User.query.filter_by(username='admin').first():
@@ -82,6 +93,63 @@ def create_app():
             db.session.add(admin)
             db.session.commit()
             print("Default admin user created: admin / admin123")
+
+        # 运行存储表迁移（确保安全告警表存在）
+        try:
+            from app.routes.storage_tables import StorageTable
+            from datetime import datetime
+            import json
+            
+            # 安全告警表字段定义
+            SECURITY_ALERT_COLUMNS = [
+                # 自动生成的字段
+                {'name': 'id', 'label': 'ID', 'type': 'number', 'category': '系统-自动生成', 'required': True, 'auto_generated': True},
+                {'name': 'alert_code', 'label': '告警编号', 'type': 'string', 'category': '系统-自动生成', 'required': True, 'auto_generated': True},
+                {'name': 'first_seen', 'label': '首次发现时间', 'type': 'datetime', 'category': '系统-自动生成', 'required': True, 'auto_generated': True},
+                {'name': 'last_seen', 'label': '最近发现时间', 'type': 'datetime', 'category': '系统-自动生成', 'required': True, 'auto_generated': True},
+                {'name': 'created_at', 'label': '创建时间', 'type': 'datetime', 'category': '系统-自动生成', 'required': True, 'auto_generated': True},
+                {'name': 'updated_at', 'label': '更新时间', 'type': 'datetime', 'category': '系统-自动生成', 'required': False, 'auto_generated': True},
+                # 被动接收的字段
+                {'name': 'title', 'label': '告警标题', 'type': 'string', 'category': '告警属性-被动接收', 'required': True, 'auto_generated': False},
+                {'name': 'description', 'label': '告警描述', 'type': 'string', 'category': '告警属性-被动接收', 'required': False, 'auto_generated': False},
+                {'name': 'severity', 'label': '严重程度', 'type': 'string', 'category': '告警属性-被动接收', 'required': True, 'auto_generated': False},
+                {'name': 'status', 'label': '状态', 'type': 'string', 'category': '告警属性-被动接收', 'required': True, 'auto_generated': False},
+                {'name': 'source', 'label': '数据源', 'type': 'string', 'category': '数据源-被动接收', 'required': True, 'auto_generated': False},
+                {'name': 'source_product', 'label': '产品类型', 'type': 'string', 'category': '数据源-被动接收', 'required': False, 'auto_generated': False},
+                {'name': 'src_ip', 'label': '源地址', 'type': 'string', 'category': '网络-被动接收', 'required': False, 'auto_generated': False},
+                {'name': 'src_port', 'label': '源端口', 'type': 'number', 'category': '网络-被动接收', 'required': False, 'auto_generated': False},
+                {'name': 'dst_ip', 'label': '目标地址', 'type': 'string', 'category': '网络-被动接收', 'required': False, 'auto_generated': False},
+                {'name': 'dst_port', 'label': '目标端口', 'type': 'number', 'category': '网络-被动接收', 'required': False, 'auto_generated': False},
+                {'name': 'protocol', 'label': '协议', 'type': 'string', 'category': '网络-被动接收', 'required': False, 'auto_generated': False},
+                {'name': 'hostname', 'label': '主机名', 'type': 'string', 'category': '资产-被动接收', 'required': False, 'auto_generated': False},
+                {'name': 'raw_log', 'label': '原始日志', 'type': 'string', 'category': '原始数据-被动接收', 'required': False, 'auto_generated': False},
+                {'name': 'parsed_data', 'label': '解析数据', 'type': 'json', 'category': '原始数据-被动接收', 'required': False, 'auto_generated': False},
+            ]
+            
+            # 确保安全告警存储表存在
+            for table_name in ['alerts', 'security_alerts']:
+                if not StorageTable.query.filter_by(name=table_name).first():
+                    table = StorageTable(
+                        name=table_name,
+                        display_name='安全告警表' if table_name == 'security_alerts' else '告警表(别名)',
+                        data_source='系统',
+                        log_type='security_alert',
+                        retention_days=90,
+                        partition_interval='1天',
+                        indexes=[{'field': 'alert_code', 'type': 'btree'}],
+                        columns=SECURITY_ALERT_COLUMNS,
+                        row_count=0,
+                        size='0 MB',
+                        compression=True,
+                        auto_created=True,
+                        created_by_pipeline='system'
+                    )
+                    db.session.add(table)
+            db.session.commit()
+            print("✓ 安全告警存储表初始化完成")
+        except Exception as e:
+            print(f"安全告警存储表初始化: {e}")
+
 
         # 初始化标准告警字段定义（幂等，已存在则跳过）
         from app.routes.alert_fields import _seed_standard_fields
@@ -175,6 +243,15 @@ def create_app():
     app.register_blueprint(log_search_bp, url_prefix='/api/log-search')
     app.register_blueprint(events_api_bp, url_prefix='/api/event-actions-api')
     app.register_blueprint(roles_api_bp, url_prefix='/api/roles-api')
+
+
+    # 初始化 WAF 日志消费者 (从 Kafka 消费 WAF 告警)
+    try:
+        from app.utils.waf_consumer import init_waf_consumer
+        init_waf_consumer(app)
+        print("WAF 日志消费者已启动，监听 topic: waf-alert")
+    except Exception as e:
+        print(f"WAF 消费者初始化失败 (非致命): {e}")
 
     # Health check
     @app.route('/api/health')

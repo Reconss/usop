@@ -82,7 +82,7 @@ const menuItems: MenuItem[] = [
   },
   {
     id: 'data',
-    label: '数据源管理',
+    label: '数据管理',
     icon: Database,
     children: [
       { id: 'ingestion', label: '日志配置', icon: Scroll, path: '/data/ingestion' }

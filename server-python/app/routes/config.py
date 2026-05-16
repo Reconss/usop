@@ -200,14 +200,12 @@ def list_datasource_types():
     return jsonify({
         'success': True,
         'data': [
-            {'id': 'elasticsearch', 'name': 'Elasticsearch'},
-            {'id': 'splunk', 'name': 'Splunk'},
-            {'id': 'kafka', 'name': 'Kafka'},
-            {'id': 'mysql', 'name': 'MySQL'},
+            {'id': 'timescaledb', 'name': 'TimescaleDB'},
             {'id': 'postgresql', 'name': 'PostgreSQL'},
-            {'id': 'mongodb', 'name': 'MongoDB'},
+            {'id': 'kafka', 'name': 'Kafka'},
             {'id': 'syslog', 'name': 'Syslog'},
-            {'id': 'api', 'name': 'API'}
+            {'id': 'api', 'name': 'API'},
+            {'id': 'webhook', 'name': 'Webhook'}
         ]
     })
 

@@ -397,6 +397,7 @@ class DetectionRuleExtended(db.Model):
     severity = db.Column(db.String(20), default='medium')
     status = db.Column(db.String(20), default='disabled')  # enabled, disabled, testing
     data_source_ids = db.Column(db.JSON, default=list)
+    playbook_id = db.Column(db.String(50))
     hit_count = db.Column(db.Integer, default=0)
     last_hit_time = db.Column(db.DateTime)
     false_positive_count = db.Column(db.Integer, default=0)
@@ -417,6 +418,7 @@ class DetectionRuleExtended(db.Model):
             'severity': self.severity,
             'status': self.status,
             'data_source_ids': self.data_source_ids or [],
+            'playbook_id': self.playbook_id,
             'hit_count': self.hit_count,
             'last_hit_time': self.last_hit_time.isoformat() if self.last_hit_time else None,
             'false_positive_count': self.false_positive_count,

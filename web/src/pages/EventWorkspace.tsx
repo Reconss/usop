@@ -48,6 +48,8 @@ const severityConfig = {
 const statusConfig = {
   new: { color: 'bg-blue-500', text: 'text-blue-400', bg: 'bg-blue-500/10', label: '新建', icon: AlertTriangle },
   investigating: { color: 'bg-orange-500', text: 'text-orange-400', bg: 'bg-orange-500/10', label: '调查中', icon: Clock },
+  active: { color: 'bg-red-500', text: 'text-red-400', bg: 'bg-red-500/10', label: '处理中', icon: AlertTriangle },
+  resolved: { color: 'bg-green-500', text: 'text-green-400', bg: 'bg-green-500/10', label: '已解决', icon: CheckCircle },
   closed: { color: 'bg-emerald-500', text: 'text-emerald-400', bg: 'bg-emerald-500/10', label: '已关闭', icon: CheckCircle },
   false_positive: { color: 'bg-gray-500', text: 'text-gray-400', bg: 'bg-gray-500/10', label: '误报', icon: XCircle }
 };

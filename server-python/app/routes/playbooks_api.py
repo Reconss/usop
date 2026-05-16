@@ -145,17 +145,120 @@ def execute_playbook(playbook_id):
     if not playbook:
         return jsonify({'success': False, 'error': '剧本不存在'}), 404
 
-    if playbook.status != 'published':
+    if playbook.status not in ('published', 'enabled'):
         return jsonify({'success': False, 'error': '剧本未发布，无法执行'}), 400
+
+    data = request.get_json() or {}
+    trigger_type = data.get('trigger_type', 'manual')
+    event_info = data.get('event', {})
+    alert_info = data.get('alert', {})
+    params = data.get('params', {})
+
+    user_id = getattr(request, 'user_id', None)
+    user_name = getattr(request, 'username', 'system')
+
+    # 如果提供了 event_id, 加载事件详情
+    if data.get('event_id') and not event_info:
+        event_code = data['event_id']
+        from app.models import Event
+        event = Event.query.filter_by(event_code=event_code).first()
+        if not event and event_code.isdigit():
+            event = Event.query.get(int(event_code))
+        if event:
+            event_info = event.to_dict()
+
+    from app.engine.playbook_engine import playbook_engine
+
+    result = playbook_engine.execute(
+        playbook=playbook,
+        trigger_type=trigger_type,
+        event=event_info,
+        alert=alert_info,
+        params=params,
+        executor=user_name,
+        request_info={
+            'user_id': user_id,
+            'username': user_name,
+            'ip': request.remote_addr
+        }
+    )
+
+    return jsonify({
+        'success': True,
+        'data': result
+    })
+
+
+@playbooks_api_bp.route('/playbooks/actions/list', methods=['GET'])
+@login_required
+def list_available_actions():
+    """列出可用动作类型"""
+    from app.engine.actions import list_actions
+    return jsonify({
+        'success': True,
+        'data': list_actions()
+    })
+
+
+@playbooks_api_bp.route('/playbooks/blocked-ips', methods=['GET'])
+@login_required
+def list_blocked_ips():
+    """列出已封堵的 IP"""
+    from app.engine.actions import IPBlockManager
+    return jsonify({
+        'success': True,
+        'data': IPBlockManager.list_blocks()
+    })
+
+
+@playbooks_api_bp.route('/playbooks/blocked-ips/<ip>', methods=['DELETE'])
+@login_required
+def unblock_ip(ip):
+    """解封 IP"""
+    from app.engine.actions import IPBlockManager
+    result = IPBlockManager.unblock_ip(ip, '手动解封')
+    return jsonify({
+        'success': result.success,
+        'message': result.message,
+        'data': result.data
+    })
+
+
+@playbooks_api_bp.route('/playbooks/executions', methods=['GET'])
+@login_required
+def list_executions():
+    """获取剧本执行历史"""
+    from app.models import PlaybookExecution
+    page = request.args.get('page', 1, type=int)
+    page_size = request.args.get('page_size', 20, type=int)
+
+    query = PlaybookExecution.query.order_by(
+        PlaybookExecution.started_at.desc()
+    )
+    pagination = query.paginate(page=page, per_page=page_size, error_out=False)
 
     return jsonify({
         'success': True,
         'data': {
-            'execution_id': f'exec_{playbook_id}_{datetime.utcnow().timestamp()}',
-            'playbook_id': playbook_id,
-            'status': 'running',
-            'started_at': datetime.utcnow().isoformat(),
-            'steps_completed': 0,
-            'total_steps': len(playbook.nodes) if playbook.nodes else 0
+            'items': [e.to_dict() for e in pagination.items],
+            'total': pagination.total,
+            'page': page,
+            'page_size': page_size,
+            'pages': pagination.pages
         }
+    })
+
+
+@playbooks_api_bp.route('/playbooks/executions/<execution_id>', methods=['GET'])
+@login_required
+def get_execution(execution_id):
+    """获取剧本执行详情"""
+    from app.models import PlaybookExecution
+    execution = PlaybookExecution.query.get(execution_id)
+    if not execution:
+        return jsonify({'success': False, 'error': '执行记录不存在'}), 404
+
+    return jsonify({
+        'success': True,
+        'data': execution.to_dict()
     })

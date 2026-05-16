@@ -1,15 +1,23 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import {
   Server, Workflow, FileText, Code, Database,
-  ArrowRight, Layers, GitBranch, FileJson, HardDrive
+  ArrowRight, Layers, GitBranch, FileJson, HardDrive, Link2
 } from 'lucide-react';
-import { request } from '../services/api';
+
+interface DataSourceMapping {
+  id?: string | number;
+  name?: string;
+  logTypeName?: string;
+  pipelineCount?: number;
+  storageTableName?: string;
+}
 
 interface LogConfigSidebarProps {
   activeSection: string;
   onSectionChange: (section: string) => void;
   dataSourceCount?: number;
+  currentMapping?: DataSourceMapping | null;
 }
 
 interface MenuItem {
@@ -25,7 +33,7 @@ const menuItems: MenuItem[] = [
   { id: 'parsing', label: '智能解析', icon: Workflow, count: 0, desc: '定义解析规则和字段映射' },
   { id: 'logtypes', label: '日志类型', icon: FileText, count: 0, desc: '定义日志分类标准' },
   { id: 'templates', label: '格式模板', icon: Code, count: 0, desc: '定义解析格式规则' },
-  { id: 'storage', label: '存储配置', icon: Database, count: 0, desc: '配置日志存储设置' },
+  { id: 'storage', label: '存储配置', icon: Database, count: 0, desc: '配置数据库存储信息' },
 ];
 
 const flowNodes = [
@@ -36,7 +44,7 @@ const flowNodes = [
   { id: 'storage', label: '存储配置', icon: HardDrive },
 ];
 
-export default function LogConfigSidebar({ activeSection, onSectionChange, dataSourceCount = 0 }: LogConfigSidebarProps) {
+const LogConfigSidebar = React.memo(function LogConfigSidebar({ activeSection, onSectionChange, dataSourceCount = 0, currentMapping }: LogConfigSidebarProps) {
   const [counts, setCounts] = useState<Record<string, number>>({
     sources: dataSourceCount,
     parsing: 0,
@@ -45,29 +53,30 @@ export default function LogConfigSidebar({ activeSection, onSectionChange, dataS
     storage: 0,
   });
 
-  // 从API获取各配置项数量
+  const prevCount = useRef(dataSourceCount);
+  const fetching = useRef(false);
+
   useEffect(() => {
+    if (prevCount.current === dataSourceCount && counts.sources > 0) return;
+    prevCount.current = dataSourceCount;
+    if (fetching.current) return;
+
+    fetching.current = true;
     const fetchCounts = async () => {
       try {
         const token = localStorage.getItem('token');
-        const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+        const headers: Record<string, string> = {};
+        if (token) headers['Authorization'] = `Bearer ${token}`;
 
-        // 并行请求所有配置项数量
-        const [
-          dataSourcesRes,
-          pipelinesRes,
-          logTypesRes,
-          formatsRes,
-          storageRes,
-        ] = await Promise.all([
-          fetch('/api/datasources-api/datasources?page_size=1', { headers }).then(r => r.json()).catch(() => ({ success: false, data: { total: 0 } })),
-          fetch('/api/pipelines?page_size=1', { headers }).then(r => r.json()).catch(() => ({ success: false, data: { total: 0 } })),
-          fetch('/api/log-types-api/log-types?page_size=1', { headers }).then(r => r.json()).catch(() => ({ success: false, data: { total: 0 } })),
-          fetch('/api/ingestion/formats?page_size=1', { headers }).then(r => r.json()).catch(() => ({ success: false, data: [] })),
-          fetch('/api/storage-tables?page_size=1', { headers }).then(r => r.json()).catch(() => ({ code: 200, data: [] })),
-        ]);
+        const [dataSourcesRes, pipelinesRes, logTypesRes, formatsRes, storageRes] =
+          await Promise.all([
+            fetch('/api/datasources-api/datasources?page_size=1', { headers }).then(r => r.json()).catch(() => ({} as any)),
+            fetch('/api/pipelines?page_size=1', { headers }).then(r => r.json()).catch(() => ({} as any)),
+            fetch('/api/log-types-api/log-types?page_size=1', { headers }).then(r => r.json()).catch(() => ({} as any)),
+            fetch('/api/ingestion/formats?page_size=1', { headers }).then(r => r.json()).catch(() => ({} as any)),
+            fetch('/api/storage-tables?page_size=1', { headers }).then(r => r.json()).catch(() => ({} as any)),
+          ]);
 
-        // 处理不同API的返回格式
         const getCount = (res: any): number => {
           if (res?.data?.total !== undefined) return res.data.total;
           if (Array.isArray(res?.data)) return res.data.length;
@@ -83,15 +92,15 @@ export default function LogConfigSidebar({ activeSection, onSectionChange, dataS
         });
       } catch (error) {
         console.error('获取配置项数量失败:', error);
+      } finally {
+        fetching.current = false;
       }
     };
-
     fetchCounts();
   }, [dataSourceCount]);
 
   return (
     <div className="w-72 bg-card-bg rounded-2xl shadow-sm border border-border-color flex flex-col h-full overflow-hidden">
-      {/* Header */}
       <div className="p-5 border-b border-border-color">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-sm">
@@ -104,12 +113,10 @@ export default function LogConfigSidebar({ activeSection, onSectionChange, dataS
         </div>
       </div>
 
-      {/* Menu Items */}
       <div className="flex-1 p-3 space-y-1 overflow-y-auto">
         {menuItems.map((item) => {
           const Icon = item.icon;
           const isActive = activeSection === item.id;
-          // 使用从API获取的数量
           const displayCount = counts[item.id] ?? item.count;
           return (
             <motion.button
@@ -151,7 +158,40 @@ export default function LogConfigSidebar({ activeSection, onSectionChange, dataS
         })}
       </div>
 
-      {/* Data Flow Visualization */}
+      {/* 当前数据流关联状态 */}
+      {currentMapping && currentMapping.name && (
+        <div className="mx-3 mb-2 p-3 bg-gradient-to-r from-orange-50 to-amber-50 rounded-xl border border-orange-200">
+          <h4 className="text-xs font-semibold text-orange-700 mb-2 flex items-center gap-1">
+            <Link2 className="w-3.5 h-3.5" />
+            数据流关联
+          </h4>
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-2 text-xs">
+              <Server className="w-3 h-3 text-orange-500" />
+              <span className="text-gray-600 font-medium">{currentMapping.name}</span>
+            </div>
+            {currentMapping.logTypeName && (
+              <div className="flex items-center gap-2 text-xs">
+                <FileText className="w-3 h-3 text-emerald-500" />
+                <span className="text-gray-600">{currentMapping.logTypeName}</span>
+              </div>
+            )}
+            {currentMapping.pipelineCount != null && currentMapping.pipelineCount > 0 && (
+              <div className="flex items-center gap-2 text-xs">
+                <GitBranch className="w-3 h-3 text-violet-500" />
+                <span className="text-gray-600">{currentMapping.pipelineCount} 个解析管道</span>
+              </div>
+            )}
+            {currentMapping.storageTableName && (
+              <div className="flex items-center gap-2 text-xs">
+                <HardDrive className="w-3 h-3 text-purple-500" />
+                <span className="text-gray-600">{currentMapping.storageTableName}</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="p-4 border-t border-gray-100 bg-gray-50/50">
         <div className="flex items-center justify-center gap-1 text-xs text-gray-400">
           {flowNodes.map((node, index) => (
@@ -170,4 +210,6 @@ export default function LogConfigSidebar({ activeSection, onSectionChange, dataS
       </div>
     </div>
   );
-}
+});
+
+export default LogConfigSidebar;

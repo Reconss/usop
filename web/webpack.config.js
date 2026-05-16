@@ -9,7 +9,7 @@ module.exports = (env, argv) => {
     entry: './src/index.tsx',
     output: {
       path: path.resolve(__dirname, 'dist'),
-      filename: 'bundle.js',
+      filename: 'bundle.[contenthash:8].js',
       publicPath: 'auto'
     },
     module: {
@@ -66,6 +66,7 @@ module.exports = (env, argv) => {
       extensions: ['.mjs', '.ts', '.tsx', '.js', '.jsx']
     },
     devServer: {
+      host: "0.0.0.0",
       port: 3266,
       allowedHosts: 'all',
       historyApiFallback: {

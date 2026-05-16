@@ -1,0 +1,51 @@
+# Hermes AI Agent 配置
+server:
+  host: 0.0.0.0
+  port: 8080
+  debug: false
+
+llm:
+  provider: deepseek
+  api_key: ${DEEPSEEK_API_KEY}
+  base_url: ${DEEPSEEK_BASE_URL}
+  model: ${DEEPSEEK_MODEL}
+  default_temperature: 0.7
+  max_tokens: 4096
+
+agents:
+  threat-analyst:
+    name: 威胁分析助手
+    description: 自动分析安全事件，识别攻击模式和威胁情报
+    capabilities:
+      - 事件分析
+      - 威胁情报
+      - 攻击链重建
+    temperature: 0.3
+  log-parser:
+    name: 日志解析专家
+    description: 解析复杂日志，提取关键安全指标和异常行为
+    capabilities:
+      - 日志解析
+      - 异常检测
+      - 模式识别
+    temperature: 0.2
+  investigation-assistant:
+    name: 调查协作者
+    description: 协助安全调查，提供分析建议和关联信息
+    capabilities:
+      - 关联分析
+      - 证据收集
+      - 报告生成
+    temperature: 0.4
+  compliance-checker:
+    name: 合规检查员
+    description: 检查安全策略合规性，识别配置风险
+    capabilities:
+      - 合规检查
+      - 策略审计
+      - 风险评估
+    temperature: 0.2
+
+logging:
+  level: INFO
+  format: json

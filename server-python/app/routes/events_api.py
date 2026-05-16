@@ -314,7 +314,7 @@ def update_event_status(event_id):
     
     data = request.get_json()
     new_status = data.get('status')
-    valid_statuses = ['new', 'investigating', 'closed', 'false_positive']
+    valid_statuses = ['new', 'investigating', 'closed', 'false_positive', 'active', 'resolved']
     
     if new_status not in valid_statuses:
         return jsonify({'success': False, 'error': '无效的状态'}), 400
@@ -439,7 +439,11 @@ def list_event_actions(event_id):
 @login_required
 def create_event_action(event_id):
     """添加处置记录"""
-    event = Event.query.filter_by(event_code=event_id).first()
+    # 支持数字ID和event_code
+    if event_id.isdigit():
+        event = Event.query.get(int(event_id))
+    else:
+        event = Event.query.filter_by(event_code=event_id).first()
     if not event:
         return jsonify({'success': False, 'error': '事件不存在'}), 404
     
@@ -451,7 +455,7 @@ def create_event_action(event_id):
     
     # 创建处置记录
     action_record = EventAction(
-        event_id=event_id,
+        event_id=event.event_code,
         action=action_type,
         content=data.get('content', ''),
         user_id=user_id,
@@ -560,78 +564,46 @@ def list_event_playbooks(event_id):
 @events_api_bp.route('/events/<event_id>/playbooks/<int:playbook_id>/execute', methods=['POST'])
 @login_required
 def execute_event_playbook(event_id, playbook_id):
-    """在事件上执行剧本"""
+    """在事件上执行剧本 - 使用真实执行引擎"""
     # 支持数字ID或event_code查询事件
     event = Event.query.filter_by(event_code=event_id).first()
     if not event and event_id.isdigit():
         event = Event.query.get(int(event_id))
-    
+
     if not event:
         return jsonify({'success': False, 'error': '事件不存在'}), 404
-    
+
     playbook = Playbook.query.get(playbook_id)
     if not playbook:
         return jsonify({'success': False, 'error': '剧本不存在'}), 404
-    
-    if playbook.status != 'published':
+
+    if playbook.status not in ('published', 'enabled'):
         return jsonify({'success': False, 'error': '剧本未发布，无法执行'}), 400
-    
+
     data = request.get_json() or {}
     user_id = getattr(request, 'user_id', None)
     user_name = getattr(request, 'username', 'system')
-    
-    # 生成执行ID
-    execution_id = f"exec_{playbook_id}_{int(datetime.utcnow().timestamp())}"
-    
-    # 使用event_code作为event_id
-    event_id_for_record = event.event_code
-    
-    # 创建剧本执行记录
-    action_record = EventAction(
-        event_id=event_id_for_record,
-        action='playbook_triggered',
-        content=f'触发了剧本：{playbook.name}',
-        user_id=user_id,
-        user_name=user_name,
-        playbook_id=playbook_id,
-        playbook_name=playbook.name,
-        playbook_execution_id=execution_id,
-        playbook_result={
-            'status': 'running',
-            'started_at': datetime.utcnow().isoformat(),
-            'nodes_count': len(playbook.nodes) if playbook.nodes else 0,
-            'input_params': data
-        },
-        extra_data={'event_title': event.title}
+
+    # 使用真实执行引擎
+    from app.engine.playbook_engine import playbook_engine
+
+    result = playbook_engine.execute(
+        playbook=playbook,
+        trigger_type='event',
+        event=event.to_dict(),
+        alert=data.get('alert', {}),
+        params=data.get('params', {}),
+        executor=user_name,
+        request_info={
+            'user_id': user_id,
+            'username': user_name,
+            'ip': request.remote_addr
+        }
     )
-    db.session.add(action_record)
-    
-    # 审计日志
-    audit = AuditLog(
-        user_id=user_id,
-        username=user_name,
-        action='执行剧本',
-        module='events',
-        target=event_id_for_record,
-        details={'playbook_id': playbook_id, 'playbook_name': playbook.name, 'execution_id': execution_id},
-        ip=request.remote_addr
-    )
-    db.session.add(audit)
-    
-    db.session.commit()
-    
+
     return jsonify({
         'success': True,
-        'data': {
-            'execution_id': execution_id,
-            'playbook_id': playbook_id,
-            'playbook_name': playbook.name,
-            'event_id': event_id_for_record,
-            'status': 'running',
-            'started_at': datetime.utcnow().isoformat(),
-            'steps_completed': 0,
-            'total_steps': len(playbook.nodes) if playbook.nodes else 0
-        }
+        'data': result
     })
 
 

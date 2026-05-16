@@ -22,7 +22,7 @@ import VulnerabilityAssessment from './pages/VulnerabilityAssessment';
 import NotificationSettings from './pages/NotificationSettings';
 import Login from './pages/Login';
 import Profile from './pages/Profile';
-import Settings from './pages/Settings';
+
 
 function AppContent() {
   const { isAuthenticated } = useAuth();
@@ -65,7 +65,7 @@ function AppContent() {
             <Route path="/vulnerabilities" element={<Navigate to="/vulnerabilities/host" replace />} />
             <Route path="/system/notifications" element={<NotificationSettings />} />
             <Route path="/profile" element={<Profile />} />
-            <Route path="/settings" element={<Settings />} />
+
             <Route path="/login" element={<Navigate to="/" replace />} />
           </Routes>
         </main>

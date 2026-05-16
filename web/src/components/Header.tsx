@@ -5,7 +5,6 @@ import {
   Search,
   Bell,
   User,
-  Settings,
   LogOut,
   Moon,
   Sun,
@@ -44,8 +43,13 @@ const pageTitles: Record<string, string> = {
   '/data/ingestion': '日志配置',
   '/data/formats': '数据格式',
   '/data/parsing': '解析规则',
-  '/profile': '个人中心',
-  '/settings': '系统设置'
+  '/vulnerabilities/host': '主机漏洞',
+  '/vulnerabilities/application': '应用漏洞',
+  '/vulnerabilities/assessment': '漏洞评估',
+  '/system/roles': '角色管理',
+  '/system/config': '全局配置',
+  '/system/notifications': '通知设置',
+  '/profile': '个人中心'
 };
 
 const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
@@ -124,11 +128,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
   const handleProfile = () => {
     setShowUserMenu(false);
     navigate('/profile');
-  };
-
-  const handleSettings = () => {
-    setShowUserMenu(false);
-    navigate('/settings');
   };
 
   const handleMarkAsRead = async (id: number) => {
@@ -303,13 +302,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
                   >
                     <User className="w-4 h-4" />
                     个人中心
-                  </button>
-                  <button 
-                    onClick={handleSettings}
-                    className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-primary/5 text-sm text-text-primary transition-colors"
-                  >
-                    <Settings className="w-4 h-4" />
-                    系统设置
                   </button>
                   <div className="border-t border-border-color my-2" />
                   <button 

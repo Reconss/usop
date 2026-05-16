@@ -8,7 +8,7 @@ import {
   Filter, LayoutGrid, List, ChevronRight, Star, Clock, TrendingUp, MoreHorizontal,
   BookOpen, Variable, AlignLeft, Split, Columns, TestTube, RefreshCw, Loader2
 } from 'lucide-react';
-import { logTypesApi } from '../services/api';
+import { formatTemplatesApi } from '../services/api';
 
 interface FormatTemplate {
   id: number;
@@ -16,7 +16,7 @@ interface FormatTemplate {
   type: string;
   category: string;
   description?: string;
-  fields?: number;
+  fields?: { name: string; type: string; sample?: any; description?: string }[];
   parserType?: string;
 }
 
@@ -52,32 +52,32 @@ const grokPatterns = [
 ];
 
 const categories = [
-  { id: 'all', name: '全部', icon: LayoutGrid, color: 'from-gray-500 to-gray-600' },
-  { id: 'web', name: 'Web服务器', icon: Globe, color: 'from-blue-500 to-indigo-600' },
-  { id: 'system', name: '系统日志', icon: Server, color: 'from-emerald-500 to-teal-600' },
-  { id: 'application', name: '应用日志', icon: Code2, color: 'from-rose-500 to-red-600' }
+  { id: 'all', name: '全部', icon: LayoutGrid, color: 'from-primary to-accent' },
+  { id: 'web', name: 'Web服务器', icon: Globe, color: 'from-primary to-indigo-600' },
+  { id: 'system', name: '系统日志', icon: Server, color: 'from-green-500 to-emerald-500' },
+  { id: 'application', name: '应用日志', icon: Code2, color: 'from-purple-500 to-violet-500' }
 ];
 
 const parserTypes = [
-  { id: 'json', name: 'JSON', icon: Braces, desc: 'JSON结构化解析', color: 'from-blue-500 to-indigo-500' },
-  { id: 'keyvalue', name: '键值对', icon: Table, desc: 'Key=Value格式', color: 'from-emerald-500 to-teal-500' },
-  { id: 'grok', name: 'Grok', icon: Code, desc: 'Grok模式匹配', color: 'from-purple-500 to-pink-500' },
-  { id: 'regex', name: '正则', icon: Regex, desc: '正则表达式', color: 'from-amber-500 to-orange-500' },
+  { id: 'json', name: 'JSON', icon: Braces, desc: 'JSON结构化解析', color: 'from-primary to-indigo-600' },
+  { id: 'keyvalue', name: '键值对', icon: Table, desc: 'Key=Value格式', color: 'from-green-500 to-emerald-500' },
+  { id: 'grok', name: 'Grok', icon: Code, desc: 'Grok模式匹配', color: 'from-primary to-purple-500' },
+  { id: 'regex', name: '正则', icon: Regex, desc: '正则表达式', color: 'from-orange-500 to-amber-500' },
   { id: 'syslog', name: 'Syslog', icon: Terminal, desc: 'Syslog标准格式', color: 'from-cyan-500 to-blue-500' },
-  { id: 'cef', name: 'CEF', icon: AlertTriangle, desc: '通用事件格式', color: 'from-rose-500 to-red-500' },
-  { id: 'csv', name: 'CSV', icon: Table, desc: 'CSV表格格式', color: 'from-violet-500 to-purple-500' }
+  { id: 'cef', name: 'CEF', icon: AlertTriangle, desc: '通用事件格式', color: 'from-red-500 to-orange-500' },
+  { id: 'csv', name: 'CSV', icon: Table, desc: 'CSV表格格式', color: 'from-indigo-500 to-purple-500' }
 ];
 
 const typeOptions = [
-  { id: 'string', name: '字符串', icon: Type, color: 'bg-slate-100 text-slate-600 border-slate-200' },
-  { id: 'number', name: '数字', icon: Hash, color: 'bg-blue-100 text-blue-600 border-blue-200' },
-  { id: 'datetime', name: '时间', icon: Calendar, color: 'bg-purple-100 text-purple-600 border-purple-200' },
-  { id: 'ip', name: 'IP地址', icon: Globe, color: 'bg-emerald-100 text-emerald-600 border-emerald-200' },
-  { id: 'boolean', name: '布尔', icon: ToggleLeft, color: 'bg-amber-100 text-amber-600 border-amber-200' }
+  { id: 'string', name: '字符串', icon: Type, color: 'bg-page-bg text-text-secondary border-border-color' },
+  { id: 'number', name: '数字', icon: Hash, color: 'bg-primary/10 text-primary border-primary/20' },
+  { id: 'datetime', name: '时间', icon: Calendar, color: 'bg-purple-50 text-purple-600 border-purple-200' },
+  { id: 'ip', name: 'IP地址', icon: Globe, color: 'bg-green-50 text-green-600 border-green-200' },
+  { id: 'boolean', name: '布尔', icon: ToggleLeft, color: 'bg-amber-50 text-amber-600 border-amber-200' }
 ];
 
 const getCategoryIcon = (categoryId: string) => categories.find(c => c.id === categoryId)?.icon || FileCode;
-const getCategoryColor = (categoryId: string) => categories.find(c => c.id === categoryId)?.color || 'from-gray-500 to-gray-600';
+const getCategoryColor = (categoryId: string) => categories.find(c => c.id === categoryId)?.color || 'from-primary to-accent';
 const getParserType = (parserId: string) => parserTypes.find(p => p.id === parserId) || parserTypes[0];
 const getTypeIcon = (type: string) => typeOptions.find(t => t.id === type)?.icon || Type;
 const getTypeColor = (type: string) => typeOptions.find(t => t.id === type)?.color || 'bg-slate-100 text-slate-600 border-slate-200';
@@ -104,7 +104,7 @@ export default function FormatTemplate() {
   const fetchTemplates = async () => {
     try {
       setLoading(true);
-      const res = await logTypesApi.getLogTypes({ page_size: 100 });
+      const res = await formatTemplatesApi.getFormats({ page_size: 100 });
       if (res.success && res.data) {
         const items = Array.isArray(res.data) ? res.data : res.data.items || [];
         setTemplates(items.map((item: any) => ({
@@ -113,7 +113,7 @@ export default function FormatTemplate() {
           type: item.type || 'json',
           category: item.category || 'application',
           description: item.description,
-          fields: item.field_count || item.fields || 0,
+          fields: item.fields || [],
           parserType: item.parser_type || item.type || 'json'
         })));
       }
@@ -130,7 +130,7 @@ export default function FormatTemplate() {
   }, []);
 
   const [formData, setFormData] = useState<FormatTemplate>({
-    id: '',
+    id: 0,
     name: '',
     description: '',
     format: 'json',
@@ -172,7 +172,7 @@ export default function FormatTemplate() {
   };
 
   const parseWithConfig = (sample: string, parserType: string, config?: ParserConfig): any[] => {
-    if (!sample.trim()) return [];
+    if (!sample?.trim()) return [];
     const fields: any[] = [];
 
     // 添加原始日志字段
@@ -286,7 +286,7 @@ export default function FormatTemplate() {
   };
 
   const handleTest = async () => {
-    if (!formData.sample.trim()) return;
+    if (!formData.sample?.trim()) return;
     setIsTesting(true);
     await new Promise(r => setTimeout(r, 300));
     const result = parseWithConfig(formData.sample, formData.parserType, formData.parserConfig);
@@ -369,41 +369,92 @@ export default function FormatTemplate() {
     setShowDetailModal(true);
   };
 
-  const handleSave = () => {
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  const handleSave = async () => {
     if (!formData.name.trim()) return;
-    const parsedFields = parseWithConfig(formData.sample, formData.parserType, formData.parserConfig);
-    const newTemplate: FormatTemplate = {
-      ...formData,
-      fields: parsedFields.length > 0
-        ? parsedFields.map(f => ({ name: f.name, type: f.type, sample: f.value, description: '' }))
-        : formData.fields
-    };
-    if (isEditing && selectedTemplate) {
-      setTemplates(prev => prev.map(t => t.id === selectedTemplate.id ? newTemplate : t));
-    } else {
-      setTemplates(prev => [...prev, { ...newTemplate, id: `tpl-${Date.now()}`, usageCount: 0, isPreset: false }]);
+    setSaving(true);
+    try {
+      const parsedFields = parseWithConfig(formData.sample, formData.parserType, formData.parserConfig);
+      const payload = {
+        name: formData.name.trim(),
+        description: formData.description || '',
+        type: formData.parserType,
+        category: formData.category,
+        sample: formData.sample,
+        fields: parsedFields.length > 0
+          ? parsedFields.map(f => ({ name: f.name, type: f.type, sample: f.value, description: '' }))
+          : formData.fields,
+        input_config: formData.parserConfig,
+      };
+      if (isEditing && selectedTemplate) {
+        await formatTemplatesApi.updateFormat(String(selectedTemplate.id), payload);
+        setTemplates(prev => prev.map(t => t.id === selectedTemplate.id ? { ...t, ...payload, id: t.id, fields: payload.fields, parserType: payload.type } : t));
+      } else {
+        const res = await formatTemplatesApi.createFormat(payload);
+        if (res.success && res.data) {
+          const item = res.data;
+          setTemplates(prev => [...prev, {
+            id: item.id,
+            name: item.name || payload.name,
+            type: item.type || payload.type,
+            category: item.category || payload.category,
+            description: item.description,
+            fields: item.fields || payload.fields,
+            parserType: item.type || payload.type
+          }]);
+        }
+      }
+      setShowAddModal(false);
+      setTestResult(null);
+    } catch (error) {
+      console.error('保存模板失败:', error);
+    } finally {
+      setSaving(false);
     }
-    setShowAddModal(false);
-    setTestResult(null);
   };
 
-  const handleDelete = () => {
-    if (showDeleteConfirm) {
-      setTemplates(prev => prev.filter(t => t.id !== showDeleteConfirm));
+  const handleDelete = async () => {
+    if (!showDeleteConfirm) return;
+    setDeleting(true);
+    try {
+      await formatTemplatesApi.deleteFormat(showDeleteConfirm);
+      setTemplates(prev => prev.filter(t => String(t.id) !== showDeleteConfirm));
       setShowDeleteConfirm(null);
+    } catch (error) {
+      console.error('删除模板失败:', error);
+    } finally {
+      setDeleting(false);
     }
   };
+  const confirmDelete = (id: string) => setShowDeleteConfirm(id);
 
-  const handleDuplicate = (template: FormatTemplate) => {
-    const newTemplate = {
-      ...template,
-      id: `tpl-${Date.now()}`,
-      name: `${template.name} (副本)`,
-      isPreset: false,
-      usageCount: 0,
-      usedByPipelines: []
-    };
-    setTemplates(prev => [...prev, newTemplate]);
+  const handleDuplicate = async (template: FormatTemplate) => {
+    try {
+      const payload = {
+        name: `${template.name} (副本)`,
+        description: template.description || '',
+        type: template.parserType || template.type || 'json',
+        category: template.category || 'application',
+        fields: template.fields || [],
+      };
+      const res = await formatTemplatesApi.createFormat(payload);
+      if (res.success && res.data) {
+        const item = res.data;
+        setTemplates(prev => [...prev, {
+          id: item.id,
+          name: item.name || payload.name,
+          type: item.type || payload.type,
+          category: item.category || payload.category,
+          description: item.description,
+          fields: item.fields || payload.fields,
+          parserType: item.type || payload.type
+        }]);
+      }
+    } catch (error) {
+      console.error('复制模板失败:', error);
+    }
   };
 
   const updateParserConfig = (key: string, value: any) => {
@@ -424,18 +475,18 @@ export default function FormatTemplate() {
               <div className="flex items-center gap-2 text-blue-800 font-medium mb-2">
                 <Braces className="w-4 h-4" /> JSON解析配置
               </div>
-              <p className="text-sm text-blue-600">自动提取JSON对象中的所有字段，支持嵌套对象展开</p>
+              <p className="text-sm text-primary">自动提取JSON对象中的所有字段，支持嵌套对象展开</p>
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">JSON Path（可选）</label>
+              <label className="block text-sm font-medium text-text-primary mb-2">JSON Path（可选）</label>
               <input
                 type="text"
                 value={parserConfig?.jsonPath || '$'}
                 onChange={e => updateParserConfig('jsonPath', e.target.value)}
-                className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm"
+                className="w-full px-3 py-2 bg-card-bg border border-border-color rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-transparent"
                 placeholder="例如: $.data.logs"
               />
-              <p className="text-xs text-gray-500 mt-1">使用点号路径指定JSON中的特定节点，默认$表示根节点</p>
+              <p className="text-xs text-text-secondary mt-1">使用点号路径指定JSON中的特定节点，默认$表示根节点</p>
             </div>
           </div>
         );
@@ -443,32 +494,32 @@ export default function FormatTemplate() {
       case 'keyvalue':
         return (
           <div className="space-y-4">
-            <div className="p-4 bg-emerald-50 rounded-xl border border-emerald-200">
-              <div className="flex items-center gap-2 text-emerald-800 font-medium mb-2">
+            <div className="p-4 bg-green-50 rounded-xl border border-green-200">
+              <div className="flex items-center gap-2 text-green-700 font-medium mb-2">
                 <Table className="w-4 h-4" /> 键值对解析配置
               </div>
-              <p className="text-sm text-emerald-600">配置键值对的分隔符，支持自定义格式</p>
+              <p className="text-sm text-green-600">配置键值对的分隔符，支持自定义格式</p>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">键值分隔符</label>
+                <label className="block text-sm font-medium text-text-primary mb-2">键值分隔符</label>
                 <input
                   type="text"
                   value={parserConfig?.kvDelimiter || '='}
                   onChange={e => updateParserConfig('kvDelimiter', e.target.value)}
-                  className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm font-mono"
+                  className="w-full px-3 py-2 bg-card-bg border border-border-color rounded-lg text-sm font-mono focus:ring-2 focus:ring-primary/20 focus:border-transparent"
                 />
-                <p className="text-xs text-gray-500 mt-1">例如: = 或 :</p>
+                <p className="text-xs text-text-secondary mt-1">例如: = 或 :</p>
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">配对分隔符</label>
+                <label className="block text-sm font-medium text-text-primary mb-2">配对分隔符</label>
                 <input
                   type="text"
                   value={parserConfig?.pairDelimiter || ' '}
                   onChange={e => updateParserConfig('pairDelimiter', e.target.value)}
-                  className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm font-mono"
+                  className="w-full px-3 py-2 bg-card-bg border border-border-color rounded-lg text-sm font-mono focus:ring-2 focus:ring-primary/20 focus:border-transparent"
                 />
-                <p className="text-xs text-gray-500 mt-1">例如: 空格 或 ;</p>
+                <p className="text-xs text-text-secondary mt-1">例如: 空格 或 ;</p>
               </div>
             </div>
           </div>
@@ -477,23 +528,23 @@ export default function FormatTemplate() {
       case 'grok':
         return (
           <div className="space-y-4">
-            <div className="p-4 bg-purple-50 rounded-xl border border-purple-200">
-              <div className="flex items-center gap-2 text-purple-800 font-medium mb-2">
+            <div className="p-4 bg-primary/10 rounded-xl border border-primary/20">
+              <div className="flex items-center gap-2 text-primary font-medium mb-2">
                 <Code className="w-4 h-4" /> Grok模式配置
               </div>
-              <p className="text-sm text-purple-600">使用Grok模式匹配日志，支持常用模式组合</p>
+              <p className="text-sm text-text-secondary">使用Grok模式匹配日志，支持常用模式组合</p>
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Grok模式</label>
+              <label className="block text-sm font-medium text-text-primary mb-2">Grok模式</label>
               <textarea
                 value={parserConfig?.grokPattern || ''}
                 onChange={e => updateParserConfig('grokPattern', e.target.value)}
-                className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm font-mono text-emerald-400 h-24 resize-none"
+                className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-sm font-mono text-green-400 h-24 resize-none"
                 placeholder="%{IPORHOST:client_ip} %{USER:ident}..."
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">常用模式</label>
+              <label className="block text-sm font-medium text-text-primary mb-2">常用模式</label>
               <div className="flex flex-wrap gap-2">
                 {grokPatterns.map(p => (
                   <button
@@ -502,7 +553,7 @@ export default function FormatTemplate() {
                       const current = parserConfig?.grokPattern || '';
                       updateParserConfig('grokPattern', current + `%{${p.name}:field_name}`);
                     }}
-                    className="px-2 py-1 text-xs bg-purple-100 text-purple-700 rounded-lg hover:bg-purple-200 transition-colors"
+                    className="px-2 py-1 text-xs bg-primary/10 text-primary rounded-lg hover:bg-primary/20 transition-colors"
                     title={`${p.desc} - 例如: ${p.example}`}
                   >
                     {p.name}
@@ -516,23 +567,23 @@ export default function FormatTemplate() {
       case 'regex':
         return (
           <div className="space-y-4">
-            <div className="p-4 bg-amber-50 rounded-xl border border-amber-200">
-              <div className="flex items-center gap-2 text-amber-800 font-medium mb-2">
+            <div className="p-4 bg-orange-50 rounded-xl border border-orange-200">
+              <div className="flex items-center gap-2 text-orange-700 font-medium mb-2">
                 <Regex className="w-4 h-4" /> 正则表达式配置
               </div>
-              <p className="text-sm text-amber-600">使用正则表达式捕获组提取字段，支持命名捕获 (?&lt;name&gt;...)</p>
+              <p className="text-sm text-orange-600">使用正则表达式捕获组提取字段，支持命名捕获 (?&lt;name&gt;...)</p>
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">正则表达式</label>
+              <label className="block text-sm font-medium text-text-primary mb-2">正则表达式</label>
               <textarea
                 value={parserConfig?.regexPattern || ''}
                 onChange={e => updateParserConfig('regexPattern', e.target.value)}
-                className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm font-mono text-amber-400 h-24 resize-none"
+                className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-sm font-mono text-amber-400 h-24 resize-none"
                 placeholder="(?<ip>\d+\.\d+\.\d+\.\d+) - (?<user>\w+)..."
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">匹配标志</label>
+              <label className="block text-sm font-medium text-text-primary mb-2">匹配标志</label>
               <div className="flex gap-2">
                 {['g', 'i', 'm', 's'].map(flag => (
                   <button
@@ -545,7 +596,7 @@ export default function FormatTemplate() {
                     className={`px-3 py-1 text-xs rounded-lg border transition-colors ${
                       (parserConfig?.regexFlags || '').includes(flag)
                         ? 'bg-amber-100 border-amber-300 text-amber-700'
-                        : 'bg-white border-gray-200 text-gray-600'
+                        : 'bg-card-bg border-border-color text-text-secondary'
                     }`}
                   >
                     {flag === 'g' && '全局 (g)'}
@@ -570,11 +621,11 @@ export default function FormatTemplate() {
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">分隔符</label>
+                <label className="block text-sm font-medium text-text-primary mb-2">分隔符</label>
                 <select
                   value={parserConfig?.csvDelimiter || ','}
                   onChange={e => updateParserConfig('csvDelimiter', e.target.value)}
-                  className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm"
+                  className="w-full px-3 py-2 bg-card-bg border border-border-color rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-transparent"
                 >
                   <option value=",">逗号 (,)</option>
                   <option value="\t">制表符 (Tab)</option>
@@ -588,9 +639,9 @@ export default function FormatTemplate() {
                     type="checkbox"
                     checked={parserConfig?.csvHeader !== false}
                     onChange={e => updateParserConfig('csvHeader', e.target.checked)}
-                    className="w-4 h-4 rounded border-gray-300"
+                    className="w-4 h-4 rounded border-border-color-hover"
                   />
-                  <span className="text-sm text-gray-700">第一行是表头</span>
+                  <span className="text-sm text-text-primary">第一行是表头</span>
                 </label>
               </div>
             </div>
@@ -607,29 +658,29 @@ export default function FormatTemplate() {
               <p className="text-sm text-cyan-600">自动提取Syslog标准字段</p>
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Syslog变体</label>
+              <label className="block text-sm font-medium text-text-primary mb-2">Syslog变体</label>
               <div className="grid grid-cols-2 gap-3">
                 <button
                   onClick={() => updateParserConfig('syslogVariant', 'rfc3164')}
-                  className={`p-3 rounded-xl border-2 text-left transition-all ${
+                  className={`p-3 rounded-lg border-2 text-left transition-all ${
                     parserConfig?.syslogVariant === 'rfc3164'
                       ? 'border-cyan-500 bg-cyan-50'
-                      : 'border-gray-200 hover:border-cyan-300'
+                      : 'border-border-color hover:border-cyan-300'
                   }`}
                 >
                   <div className="font-medium text-sm">RFC 3164</div>
-                  <div className="text-xs text-gray-500">传统BSD Syslog格式</div>
+                  <div className="text-xs text-text-secondary">传统BSD Syslog格式</div>
                 </button>
                 <button
                   onClick={() => updateParserConfig('syslogVariant', 'rfc5424')}
-                  className={`p-3 rounded-xl border-2 text-left transition-all ${
+                  className={`p-3 rounded-lg border-2 text-left transition-all ${
                     parserConfig?.syslogVariant === 'rfc5424'
                       ? 'border-cyan-500 bg-cyan-50'
-                      : 'border-gray-200 hover:border-cyan-300'
+                      : 'border-border-color hover:border-cyan-300'
                   }`}
                 >
                   <div className="font-medium text-sm">RFC 5424</div>
-                  <div className="text-xs text-gray-500">现代Syslog格式</div>
+                  <div className="text-xs text-text-secondary">现代Syslog格式</div>
                 </button>
               </div>
             </div>
@@ -646,12 +697,12 @@ export default function FormatTemplate() {
               <p className="text-sm text-rose-600">自动提取CEF通用事件格式字段</p>
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">CEF版本</label>
+              <label className="block text-sm font-medium text-text-primary mb-2">CEF版本</label>
               <input
                 type="text"
                 value={parserConfig?.cefVersion || '0'}
                 onChange={e => updateParserConfig('cefVersion', e.target.value)}
-                className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm"
+                className="w-full px-3 py-2 bg-card-bg border border-border-color rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-transparent"
               />
             </div>
           </div>
@@ -667,12 +718,12 @@ export default function FormatTemplate() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-semibold text-gray-900">格式模板</h2>
-          <p className="text-sm text-gray-500 mt-1">配置日志解析格式，支持JSON、Grok、正则等多种解析方式</p>
+          <h2 className="text-xl font-semibold text-text-primary">格式模板</h2>
+          <p className="text-sm text-text-secondary mt-1">配置日志解析格式，支持JSON、Grok、正则等多种解析方式</p>
         </div>
         <button
           onClick={openAdd}
-          className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-xl text-sm font-medium shadow-lg"
+          className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary-hover transition-colors"
         >
           <Plus size={16} /> 新建模板
         </button>
@@ -688,8 +739,8 @@ export default function FormatTemplate() {
               key={cat.id}
               onClick={() => setActiveCategory(cat.id)}
               whileHover={{ scale: 1.02 }}
-              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all ${
-                isActive ? `bg-gradient-to-r ${cat.color} text-white shadow-lg` : 'bg-white border border-gray-200 text-gray-600'
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                isActive ? `bg-gradient-to-r ${cat.color} text-white shadow-lg` : 'bg-card-bg border border-border-color text-text-secondary'
               }`}
             >
               <Icon size={16} />
@@ -702,51 +753,71 @@ export default function FormatTemplate() {
       {/* Search */}
       <div className="flex items-center gap-4">
         <div className="flex-1 relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
           <input
             type="text"
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
             placeholder="搜索模板..."
-            className="w-full pl-10 pr-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm"
+            className="w-full pl-10 pr-4 py-2 bg-card-bg border border-border-color rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-transparent"
           />
         </div>
       </div>
 
-      {/* Templates Grid */}
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         {filteredTemplates.map((template, index) => {
           const parserInfo = getParserType(template.parserType);
           return (
             <motion.div
               key={template.id}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
+              initial={{ opacity: 0, x: -10 }}
+              animate={{ opacity: 1, x: 0 }}
               transition={{ delay: index * 0.03 }}
-              whileHover={{ y: -3 }}
-              className="group bg-white border border-gray-200 rounded-2xl p-5 hover:border-blue-300 hover:shadow-xl transition-all cursor-pointer"
+              whileHover={{ x: 4 }}
+              className="flex items-center gap-4 p-4 bg-card-bg border border-border-color rounded-xl hover:border-primary/30 transition-all cursor-pointer group"
               onClick={() => openDetail(template)}
             >
-              <div className="flex items-start gap-4 mb-4">
-                <div className={`w-12 h-12 rounded-xl bg-gradient-to-br ${getCategoryColor(template.category)} flex items-center justify-center shadow-lg`}>
-                  <FileJson className="w-6 h-6 text-white" />
+              <div className={`w-12 h-12 rounded-xl bg-gradient-to-r ${parserInfo.color} flex items-center justify-center shadow-lg flex-shrink-0`}>
+                <FileJson className="w-6 h-6 text-white" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <h3 className="font-semibold text-text-primary">{template.name}</h3>
+                  {template.isPreset && <span className="px-2 py-0.5 text-xs bg-amber-100 text-amber-600 rounded-full font-medium">预设</span>}
+                  <span className={`px-2 py-0.5 text-xs rounded font-medium bg-gradient-to-r ${parserInfo.color} text-white`}>{parserInfo.name}</span>
                 </div>
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-1">
-                    <h3 className="font-semibold text-gray-900">{template.name}</h3>
-                    {template.isPreset && <span className="px-2 py-0.5 text-xs bg-amber-100 text-amber-600 rounded-full">预设</span>}
+                <p className="text-xs text-text-secondary mt-0.5">{template.description}</p>
+                <div className="flex items-center gap-2 mt-1.5">
+                  <span className="text-xs text-text-muted">{(template.fields || []).length} 字段</span>
+                  <div className="flex flex-wrap gap-1">
+                    {(template.fields || []).slice(0, 3).map((f: any, i: number) => (
+                      <span key={i} className="px-1.5 py-0.5 text-[10px] bg-page-bg border border-border-color rounded text-text-secondary">{f.name}</span>
+                    ))}
                   </div>
-                  <p className="text-xs text-gray-500">{template.description}</p>
                 </div>
               </div>
-              <div className="flex items-center gap-2 mb-3">
-                <span className={`px-2 py-1 text-xs rounded-lg bg-gradient-to-r ${parserInfo.color} text-white`}>{parserInfo.name}</span>
-                <span className="text-xs text-gray-400">{(template.fields || []).length} 字段</span>
-              </div>
-              <div className="flex flex-wrap gap-1">
-                {(template.fields || []).slice(0, 4).map((f: any, i: number) => (
-                  <span key={i} className="px-2 py-1 text-xs bg-slate-50 border border-slate-200 rounded text-slate-600">{f.name}</span>
-                ))}
+              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                <button
+                  onClick={(e) => { e.stopPropagation(); handleDuplicate(template); }}
+                  className="p-1.5 text-text-muted hover:text-primary rounded-lg hover:bg-primary/10 transition-colors"
+                  title="复制模板"
+                >
+                  <Copy size={14} />
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); openEdit(template); }}
+                  className="p-1.5 text-text-muted hover:text-primary rounded-lg hover:bg-primary/10 transition-colors"
+                  title="编辑模板"
+                >
+                  <Edit3 size={14} />
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); confirmDelete(String(template.id)); }}
+                  className="p-1.5 text-text-muted hover:text-red-600 rounded-lg hover:bg-red-50 transition-colors"
+                  title="删除模板"
+                >
+                  <Trash2 size={14} />
+                </button>
               </div>
             </motion.div>
           );
@@ -767,25 +838,25 @@ export default function FormatTemplate() {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white border border-gray-200 rounded-2xl w-full max-w-4xl max-h-[90vh] overflow-auto shadow-2xl"
+              className="bg-card-bg border border-border-color rounded-xl w-full max-w-4xl max-h-[90vh] overflow-auto shadow-2xl"
               onClick={e => e.stopPropagation()}
             >
               {/* Header */}
-              <div className="sticky top-0 bg-white border-b border-gray-200 p-6 flex items-center justify-between z-10">
+              <div className="sticky top-0 bg-card-bg border-b border-border-color p-6 flex items-center justify-between z-10">
                 <div>
-                  <h2 className="text-xl font-semibold text-gray-900">{isEditing ? '编辑模板' : '新建格式模板'}</h2>
+                  <h2 className="text-xl font-semibold text-text-primary">{isEditing ? '编辑模板' : '新建格式模板'}</h2>
                 </div>
-                <button onClick={() => setShowAddModal(false)} className="p-2 text-gray-400 hover:text-gray-600 rounded-xl hover:bg-gray-100">
+                <button onClick={() => setShowAddModal(false)} className="p-2 text-text-muted hover:text-text-secondary rounded-lg hover:bg-page-bg">
                   <X size={20} />
                 </button>
               </div>
 
               {/* Tabs */}
-              <div className="flex border-b border-gray-200">
+              <div className="flex border-b border-border-color">
                 <button
                   onClick={() => setActiveTab('config')}
                   className={`flex items-center gap-2 px-6 py-3 text-sm font-medium transition-colors ${
-                    activeTab === 'config' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500'
+                    activeTab === 'config' ? 'text-primary border-b-2 border-primary' : 'text-text-secondary'
                   }`}
                 >
                   <Settings size={16} /> 配置
@@ -793,12 +864,12 @@ export default function FormatTemplate() {
                 <button
                   onClick={() => setActiveTab('fields')}
                   className={`flex items-center gap-2 px-6 py-3 text-sm font-medium transition-colors ${
-                    activeTab === 'fields' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500'
+                    activeTab === 'fields' ? 'text-primary border-b-2 border-primary' : 'text-text-secondary'
                   }`}
                 >
                   <TestTube size={16} /> 字段管理
                   {detectedFields.length > 0 && (
-                    <span className="ml-1 px-2 py-0.5 text-xs bg-blue-100 text-blue-600 rounded-full">
+                    <span className="ml-1 px-2 py-0.5 text-xs bg-primary/10 text-primary rounded-full">
                       {detectedFields.filter(f => f.selected).length}/{detectedFields.length}
                     </span>
                   )}
@@ -811,20 +882,20 @@ export default function FormatTemplate() {
                     {/* Basic Info */}
                     <div className="grid grid-cols-2 gap-4">
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">模板名称</label>
+                        <label className="block text-sm font-medium text-text-primary mb-2">模板名称</label>
                         <input
                           type="text"
                           value={formData.name}
                           onChange={e => setFormData({ ...formData, name: e.target.value })}
-                          className="w-full px-3 py-2 border border-gray-200 rounded-lg"
+                          className="w-full px-3 py-2 bg-card-bg border border-border-color rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-transparent"
                         />
                       </div>
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">分类</label>
+                        <label className="block text-sm font-medium text-text-primary mb-2">分类</label>
                         <select
                           value={formData.category}
                           onChange={e => setFormData({ ...formData, category: e.target.value })}
-                          className="w-full px-3 py-2 border border-gray-200 rounded-lg"
+                          className="w-full px-3 py-2 bg-card-bg border border-border-color rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-transparent"
                         >
                           {categories.filter(c => c.id !== 'all').map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                         </select>
@@ -833,7 +904,7 @@ export default function FormatTemplate() {
 
                     {/* Parser Type */}
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">解析方式</label>
+                      <label className="block text-sm font-medium text-text-primary mb-2">解析方式</label>
                       <div className="grid grid-cols-7 gap-2">
                         {parserTypes.map(parser => {
                           const Icon = parser.icon;
@@ -848,8 +919,8 @@ export default function FormatTemplate() {
                                   parserConfig: initParserConfig(parser.id)
                                 });
                               }}
-                              className={`p-3 rounded-xl border-2 transition-all flex flex-col items-center gap-1 ${
-                                isSelected ? `border-transparent bg-gradient-to-r ${parser.color} text-white` : 'border-gray-200'
+                              className={`p-3 rounded-lg border-2 transition-all flex flex-col items-center gap-1 ${
+                                isSelected ? `border-transparent bg-gradient-to-r ${parser.color} text-white` : 'border-border-color'
                               }`}
                             >
                               <Icon size={18} />
@@ -866,11 +937,11 @@ export default function FormatTemplate() {
                     {/* Sample Data & Test */}
                     <div className="p-4 bg-slate-50 rounded-xl border border-slate-200">
                       <div className="flex items-center justify-between mb-3">
-                        <label className="block text-sm font-medium text-gray-700">样本数据 & 测试</label>
+                        <label className="block text-sm font-medium text-text-primary">样本数据 & 测试</label>
                         <button
                           onClick={handleTest}
-                          disabled={!formData.sample.trim() || isTesting}
-                          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm disabled:opacity-50 hover:bg-blue-700 transition-colors"
+                          disabled={!formData.sample?.trim() || isTesting}
+                          className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg text-sm disabled:opacity-50 hover:bg-primary-hover transition-colors"
                         >
                           {isTesting ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
                           运行测试
@@ -882,14 +953,14 @@ export default function FormatTemplate() {
                         className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm font-mono text-emerald-400 h-24 resize-none"
                         placeholder="粘贴日志样本，点击运行测试识别字段..."
                       />
-                      <p className="text-xs text-gray-500 mt-2">输入样本日志后点击"运行测试"，系统将自动识别字段并跳转到字段管理页面</p>
+                      <p className="text-xs text-text-secondary mt-2">输入样本日志后点击"运行测试"，系统将自动识别字段并跳转到字段管理页面</p>
                     </div>
 
                     {/* Configured Fields */}
                     {formData.fields.length > 0 && (
                       <div>
                         <div className="flex items-center justify-between mb-3">
-                          <label className="block text-sm font-medium text-gray-700">已配置字段 ({formData.fields.length})</label>
+                          <label className="block text-sm font-medium text-text-primary">已配置字段 ({formData.fields.length})</label>
                           <button
                             onClick={() => setFormData({ ...formData, fields: [] })}
                             className="text-xs text-red-600 hover:text-red-700"
@@ -897,17 +968,17 @@ export default function FormatTemplate() {
                             清空字段
                           </button>
                         </div>
-                        <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+                        <div className="bg-card-bg rounded-lg border border-border-color overflow-hidden">
                           {formData.fields.map((field, idx) => (
-                            <div key={idx} className="flex items-center gap-3 p-3 border-b border-gray-100 last:border-b-0">
-                              <span className="text-sm font-medium text-gray-900">{field.name}</span>
+                            <div key={idx} className="flex items-center gap-3 p-3 border-b border-border-color last:border-b-0">
+                              <span className="text-sm font-medium text-text-primary">{field.name}</span>
                               <span className={`px-2 py-0.5 text-xs rounded border ${getTypeColor(field.type)}`}>{field.type}</span>
                               {field.sample && (
-                                <span className="text-xs text-gray-500 font-mono flex-1 truncate">{field.sample}</span>
+                                <span className="text-xs text-text-secondary font-mono flex-1 truncate">{field.sample}</span>
                               )}
                               <button
                                 onClick={() => setFormData({ ...formData, fields: formData.fields.filter((_, i) => i !== idx) })}
-                                className="p-1 text-gray-400 hover:text-red-600"
+                                className="p-1 text-text-muted hover:text-red-600"
                               >
                                 <X size={14} />
                               </button>
@@ -922,8 +993,8 @@ export default function FormatTemplate() {
                     {/* Field Management Header */}
                     <div className="flex items-center justify-between">
                       <div>
-                        <h3 className="font-medium text-gray-900">字段管理</h3>
-                        <p className="text-sm text-gray-500">
+                        <h3 className="font-medium text-text-primary">字段管理</h3>
+                        <p className="text-sm text-text-secondary">
                           {detectedFields.length > 0
                             ? `已识别 ${detectedFields.length} 个字段，已选择 ${detectedFields.filter(f => f.selected).length} 个`
                             : '请先运行测试识别字段'}
@@ -933,13 +1004,13 @@ export default function FormatTemplate() {
                         <div className="flex items-center gap-2">
                           <button
                             onClick={selectAllFields}
-                            className="px-3 py-1.5 text-xs bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
+                            className="px-3 py-1.5 text-xs bg-page-bg text-text-primary rounded-lg hover:bg-primary/10 transition-colors"
                           >
                             全选
                           </button>
                           <button
                             onClick={deselectAllFields}
-                            className="px-3 py-1.5 text-xs bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
+                            className="px-3 py-1.5 text-xs bg-page-bg text-text-primary rounded-lg hover:bg-primary/10 transition-colors"
                           >
                             清空
                           </button>
@@ -951,19 +1022,19 @@ export default function FormatTemplate() {
                     {detectedFields.length > 0 && (
                       <div className="flex items-center gap-3">
                         <div className="flex-1 relative">
-                          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
                           <input
                             type="text"
                             value={fieldSearchQuery}
                             onChange={e => setFieldSearchQuery(e.target.value)}
                             placeholder="搜索字段名..."
-                            className="w-full pl-9 pr-4 py-2 bg-white border border-gray-200 rounded-lg text-sm"
+                            className="w-full pl-9 pr-4 py-2 bg-card-bg border border-border-color rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-transparent"
                           />
                         </div>
                         <select
                           value={fieldSortBy}
                           onChange={e => setFieldSortBy(e.target.value as 'name' | 'type')}
-                          className="px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm"
+                          className="px-3 py-2 bg-card-bg border border-border-color rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-transparent"
                         >
                           <option value="name">按名称排序</option>
                           <option value="type">按类型排序</option>
@@ -987,25 +1058,25 @@ export default function FormatTemplate() {
                               <div
                                 key={idx}
                                 className={`p-4 rounded-lg border transition-all ${
-                                  field.selected ? 'bg-blue-50 border-blue-300' : 'bg-white border-gray-200'
+                                  field.selected ? 'bg-primary/10 border-primary/30' : 'bg-card-bg border-border-color'
                                 }`}
                               >
                                 <div className="flex items-start gap-3">
                                   <button
                                     onClick={() => toggleFieldSelected(originalIdx)}
                                     className={`mt-0.5 w-5 h-5 rounded flex items-center justify-center transition-colors ${
-                                      field.selected ? 'bg-blue-600 text-white' : 'border-2 border-gray-300 hover:border-blue-400'
+                                      field.selected ? 'bg-primary text-white' : 'border-2 border-border-color-hover hover:border-primary/40'
                                     }`}
                                   >
                                     {field.selected && <CheckCircle className="w-3.5 h-3.5" />}
                                   </button>
                                   <div className="flex-1 min-w-0">
                                     <div className="flex items-center gap-2 mb-2">
-                                      <span className="text-sm font-semibold text-gray-900">{field.name}</span>
+                                      <span className="text-sm font-semibold text-text-primary">{field.name}</span>
                                       <span className={`px-2 py-0.5 text-xs rounded ${getTypeColor(field.type)}`}>{field.type}</span>
                                       <button
                                         onClick={() => copyFieldName(field.name)}
-                                        className="p-1 text-gray-400 hover:text-blue-600 transition-colors"
+                                        className="p-1 text-text-muted hover:text-primary hover:bg-primary/10 rounded transition-colors"
                                         title="复制字段名"
                                       >
                                         <Copy size={14} />
@@ -1013,17 +1084,17 @@ export default function FormatTemplate() {
                                     </div>
                                     {field.selected && (
                                       <div className="mb-2">
-                                        <label className="text-xs text-gray-500 mb-1 block">目标字段名</label>
+                                        <label className="text-xs text-text-secondary mb-1 block">目标字段名</label>
                                         <input
                                           type="text"
                                           value={field.targetName || field.name}
                                           onChange={e => updateFieldTargetName(originalIdx, e.target.value)}
-                                          className="w-full px-2 py-1 text-sm bg-white border border-gray-200 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                          className="w-full px-2 py-1 text-sm bg-card-bg border border-border-color rounded focus:ring-2 focus:ring-primary/20 focus:border-transparent"
                                           placeholder="输入目标字段名"
                                         />
                                       </div>
                                     )}
-                                    <div className="text-xs text-gray-600 font-mono bg-slate-100 p-2 rounded break-all">
+                                    <div className="text-xs text-text-secondary font-mono bg-slate-100 p-2 rounded break-all">
                                       {(() => {
                                         const val = String(field.value);
                                         if (val.length > 150) return val.substring(0, 150) + '...';
@@ -1042,7 +1113,7 @@ export default function FormatTemplate() {
                           })}
                       </div>
                     ) : (
-                      <div className="text-center py-12 text-gray-400">
+                      <div className="text-center py-12 text-text-muted">
                         <TestTube className="w-12 h-12 mx-auto mb-3 opacity-50" />
                         <p>暂无识别字段</p>
                         <p className="text-sm mt-1">请在"配置"页面输入样本数据并运行测试</p>
@@ -1051,17 +1122,17 @@ export default function FormatTemplate() {
 
                     {/* Apply Button */}
                     {detectedFields.length > 0 && (
-                      <div className="flex justify-end gap-3 pt-4 border-t border-gray-200">
+                      <div className="flex justify-end gap-3 pt-4 border-t border-border-color">
                         <button
                           onClick={() => setActiveTab('config')}
-                          className="px-4 py-2 text-gray-600 text-sm"
+                          className="px-4 py-2 text-text-secondary hover:text-text-primary transition-colors text-sm font-medium"
                         >
                           返回配置
                         </button>
                         <button
                           onClick={applyDetectedFields}
                           disabled={detectedFields.filter(f => f.selected).length === 0}
-                          className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                          className="px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
                         >
                           <Save size={16} />
                           应用选中字段 ({detectedFields.filter(f => f.selected).length})
@@ -1073,10 +1144,10 @@ export default function FormatTemplate() {
               </div>
 
               {/* Footer */}
-              <div className="sticky bottom-0 bg-white border-t border-gray-200 p-6 flex justify-end gap-3">
-                <button onClick={() => setShowAddModal(false)} className="px-6 py-2 text-gray-600 text-sm">取消</button>
-                <button onClick={handleSave} className="px-6 py-2 bg-blue-600 text-white rounded-lg text-sm flex items-center gap-2">
-                  <Save size={16} /> 保存
+              <div className="sticky bottom-0 bg-card-bg border-t border-border-color p-6 flex justify-end gap-3">
+                <button onClick={() => setShowAddModal(false)} className="px-4 py-2 text-text-secondary hover:text-text-primary transition-colors text-sm font-medium">取消</button>
+                <button onClick={handleSave} disabled={saving} className="px-6 py-2 bg-primary text-white rounded-lg text-sm flex items-center gap-2 disabled:opacity-50">
+                  {saving ? <RefreshCw size={16} className="animate-spin" /> : <Save size={16} />} {saving ? '保存中...' : '保存'}
                 </button>
               </div>
             </motion.div>

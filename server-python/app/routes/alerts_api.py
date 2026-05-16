@@ -133,8 +133,10 @@ def update_alert_status(alert_id):
         if not row:
             return jsonify({'success': False, 'error': '告警不存在'}), 404
 
+        alert_row_id = row._mapping['id'] if hasattr(row, '_mapping') else row[0]
+
         # 更新状态
-        success = tsdb_update_alert_status(session, row['id'], new_status)
+        success = tsdb_update_alert_status(session, alert_row_id, new_status)
 
         if not success:
             return jsonify({'success': False, 'error': '更新失败'}), 500
@@ -154,7 +156,7 @@ def update_alert_status(alert_id):
 
         return jsonify({
             'success': True,
-            'data': {'id': row['id'], 'status': new_status}
+            'data': {'id': alert_row_id, 'status': new_status}
         })
     finally:
         tsdb.close_session(session)

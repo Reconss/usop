@@ -24,6 +24,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // 启动时用原生 fetch 验证 token（不经过 request 函数，避免触发 auth:expired 事件）
   useEffect(() => {
     let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout>;
     const verifyToken = async () => {
       const token = localStorage.getItem('token');
       const userData = localStorage.getItem('user');
@@ -32,29 +33,37 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return;
       }
       try {
-        // 直接用 fetch，不经过 request 函数
-        const res = await fetch('/auth/me', {
-          headers: { 'Authorization': `Bearer ${token}` }
+        const controller = new AbortController();
+        timeoutId = setTimeout(() => controller.abort(), 5000);
+        const res = await fetch('/api/auth/me', {
+          headers: { 'Authorization': `Bearer ${token}` },
+          signal: controller.signal
         });
+        clearTimeout(timeoutId);
         if (res.ok) {
+          const data = await res.json();
           if (!cancelled) {
-            setUser(JSON.parse(userData));
+            setUser(data.user || JSON.parse(userData));
             setIsAuthenticated(true);
           }
-        } else {
-          // token 无效，清除
+        } else if (res.status === 401 || res.status === 403) {
           localStorage.removeItem('token');
           localStorage.removeItem('user');
         }
-      } catch {
-        // 网络错误也清除
+      } catch (err: any) {
+        if (err.name === 'AbortError') {
+          console.warn('Auth verification timed out');
+        }
         localStorage.removeItem('token');
         localStorage.removeItem('user');
       }
       if (!cancelled) setAuthChecked(true);
     };
     verifyToken();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      if (timeoutId) clearTimeout(timeoutId);
+    };
   }, []);
 
   const login = useCallback((token: string, userData: any) => {

@@ -12,7 +12,7 @@ import {
   Globe, Lock, Server, Check, LayoutGrid, Filter, Loader2,
   ArrowRight
 } from 'lucide-react';
-import { logTypesApi, dataSourcesApi, rulesApi, alertFieldsApi, pipelineMappingsApi } from '../services/api';
+import { logTypesApi, dataSourcesApi, rulesApi, alertFieldsApi, pipelineMappingsApi, pipelinesApi, formatTemplatesApi, storageTablesApi } from '../services/api';
 
 interface ParsePipeline {
   id?: number;
@@ -35,13 +35,21 @@ interface StorageTable {
   name: string;
   columns: number;
   rows: number;
+  columnDefs?: Array<{ name: string; label: string; type: string; category: string; required: boolean }>;
 }
 
 interface FormatTemplate {
-  id: number;
+  id: string;
   name: string;
   type: string;
-  fields: number;
+  parserType: string;
+  description?: string;
+  parserConfig?: any;
+  fields: any[];
+  fieldCount: number;
+  category?: string;
+  isPreset?: boolean;
+  sample?: string;
 }
 
 interface DetectionRule {
@@ -66,112 +74,23 @@ const defaultDataSources: DataSource[] = [];
 const defaultDetectionRules: DetectionRule[] = [];
 
 const parserTypes = [
-  { id: 'json', name: 'JSON', icon: Braces, color: 'from-blue-500 to-indigo-500', bgColor: 'bg-blue-50', textColor: 'text-blue-600', borderColor: 'border-blue-200', desc: 'JSON结构化数据解析' },
-  { id: 'xml', name: 'XML', icon: FileCode, color: 'from-orange-500 to-amber-500', bgColor: 'bg-orange-50', textColor: 'text-orange-600', borderColor: 'border-orange-200', desc: 'XML标记语言解析' },
-  { id: 'csv', name: 'CSV', icon: Table, color: 'from-emerald-500 to-teal-500', bgColor: 'bg-emerald-50', textColor: 'text-emerald-600', borderColor: 'border-emerald-200', desc: 'CSV表格数据解析' },
+  { id: 'json', name: 'JSON', icon: Braces, color: 'from-primary to-indigo-600', bgColor: 'bg-primary/10', textColor: 'text-primary', borderColor: 'border-primary/20', desc: 'JSON结构化数据解析' },
+  { id: 'xml', name: 'XML', icon: FileCode, color: 'from-amber-500 to-orange-500', bgColor: 'bg-amber-50', textColor: 'text-amber-600', borderColor: 'border-amber-200', desc: 'XML标记语言解析' },
+  { id: 'csv', name: 'CSV', icon: Table, color: 'from-green-500 to-emerald-500', bgColor: 'bg-green-50', textColor: 'text-green-600', borderColor: 'border-green-200', desc: 'CSV表格数据解析' },
   { id: 'logfmt', name: 'Logfmt', icon: ScrollText, color: 'from-cyan-500 to-blue-500', bgColor: 'bg-cyan-50', textColor: 'text-cyan-600', borderColor: 'border-cyan-200', desc: 'Key=Value格式解析' },
-  { id: 'syslog', name: 'Syslog', icon: Terminal, color: 'from-violet-500 to-purple-500', bgColor: 'bg-violet-50', textColor: 'text-violet-600', borderColor: 'border-violet-200', desc: 'Syslog标准格式解析' },
-  { id: 'cef', name: 'CEF', icon: AlertTriangle, color: 'from-rose-500 to-red-500', bgColor: 'bg-rose-50', textColor: 'text-rose-600', borderColor: 'border-rose-200', desc: 'CEF通用事件格式解析' },
-  { id: 'grok', name: 'Grok', icon: Code, color: 'from-indigo-500 to-purple-500', bgColor: 'bg-indigo-50', textColor: 'text-indigo-600', borderColor: 'border-indigo-200', desc: 'Grok模式匹配解析' },
-  { id: 'regex', name: 'Regex', icon: Fingerprint, color: 'from-amber-500 to-orange-500', bgColor: 'bg-amber-50', textColor: 'text-amber-600', borderColor: 'border-amber-200', desc: '正则表达式解析' },
-  { id: 'auto', name: 'Auto', icon: Wand2, color: 'from-pink-500 to-rose-500', bgColor: 'bg-pink-50', textColor: 'text-pink-600', borderColor: 'border-pink-200', desc: '自动识别格式解析' }
+  { id: 'syslog', name: 'Syslog', icon: Terminal, color: 'from-purple-500 to-violet-500', bgColor: 'bg-purple-50', textColor: 'text-purple-600', borderColor: 'border-purple-200', desc: 'Syslog标准格式解析' },
+  { id: 'cef', name: 'CEF', icon: AlertTriangle, color: 'from-red-500 to-orange-500', bgColor: 'bg-red-50', textColor: 'text-red-600', borderColor: 'border-red-200', desc: 'CEF通用事件格式解析' },
+  { id: 'grok', name: 'Grok', icon: Code, color: 'from-primary to-purple-500', bgColor: 'bg-primary/10', textColor: 'text-primary', borderColor: 'border-primary/20', desc: 'Grok模式匹配解析' },
+  { id: 'regex', name: 'Regex', icon: Fingerprint, color: 'from-orange-500 to-amber-500', bgColor: 'bg-orange-50', textColor: 'text-orange-600', borderColor: 'border-orange-200', desc: '正则表达式解析' },
+  { id: 'auto', name: 'Auto', icon: Wand2, color: 'from-primary/50 to-purple-500', bgColor: 'bg-primary/5', textColor: 'text-primary', borderColor: 'border-primary/10', desc: '自动识别格式解析' }
 ];
 
-const storageTargets = [
-  { id: 'timescaledb', name: 'TimescaleDB', icon: Database, color: 'bg-blue-500', desc: '时序数据库存储', features: ['自动分区', '数据压缩', '时序索引', 'SQL查询'] },
-  { id: 'elasticsearch', name: 'Elasticsearch', icon: Search, color: 'bg-amber-500', desc: '搜索引擎存储', features: ['全文检索', '倒排索引', '聚合分析', '近实时'] },
-  { id: 'kafka', name: 'Kafka', icon: Workflow, color: 'bg-emerald-500', desc: '消息队列转发', features: ['高吞吐', '流式处理', '多订阅', '持久化'] },
-  { id: 's3', name: 'S3存储', icon: HardDrive, color: 'bg-cyan-500', desc: '对象存储归档', features: ['低成本', '高可靠', '生命周期', '跨区域'] },
-  { id: 'local', name: '本地文件', icon: FileJson, color: 'bg-gray-500', desc: '本地文件系统存储', features: ['简单快速', '无需网络', '文件格式', '本地访问'] }
-];
-
-const storageTargetConfigs: Record<string, {
-  fields: Array<{ key: string; label: string; type: 'text' | 'number' | 'select' | 'checkbox' | 'password'; options?: string[]; placeholder?: string }>;
-  advancedFields?: Array<{ key: string; label: string; type: 'text' | 'number' | 'select' | 'checkbox'; options?: string[]; placeholder?: string }>;
-}> = {
-  timescaledb: {
-    fields: [
-      { key: 'host', label: '主机地址', type: 'text', placeholder: 'localhost:5432' },
-      { key: 'database', label: '数据库名', type: 'text', placeholder: 'logs_db' },
-      { key: 'username', label: '用户名', type: 'text', placeholder: 'postgres' },
-      { key: 'password', label: '密码', type: 'password', placeholder: '******' },
-      { key: 'tableName', label: '存储表名', type: 'text', placeholder: 'log_events' },
-      { key: 'retention', label: '数据保留(天)', type: 'number', placeholder: '30' }
-    ],
-    advancedFields: [
-      { key: 'compression', label: '启用压缩', type: 'checkbox' },
-      { key: 'partitionInterval', label: '分区间隔', type: 'select', options: ['1小时', '1天', '7天', '30天'] },
-      { key: 'chunkSize', label: 'Chunk大小', type: 'text', placeholder: '1GB' },
-      { key: 'connectionPool', label: '连接池大小', type: 'number', placeholder: '10' }
-    ]
-  },
-  elasticsearch: {
-    fields: [
-      { key: 'hosts', label: 'ES节点地址', type: 'text', placeholder: 'http://localhost:9200' },
-      { key: 'index', label: '索引名称', type: 'text', placeholder: 'logs-{date}' },
-      { key: 'username', label: '用户名', type: 'text', placeholder: 'elastic' },
-      { key: 'password', label: '密码', type: 'password', placeholder: '******' },
-      { key: 'shards', label: '分片数', type: 'number', placeholder: '1' },
-      { key: 'replicas', label: '副本数', type: 'number', placeholder: '1' }
-    ],
-    advancedFields: [
-      { key: 'refreshInterval', label: '刷新间隔', type: 'text', placeholder: '1s' },
-      { key: 'indexLifecycle', label: '索引生命周期', type: 'select', options: ['热', '温', '冷', '冻结'] },
-      { key: 'mappingType', label: 'Mapping类型', type: 'select', options: ['strict', 'dynamic', 'runtime'] }
-    ]
-  },
-  kafka: {
-    fields: [
-      { key: 'brokers', label: 'Broker地址', type: 'text', placeholder: 'localhost:9092' },
-      { key: 'topic', label: 'Topic名称', type: 'text', placeholder: 'security-logs' },
-      { key: 'acks', label: '确认级别', type: 'select', options: ['0', '1', 'all'] },
-      { key: 'retries', label: '重试次数', type: 'number', placeholder: '3' },
-      { key: 'batchSize', label: '批量大小', type: 'number', placeholder: '16384' },
-      { key: 'lingerMs', label: '延迟发送(ms)', type: 'number', placeholder: '5' }
-    ],
-    advancedFields: [
-      { key: 'compression', label: '压缩类型', type: 'select', options: ['none', 'gzip', 'snappy', 'lz4', 'zstd'] },
-      { key: 'maxInFlight', label: '最大并发请求', type: 'number', placeholder: '5' },
-      { key: 'enableIdempotence', label: '幂等性', type: 'checkbox' }
-    ]
-  },
-  s3: {
-    fields: [
-      { key: 'endpoint', label: 'Endpoint', type: 'text', placeholder: 'https://s3.amazonaws.com' },
-      { key: 'bucket', label: 'Bucket名称', type: 'text', placeholder: 'log-archive' },
-      { key: 'accessKey', label: 'Access Key', type: 'text', placeholder: 'AKIA...' },
-      { key: 'secretKey', label: 'Secret Key', type: 'password', placeholder: '******' },
-      { key: 'prefix', label: '路径前缀', type: 'text', placeholder: 'logs/{date}/' },
-      { key: 'format', label: '文件格式', type: 'select', options: ['JSON', 'Parquet', 'CSV', 'ORC'] }
-    ],
-    advancedFields: [
-      { key: 'compression', label: '压缩格式', type: 'select', options: ['none', 'gzip', 'bzip2', 'snappy'] },
-      { key: 'storageClass', label: '存储类型', type: 'select', options: ['STANDARD', 'IA', 'GLACIER', 'DEEP_ARCHIVE'] },
-      { key: 'multipartSize', label: '分片大小(MB)', type: 'number', placeholder: '100' }
-    ]
-  },
-  local: {
-    fields: [
-      { key: 'path', label: '存储路径', type: 'text', placeholder: '/var/log/parsed/' },
-      { key: 'filename', label: '文件名格式', type: 'text', placeholder: 'logs_{date}.json' },
-      { key: 'format', label: '文件格式', type: 'select', options: ['JSON', 'JSON Lines', 'CSV', 'Plain Text'] },
-      { key: 'maxSize', label: '单文件最大(MB)', type: 'number', placeholder: '100' },
-      { key: 'maxFiles', label: '保留文件数', type: 'number', placeholder: '30' },
-      { key: 'rotateInterval', label: '轮转间隔', type: 'select', options: ['小时', '天', '周', '月'] }
-    ],
-    advancedFields: [
-      { key: 'compression', label: '启用压缩', type: 'checkbox' },
-      { key: 'syncWrite', label: '同步写入', type: 'checkbox' },
-      { key: 'bufferSize', label: '缓冲区大小(KB)', type: 'number', placeholder: '64' }
-    ]
-  }
-};
 
 const severityConfig: Record<string, { color: string; bg: string; label: string }> = {
-  critical: { color: 'text-rose-600', bg: 'bg-rose-50 border-rose-200', label: '危急' },
+  critical: { color: 'text-red-600', bg: 'bg-red-50 border-red-200', label: '危急' },
   high: { color: 'text-orange-600', bg: 'bg-orange-50 border-orange-200', label: '高危' },
   medium: { color: 'text-amber-600', bg: 'bg-amber-50 border-amber-200', label: '中危' },
-  low: { color: 'text-blue-600', bg: 'bg-blue-50 border-blue-200', label: '低危' }
+  low: { color: 'text-primary', bg: 'bg-primary/10 border-primary/20', label: '低危' }
 };
 
 const defaultPipelines: ParsePipeline[] = [
@@ -609,6 +528,15 @@ const parseWithConfig = (sample: string, parserType: string, config?: any): Arra
   return fields;
 };
 
+const SYSTEM_FIELD_NAMES = new Set([
+  'id', 'alert_code', 'event_code', 'status', 'source', 'source_type',
+  'confidence', 'asset_id', 'asset_name', 'affected_assets', 'event_ids',
+  'assigned_to', 'parsed_data', 'extra_data', 'tags',
+  'first_seen', 'last_seen', 'created_at', 'updated_at',
+]);
+
+const isMappableField = (fieldName: string): boolean => !SYSTEM_FIELD_NAMES.has(fieldName);
+
 export default function SmartParser() {
   const [pipelines, setPipelines] = useState<ParsePipeline[]>([]);
   const [formatTemplates, setFormatTemplates] = useState<FormatTemplate[]>([]);
@@ -632,7 +560,7 @@ export default function SmartParser() {
   const [editingPipeline, setEditingPipeline] = useState<ParsePipeline | null>(null);
   const [selectedPipeline, setSelectedPipeline] = useState<ParsePipeline | null>(null);
 
-  const [activeTab, setActiveTab] = useState<'basic' | 'parse' | 'analysis' | 'filter' | 'storage'>('basic');
+  const [activeTab, setActiveTab] = useState<'basic' | 'parse' | 'analysis' | 'filter'>('basic');
 
   const [showTemplateSelector, setShowTemplateSelector] = useState(false);
   const [templateSearchQuery, setTemplateSearchQuery] = useState('');
@@ -649,11 +577,14 @@ export default function SmartParser() {
     const fetchData = async () => {
       try {
         setLoading(true);
-        const [logTypesRes, dataSourcesRes, rulesRes, fieldsRes] = await Promise.allSettled([
+        const [logTypesRes, dataSourcesRes, rulesRes, fieldsRes, pipelinesRes, formatsRes, storageRes] = await Promise.allSettled([
           logTypesApi.getLogTypes({ page_size: 100 }),
           dataSourcesApi.getDataSources({ page_size: 100 }),
           rulesApi.getRules({ page_size: 100 }),
-          alertFieldsApi.getFields()
+          alertFieldsApi.getFields(),
+          pipelinesApi.getPipelines({ page_size: 100 }),
+          formatTemplatesApi.getFormats({ page_size: 100 }),
+          storageTablesApi.getTables(),
         ]);
 
         if (logTypesRes.status === 'fulfilled' && logTypesRes.value.success) {
@@ -677,7 +608,8 @@ export default function SmartParser() {
         }
 
         if (rulesRes.status === 'fulfilled' && rulesRes.value.success) {
-          const items = Array.isArray(rulesRes.value.data) ? rulesRes.value.data : rulesRes.value.data?.items || [];
+          const data = rulesRes.value.data;
+          const items = Array.isArray(data) ? data : (data?.items || data?.rules || []);
           setDetectionRules(items.map((item: any) => ({
             id: item.id,
             name: item.name || item.rule_name,
@@ -695,6 +627,80 @@ export default function SmartParser() {
           // API 不可用时使用硬编码兜底（保持向后兼容）
           console.warn('标准字段 API 加载失败，使用本地默认配置');
           setStandardFields(STANDARD_ALERT_FIELDS.map(f => ({ ...f, type: f.type })));
+        }
+
+        // 加载管道列表（从数据库）
+        if (pipelinesRes.status === 'fulfilled' && pipelinesRes.value?.data) {
+          const data = pipelinesRes.value.data;
+          const items = Array.isArray(data) ? data : (data?.pipelines || data?.items || []);
+          setPipelines(items.map((item: any) => {
+            // 规范化 field_mapping: 后端存储为 dict，前端需要 array
+            let fieldMappings = item.field_mapping || [];
+            if (fieldMappings && !Array.isArray(fieldMappings)) {
+              fieldMappings = Object.entries(fieldMappings).map(([targetField, sourceField]) => ({
+                targetField,
+                sourceField: sourceField as string,
+                type: 'string'
+              }));
+            }
+            return {
+              id: item.id,
+              name: item.name,
+              parser: item.input_format || 'json',
+              parserType: item.input_format || 'json',
+              sourceType: item.source_type || 'pull',
+              storageTarget: item.output_target || 'timescaledb',
+              status: item.status === 'active' ? 'active' : item.status === 'paused' ? 'paused' : 'stopped',
+              priority: item.priority || 1,
+              isActive: item.status === 'active',
+              description: item.description,
+              logTypeId: item.log_type_id,
+              logTypeName: item.log_type_name,
+              storageTableId: item.output_table_id,
+              storageTableName: item.output_table_name,
+              formatTemplateId: item.format_id,
+              formatTemplateName: item.format_name,
+              mode: item.mode || 'single',
+              smartDetect: item.smart_detect || false,
+              selectedRules: item.selected_rules || [],
+              linkedPipelines: item.linked_pipelines || [],
+              fieldMappings: fieldMappings,
+              filterRules: item.filter_rules || [],
+              parserConfig: item.input_config || {}
+            };
+          }) as any);
+        }
+
+        // 加载格式模板
+        if (formatsRes.status === 'fulfilled' && formatsRes.value?.data) {
+          const data = formatsRes.value.data;
+          const items = Array.isArray(data) ? data : (data?.items || data?.formats || []);
+          setFormatTemplates(items.map((item: any) => ({
+            id: String(item.id),
+            name: item.name,
+            type: item.type || 'json',
+            parserType: item.type || 'json',
+            description: item.description || '',
+            parserConfig: item.input_config || {},
+            fields: Array.isArray(item.fields) ? item.fields : [],
+            fieldCount: Array.isArray(item.fields) ? item.fields.length : (item.field_count || 0),
+            category: item.log_type_id || 'other',
+            isPreset: item.is_system || false,
+            sample: item.sample || '',
+          })));
+        }
+
+        // 加载存储表
+        if (storageRes.status === 'fulfilled' && storageRes.value?.data) {
+          const data = storageRes.value.data;
+          const items = Array.isArray(data) ? data : (data?.items || data?.tables || []);
+          setStorageTables(items.map((item: any) => ({
+            id: item.id,
+            name: item.name || item.displayName || item.display_name,
+            columns: Array.isArray(item.columns) ? item.columns.length : (Array.isArray(item.indexes) ? item.indexes.length : 0),
+            rows: item.rowCount || item.row_count || 0,
+            columnDefs: item.columns || [],
+          })));
         }
       } catch (error) {
         console.error('获取数据失败:', error);
@@ -727,15 +733,6 @@ export default function SmartParser() {
   const [configDetectedFields, setConfigDetectedFields] = useState<ParsedAlertField[]>([]);
   const [isTestingConfig, setIsTestingConfig] = useState(false);
 
-  const [storageConfig, setStorageConfig] = useState<Record<string, any>>({
-    target: 'timescaledb',
-    timescaledb: { host: 'localhost:5432', database: 'logs_db', username: 'postgres', password: '', tableName: '', retention: 30, compression: true, partitionInterval: '1天', chunkSize: '1GB', connectionPool: 10 },
-    elasticsearch: { hosts: 'http://localhost:9200', index: 'logs-{date}', username: '', password: '', shards: 1, replicas: 1, refreshInterval: '1s', indexLifecycle: '热', mappingType: 'dynamic' },
-    kafka: { brokers: 'localhost:9092', topic: 'security-logs', acks: 'all', retries: 3, batchSize: 16384, lingerMs: 5, compression: 'snappy', maxInFlight: 5, enableIdempotence: true },
-    s3: { endpoint: 'https://s3.amazonaws.com', bucket: 'log-archive', accessKey: '', secretKey: '', prefix: 'logs/{date}/', format: 'JSON', compression: 'gzip', storageClass: 'STANDARD', multipartSize: 100 },
-    local: { path: '/var/log/parsed/', filename: 'logs_{date}.json', format: 'JSON', maxSize: 100, maxFiles: 30, rotateInterval: '天', compression: true, syncWrite: false, bufferSize: 64 }
-  });
-  const [showAdvancedStorage, setShowAdvancedStorage] = useState(false);
 
   const [testLog, setTestLog] = useState('');
   const [testResult, setTestResult] = useState<any>(null);
@@ -770,31 +767,68 @@ export default function SmartParser() {
     return found?.icon || Code;
   }, []);
 
+  const runTestParse = useCallback((sample: string, parser: string, parserConfig: any) => {
+    const rawResult = parseWithConfig(sample, parser, parserConfig);
+    const fieldsWithMapping = applySecurityFieldMapping(rawResult, standardFields);
+    setConfigDetectedFields(fieldsWithMapping);
+    updateMappingsFromParsedFields(rawResult);
+    return rawResult;
+  }, [standardFields, updateMappingsFromParsedFields]);
+
   const handleSelectTemplate = useCallback((template: FormatTemplate) => {
+    const hasSample = template.sample || '';
     setFormData(prev => ({
       ...prev,
       parser: template.parserType,
       formatTemplateId: template.id,
-      description: template.description,
-      parserConfig: template.parserConfig || {}
+      description: prev.description || template.description || '',
+      parserConfig: template.parserConfig || {},
+      sample: hasSample || prev.sample,
     }));
+
+    const templateFields = template.fields || [];
+    if (templateFields.length > 0) {
+      const mappings: FieldMapping[] = templateFields.map((f: any) => ({
+        targetField: f.name,
+        targetLabel: f.label || f.name,
+        sourceField: f.name,
+        fieldType: f.type || 'string',
+        defaultValue: f.default_value,
+        isRequired: f.required || false,
+        sampleValue: f.value || f.sample_value || f.sample,
+      }));
+      setFieldMappings(mappings);
+      setConfigDetectedFields(templateFields.map((f: any) => ({
+        name: f.name,
+        type: f.type || 'string',
+        value: f.value || f.sample_value || f.sample || '',
+        selected: true,
+        targetName: f.name,
+        mappingLabel: f.label,
+        fieldRole: 'standard' as const,
+        defaultValue: f.default_value,
+      })));
+    } else if (standardFields.length > 0) {
+      initializeFieldMappings();
+    }
+
     setShowTemplateSelector(false);
-  }, []);
+
+    if (hasSample) {
+      setTimeout(() => {
+        runTestParse(hasSample, template.parserType, template.parserConfig || {});
+        setActiveTab('parse');
+      }, 200);
+    }
+  }, [standardFields, initializeFieldMappings, runTestParse]);
 
   const handleConfigTest = useCallback(async () => {
     if (!formData.sample.trim()) return;
     setIsTestingConfig(true);
     await new Promise(r => setTimeout(r, 300));
-    const rawResult = parseWithConfig(formData.sample, formData.parser, formData.parserConfig);
-    // 自动映射：使用从数据库加载的标准字段定义进行匹配
-    const fieldsWithMapping = applySecurityFieldMapping(rawResult, standardFields);
-    setConfigDetectedFields(fieldsWithMapping);
-    
-    // 更新字段映射状态
-    updateMappingsFromParsedFields(rawResult);
-    
+    runTestParse(formData.sample, formData.parser, formData.parserConfig);
     setIsTestingConfig(false);
-  }, [formData.sample, formData.parser, formData.parserConfig, standardFields]);
+  }, [formData.sample, formData.parser, formData.parserConfig, runTestParse]);
 
   const toggleConfigFieldSelected = useCallback((index: number) => {
     setConfigDetectedFields(prev => prev.map((f, i) => i === index ? { ...f, selected: !f.selected } : f));
@@ -823,16 +857,18 @@ export default function SmartParser() {
   // 初始化字段映射（基于标准字段）
   const initializeFieldMappings = useCallback(() => {
     if (standardFields.length === 0) return;
-    
-    const mappings: FieldMapping[] = standardFields.map(sf => ({
-      targetField: sf.name,
-      targetLabel: sf.label,
-      sourceField: null,
-      fieldType: sf.type,
-      defaultValue: sf.default_value,
-      isRequired: sf.required,
-      sampleValue: undefined
-    }));
+
+    const mappings: FieldMapping[] = standardFields
+      .filter(sf => isMappableField(sf.name))
+      .map(sf => ({
+        targetField: sf.name,
+        targetLabel: sf.label,
+        sourceField: null,
+        fieldType: sf.type,
+        defaultValue: sf.default_value,
+        isRequired: sf.required,
+        sampleValue: undefined
+      }));
     setFieldMappings(mappings);
   }, [standardFields]);
 
@@ -885,6 +921,42 @@ export default function SmartParser() {
       return m;
     }));
   }, [parsedFields]);
+
+  // 目标存储表选择：根据表的列定义初始化字段映射
+  const handleTargetTableChange = useCallback((tableId: string) => {
+    setFormData(prev => ({ ...prev, storageTableId: tableId }));
+
+    if (!tableId) {
+      // 清空选择时恢复默认标准字段
+      if (standardFields.length > 0) {
+        initializeFieldMappings();
+      }
+      return;
+    }
+
+    const table = storageTables.find(t => String(t.id) === String(tableId));
+    if (!table?.columnDefs || table.columnDefs.length === 0) {
+      // 表没有列定义时使用标准字段兜底
+      if (standardFields.length > 0) {
+        initializeFieldMappings();
+      }
+      return;
+    }
+
+    // 用选中表的列定义构建字段映射（排除系统自动生成的字段）
+    const mappings: FieldMapping[] = table.columnDefs
+      .filter((col: any) => isMappableField(col.name))
+      .map((col: any) => ({
+        targetField: col.name,
+        targetLabel: col.label || col.name,
+        sourceField: null,
+        fieldType: col.type || 'string',
+        defaultValue: col.default_value,
+        isRequired: col.required || false,
+        sampleValue: undefined,
+      }));
+    setFieldMappings(mappings);
+  }, [storageTables, standardFields, initializeFieldMappings]);
 
   // 更新映射的默认值
   const updateMappingDefaultValue = useCallback((targetField: string, defaultValue: string) => {
@@ -1007,42 +1079,92 @@ export default function SmartParser() {
     return { results, events };
   }, []);
 
-  const handleAdd = useCallback(() => {
-    const selectedFields = configDetectedFields.filter(f => f.selected).map(f => ({
-      sourceField: f.name,
-      targetField: f.targetName || f.name,
-      type: f.type,
-      defaultValue: f.defaultValue,
-    }));
+  const handleAdd = useCallback(async () => {
+    if (!formData.name.trim()) {
+      alert('请输入管道名称');
+      return;
+    }
 
-    const newPipeline: ParsePipeline = {
-      id: `p${Date.now()}`,
-      name: formData.name,
-      parser: formData.parser,
-      priority: formData.priority,
-      isActive: true,
-      description: formData.description,
-      fieldMappings: selectedFields,
-      logTypeId: formData.logTypeId,
-      logTypeName: logTypes.find(l => l.id === formData.logTypeId)?.name,
-      storageTableId: formData.storageTableId,
-      storageTableName: storageTables.find(s => s.id === formData.storageTableId)?.name,
-      formatTemplateId: formData.formatTemplateId,
-      formatTemplateName: formatTemplates.find(f => f.id === formData.formatTemplateId)?.name,
-      mode: formData.mode,
-      smartDetect: formData.smartDetect,
-      selectedRules: formData.selectedRules,
-      linkedPipelines: formData.linkedPipelines
-    };
-    setPipelines(prev => [...prev, newPipeline]);
-    setShowAddModal(false);
-    resetForm();
-  }, [configDetectedFields, formData]);
+    // 优先使用 fieldMappings（含目标表列定义），其次使用 configDetectedFields
+    const selectedFields = fieldMappings.length > 0
+      ? fieldMappings.filter(m => m.sourceField !== null).map(m => ({
+          sourceField: m.sourceField!,
+          targetField: m.targetField,
+          type: m.fieldType,
+          defaultValue: m.defaultValue,
+        }))
+      : configDetectedFields.filter(f => f.selected).map(f => ({
+          sourceField: f.name,
+          targetField: f.targetName || f.name,
+          type: f.type,
+          defaultValue: f.defaultValue,
+        }));
+
+    try {
+      const payload = {
+        name: formData.name.trim(),
+        input_format: formData.parser,
+        description: formData.description.trim(),
+        priority: formData.priority,
+        status: 'active',
+        log_type_id: formData.logTypeId || undefined,
+        format_id: formData.formatTemplateId || undefined,
+        output_table_id: formData.storageTableId || undefined,
+        input_config: formData.parserConfig || {},
+        field_mapping: selectedFields,
+        filter_rules: formData.filterRules || [],
+        transform_rules: {},
+        output_target: 'timescaledb',
+        batch_size: 1000,
+        parallel_workers: 1,
+        rule_type: formData.mode || 'single',
+        match_conditions: formData.smartDetect ? { smart_detect: true } : {},
+        next_pipeline_id: formData.linkedPipelines?.[0] || undefined,
+      };
+
+      const res = await pipelinesApi.createPipeline(payload);
+      if (!res.success) {
+        alert(`创建管道失败: ${(res as any).error || '未知错误'}`);
+        return;
+      }
+
+      const createdId = res.data?.id;
+
+      const newPipeline: any = {
+        id: createdId,
+        name: formData.name,
+        parser: formData.parser,
+        parserType: formData.parser,
+        sourceType: 'pull',
+        storageTarget: 'timescaledb',
+        status: 'active',
+        priority: formData.priority,
+        isActive: true,
+        description: formData.description,
+        fieldMappings: selectedFields,
+        logTypeId: formData.logTypeId,
+        logTypeName: logTypes.find(l => l.id === formData.logTypeId)?.name,
+        storageTableId: formData.storageTableId,
+        storageTableName: storageTables.find(s => s.id === formData.storageTableId)?.name,
+        formatTemplateId: formData.formatTemplateId,
+        formatTemplateName: formatTemplates.find(f => f.id === formData.formatTemplateId)?.name,
+        mode: formData.mode,
+        smartDetect: formData.smartDetect,
+        selectedRules: formData.selectedRules,
+        linkedPipelines: formData.linkedPipelines,
+      };
+      setPipelines(prev => [...prev, newPipeline]);
+      setShowAddModal(false);
+      resetForm();
+    } catch (error: any) {
+      console.error('创建管道失败:', error);
+      alert(`创建管道失败: ${error?.message || '请检查后端服务是否正常运行'}`);
+    }
+  }, [configDetectedFields, fieldMappings, formData, logTypes, storageTables, formatTemplates, resetForm]);
 
   const resetForm = useCallback(() => {
     setFormData({ name: '', parser: 'json', description: '', priority: pipelines.length + 1, logTypeId: '', storageTableId: '', formatTemplateId: '', mode: 'single', smartDetect: false, parserConfig: {}, sample: '', selectedRules: [], linkedPipelines: [], linkedTemplates: [], templateStorageMap: {}, filterRules: [] });
     setConfigDetectedFields([]);
-    setStorageConfig({ target: 'timescaledb', timescaledb: { host: 'localhost:5432', database: 'logs_db', username: 'postgres', password: '', tableName: '', retention: 30, compression: true, partitionInterval: '1天', chunkSize: '1GB', connectionPool: 10 }, elasticsearch: { hosts: 'http://localhost:9200', index: 'logs-{date}', username: '', password: '', shards: 1, replicas: 1, refreshInterval: '1s', indexLifecycle: '热', mappingType: 'dynamic' }, kafka: { brokers: 'localhost:9092', topic: 'security-logs', acks: 'all', retries: 3, batchSize: 16384, lingerMs: 5, compression: 'snappy', maxInFlight: 5, enableIdempotence: true }, s3: { endpoint: 'https://s3.amazonaws.com', bucket: 'log-archive', accessKey: '', secretKey: '', prefix: 'logs/{date}/', format: 'JSON', compression: 'gzip', storageClass: 'STANDARD', multipartSize: 100 }, local: { path: '/var/log/parsed/', filename: 'logs_{date}.json', format: 'JSON', maxSize: 100, maxFiles: 30, rotateInterval: '天', compression: true, syncWrite: false, bufferSize: 64 } });
     setActiveTab('basic');
     setTestLog('');
     setTestResult(null);
@@ -1051,39 +1173,97 @@ export default function SmartParser() {
     setGeneratedEvents([]);
     setTemplateSearchQuery('');
     setTemplateCategory('all');
-    setShowAdvancedStorage(false);
   }, [pipelines.length]);
 
-  const handleEdit = useCallback(() => {
-    if (!editingPipeline) return;
-    const selectedFields = configDetectedFields.filter(f => f.selected).map(f => ({
-      sourceField: f.name,
-      targetField: f.targetName || f.name,
-      type: f.type,
-      defaultValue: f.defaultValue,
-    }));
+  const handleEdit = useCallback(async () => {
+    if (!editingPipeline || !editingPipeline.id) return;
+    if (!formData.name.trim()) {
+      alert('请输入管道名称');
+      return;
+    }
 
-    setPipelines(prev => prev.map(p => p.id === editingPipeline.id ? {
-      ...p,
-      ...formData,
-      fieldMappings: selectedFields,
-      logTypeName: logTypes.find(l => l.id === formData.logTypeId)?.name,
-      storageTableName: storageTables.find(s => s.id === formData.storageTableId)?.name,
-      formatTemplateName: formatTemplates.find(f => f.id === formData.formatTemplateId)?.name
-    } : p));
-    setEditingPipeline(null);
-    setShowAddModal(false);
-    resetForm();
-  }, [editingPipeline, configDetectedFields, formData, resetForm]);
+    // 优先使用 fieldMappings（含目标表列定义），其次使用 configDetectedFields
+    const selectedFields = fieldMappings.length > 0
+      ? fieldMappings.filter(m => m.sourceField !== null).map(m => ({
+          sourceField: m.sourceField!,
+          targetField: m.targetField,
+          type: m.fieldType,
+          defaultValue: m.defaultValue,
+        }))
+      : configDetectedFields.filter(f => f.selected).map(f => ({
+          sourceField: f.name,
+          targetField: f.targetName || f.name,
+          type: f.type,
+          defaultValue: f.defaultValue,
+        }));
 
-  const handleDelete = useCallback(() => {
-    if (!showDeleteConfirm) return;
-    setPipelines(prev => prev.filter(p => p.id !== showDeleteConfirm.id));
+    try {
+      const payload = {
+        name: formData.name.trim(),
+        input_format: formData.parser,
+        description: formData.description.trim(),
+        priority: formData.priority,
+        log_type_id: formData.logTypeId || undefined,
+        format_id: formData.formatTemplateId || undefined,
+        output_table_id: formData.storageTableId || undefined,
+        input_config: formData.parserConfig || {},
+        field_mapping: selectedFields,
+        filter_rules: formData.filterRules || [],
+        output_target: 'timescaledb',
+        rule_type: formData.mode || 'single',
+        match_conditions: formData.smartDetect ? { smart_detect: true } : {},
+        next_pipeline_id: formData.linkedPipelines?.[0] || undefined,
+      };
+
+      const res = await pipelinesApi.updatePipeline(editingPipeline.id, payload);
+      if (!res.success) {
+        alert(`更新管道失败: ${(res as any).error || '未知错误'}`);
+        return;
+      }
+
+      setPipelines(prev => prev.map(p => p.id === editingPipeline.id ? {
+        ...p,
+        ...formData,
+        fieldMappings: selectedFields,
+        logTypeName: logTypes.find(l => l.id === formData.logTypeId)?.name,
+        storageTableName: storageTables.find(s => s.id === formData.storageTableId)?.name,
+        formatTemplateName: formatTemplates.find(f => f.id === formData.formatTemplateId)?.name
+      } : p));
+      setEditingPipeline(null);
+      setShowAddModal(false);
+      resetForm();
+    } catch (error: any) {
+      console.error('更新管道失败:', error);
+      alert(`更新管道失败: ${error?.message || '请检查后端服务是否正常运行'}`);
+    }
+  }, [editingPipeline, configDetectedFields, fieldMappings, formData, logTypes, storageTables, formatTemplates, resetForm]);
+
+  const handleDelete = useCallback(async () => {
+    if (!showDeleteConfirm || !showDeleteConfirm.id) return;
+    try {
+      try {
+        await pipelinesApi.deletePipeline(showDeleteConfirm.id);
+      } catch (e) {
+        console.warn('Pipeline API delete failed', e);
+      }
+      setPipelines(prev => prev.filter(p => p.id !== showDeleteConfirm.id));
+    } catch (error) {
+      console.error('删除管道失败:', error);
+    }
     setShowDeleteConfirm(null);
   }, [showDeleteConfirm]);
 
-  const toggleActive = useCallback((id: string) => {
-    setPipelines(prev => prev.map(p => p.id === id ? { ...p, isActive: !p.isActive } : p));
+  const toggleActive = useCallback(async (id: any) => {
+    try {
+      try {
+        await pipelinesApi.togglePipeline(Number(id));
+      } catch (e) {
+        console.warn('Pipeline API toggle failed', e);
+      }
+    } catch (error) {
+      console.error('切换管道状态失败:', error);
+    }
+    setPipelines(prev => prev.map(p => p.id === id ? { ...p, isActive: !p.isActive, status: p.isActive ? ('stopped' as any) : ('active' as any) } : p));
   }, []);
 
   const movePriority = useCallback((id: string, direction: 'up' | 'down') => {
@@ -1123,7 +1303,10 @@ export default function SmartParser() {
       linkedPipelines: pipeline.linkedPipelines || [],
       linkedTemplates: pipeline.linkedTemplates || []
     });
-    setConfigDetectedFields((pipeline.fieldMappings || []).map(fm => ({
+    
+    // 规范化 fieldMappings: 后端存为 dict，前端需要 array
+    const pipelineFMs = Array.isArray(pipeline.fieldMappings) ? pipeline.fieldMappings : [];
+    setConfigDetectedFields(pipelineFMs.map(fm => ({
       name: fm.sourceField,
       type: fm.type,
       value: '',
@@ -1131,8 +1314,44 @@ export default function SmartParser() {
       targetName: fm.targetField,
       defaultValue: fm.defaultValue
     })));
+
+    // 优先使用已有的字段映射（历史配置）
+    if (pipelineFMs.length > 0) {
+      // 从历史字段映射创建 fieldMappings
+      const mappings: FieldMapping[] = pipelineFMs.map((fm: any) => ({
+        targetField: fm.targetField,
+        targetLabel: fm.targetField,
+        sourceField: fm.sourceField,
+        fieldType: fm.type || 'string',
+        defaultValue: fm.defaultValue,
+        isRequired: false,
+        sampleValue: undefined,
+      }));
+      setFieldMappings(mappings);
+    } else if (pipeline.storageTableId) {
+      // 如果没有历史映射，但有存储表，从表的列定义初始化字段映射目标
+      const table = storageTables.find(t => String(t.id) === String(pipeline.storageTableId));
+      if (table?.columnDefs && table.columnDefs.length > 0) {
+        const mappings: FieldMapping[] = table.columnDefs
+          .filter((col: any) => isMappableField(col.name))
+          .map((col: any) => ({
+            targetField: col.name,
+            targetLabel: col.label || col.name,
+            sourceField: null,
+            fieldType: col.type || 'string',
+            defaultValue: col.default_value,
+            isRequired: col.required || false,
+            sampleValue: undefined,
+          }));
+        setFieldMappings(mappings);
+      } else {
+        setFieldMappings([]);
+      }
+    } else {
+      setFieldMappings([]);
+    }
     setShowAddModal(true);
-  }, []);
+  }, [storageTables]);
 
   const openDetail = useCallback((pipeline: ParsePipeline) => {
     setSelectedPipeline(pipeline);
@@ -1277,19 +1496,19 @@ export default function SmartParser() {
     <div className="space-y-4">
       <div className="flex items-center gap-3">
         <div className="flex-1 relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
           <input
             type="text"
             value={templateSearchQuery}
             onChange={e => setTemplateSearchQuery(e.target.value)}
             placeholder="搜索格式模板..."
-            className="w-full pl-9 pr-4 py-2 bg-white border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+            className="w-full pl-9 pr-4 py-2 bg-card-bg border border-border-color rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-transparent"
           />
         </div>
         <select
           value={templateCategory}
           onChange={e => setTemplateCategory(e.target.value)}
-          className="px-3 py-2 bg-white border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500"
+          className="px-3 py-2 bg-card-bg border border-border-color rounded-lg text-sm focus:ring-2 focus:ring-primary/20"
         >
           <option value="all">全部分类</option>
           <option value="web">Web服务器</option>
@@ -1305,7 +1524,7 @@ export default function SmartParser() {
             <div
               key={template.id}
               onClick={() => handleSelectTemplate(template)}
-              className="p-4 bg-white border border-gray-200 rounded-xl cursor-pointer hover:border-indigo-300 hover:shadow-md transition-all"
+              className="p-4 bg-card-bg border border-border-color rounded-lg cursor-pointer hover:border-primary/30 hover:shadow-md transition-all"
             >
               <div className="flex items-start gap-3">
                 <div className={`w-10 h-10 rounded-lg ${parserConfig.bgColor} flex items-center justify-center border ${parserConfig.borderColor}`}>
@@ -1313,17 +1532,17 @@ export default function SmartParser() {
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
-                    <h4 className="font-medium text-gray-900 text-sm">{template.name}</h4>
+                    <h4 className="font-medium text-text-primary text-sm">{template.name}</h4>
                     {template.isPreset && (
-                      <span className="px-1.5 py-0.5 text-xs bg-amber-100 text-amber-600 rounded font-medium">预设</span>
+                      <span className="px-1.5 py-0.5 text-xs bg-amber-100 text-amber-600 rounded-full font-medium">预设</span>
                     )}
                   </div>
-                  <p className="text-xs text-gray-500 mb-2 line-clamp-1">{template.description}</p>
+                  <p className="text-xs text-text-secondary mb-2 line-clamp-1">{template.description}</p>
                   <div className="flex items-center gap-2">
                     <span className={`px-2 py-0.5 text-xs rounded font-medium ${parserConfig.bgColor} ${parserConfig.textColor}`}>
                       {template.parserType}
                     </span>
-                    <span className="text-xs text-gray-400">{template.fields.length} 字段</span>
+                    <span className="text-xs text-text-muted">{template.fieldCount} 字段</span>
                   </div>
                 </div>
               </div>
@@ -1332,10 +1551,10 @@ export default function SmartParser() {
         })}
       </div>
 
-      <div className="flex justify-center pt-2 border-t border-gray-100">
+      <div className="flex justify-center pt-2 border-t border-border-color">
         <button
           onClick={() => setShowTemplateSelector(false)}
-          className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900 transition-colors"
+          className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary transition-colors font-medium"
         >
           手动配置
         </button>
@@ -1351,11 +1570,11 @@ export default function SmartParser() {
         return (
           <div className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Grok模式</label>
+              <label className="block text-sm font-medium text-text-primary mb-2">Grok模式</label>
               <textarea
                 value={parserConfig?.grokPattern || ''}
                 onChange={e => setFormData(prev => ({ ...prev, parserConfig: { ...parserConfig, grokPattern: e.target.value } }))}
-                className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm font-mono text-emerald-400 h-24 resize-none"
+                className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-sm font-mono text-emerald-400 h-24 resize-none focus:ring-2 focus:ring-primary/20 focus:border-transparent"
                 placeholder="%{IPORHOST:client_ip} %{USER:ident}..."
               />
             </div>
@@ -1366,11 +1585,11 @@ export default function SmartParser() {
         return (
           <div className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">正则表达式</label>
+              <label className="block text-sm font-medium text-text-primary mb-2">正则表达式</label>
               <textarea
                 value={parserConfig?.regexPattern || ''}
                 onChange={e => setFormData(prev => ({ ...prev, parserConfig: { ...parserConfig, regexPattern: e.target.value } }))}
-                className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm font-mono text-amber-400 h-24 resize-none"
+                className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-sm font-mono text-amber-400 h-24 resize-none focus:ring-2 focus:ring-primary/20 focus:border-transparent"
                 placeholder="(?&lt;ip&gt;\\d+\\.\\d+\\.\\d+\\.\\d+) - (?&lt;user&gt;\\w+)..."
               />
             </div>
@@ -1381,11 +1600,11 @@ export default function SmartParser() {
         return (
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">分隔符</label>
+              <label className="block text-sm font-medium text-text-primary mb-2">分隔符</label>
               <select
                 value={parserConfig?.csvDelimiter || ','}
                 onChange={e => setFormData(prev => ({ ...prev, parserConfig: { ...parserConfig, csvDelimiter: e.target.value } }))}
-                className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm"
+                className="w-full px-3 py-2 bg-card-bg border border-border-color rounded-lg text-sm"
               >
                 <option value=",">逗号 (,)</option>
                 <option value="\t">制表符 (Tab)</option>
@@ -1399,9 +1618,9 @@ export default function SmartParser() {
                   type="checkbox"
                   checked={parserConfig?.csvHeader !== false}
                   onChange={e => setFormData(prev => ({ ...prev, parserConfig: { ...parserConfig, csvHeader: e.target.checked } }))}
-                  className="w-4 h-4 rounded border-gray-300"
+                  className="w-4 h-4 rounded border-border-color-hover"
                 />
-                <span className="text-sm text-gray-700">第一行是表头</span>
+                <span className="text-sm text-text-primary">第一行是表头</span>
               </label>
             </div>
           </div>
@@ -1416,14 +1635,14 @@ export default function SmartParser() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-semibold text-gray-900">智能解析</h2>
-          <p className="text-sm text-gray-500 mt-1">配置日志解析管道，支持实时安全分析并生成安全事件</p>
+          <h2 className="text-xl font-semibold text-text-primary">智能解析</h2>
+          <p className="text-sm text-text-secondary mt-1">配置日志解析管道，支持实时安全分析并生成安全事件</p>
         </div>
         <motion.button
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.98 }}
           onClick={openAdd}
-          className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-indigo-600 to-blue-600 text-white rounded-xl text-sm font-medium shadow-lg shadow-indigo-200"
+          className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium"
         >
           <Plus className="w-4 h-4" />添加管道
         </motion.button>
@@ -1432,18 +1651,18 @@ export default function SmartParser() {
       <div className="grid grid-cols-2 gap-4">
         <motion.div
           whileHover={{ y: -2, boxShadow: '0 10px 40px -10px rgba(99, 102, 241, 0.3)' }}
-          className="bg-gradient-to-br from-indigo-50 via-blue-50 to-indigo-100 border border-indigo-200 rounded-2xl p-6 relative overflow-hidden"
+          className="bg-gradient-to-br from-primary/5 via-primary/5 to-primary/10 border border-primary/20 rounded-lg p-6 relative overflow-hidden"
         >
           <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-indigo-200/30 to-transparent rounded-full -mr-10 -mt-10" />
           <div className="flex items-start gap-4 relative">
-            <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-indigo-500 to-blue-600 flex items-center justify-center shadow-lg shadow-indigo-200">
+            <div className="w-14 h-14 rounded-lg bg-gradient-to-br from-primary/50 to-primary flex items-center justify-center shadow-lg">
               <Workflow className="w-7 h-7 text-white" />
             </div>
             <div className="flex-1">
-              <h3 className="text-lg font-semibold text-gray-900 mb-2">单一来源单一格式</h3>
-              <p className="text-sm text-gray-600 leading-relaxed">使用单个解析管道处理固定格式的日志，适用于日志格式统一的场景。配置简单，解析效率高。</p>
+              <h3 className="text-lg font-semibold text-text-primary mb-2">单一来源单一格式</h3>
+              <p className="text-sm text-text-secondary leading-relaxed">使用单个解析管道处理固定格式的日志，适用于日志格式统一的场景。配置简单，解析效率高。</p>
               <div className="flex items-center gap-2 mt-4">
-                <span className="px-2 py-1 text-xs bg-indigo-100 text-indigo-700 rounded-lg font-medium">固定格式</span>
+                <span className="px-2 py-1 text-xs bg-primary/20 text-primary rounded-lg font-medium">固定格式</span>
                 <span className="px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded-lg font-medium">高性能</span>
               </div>
             </div>
@@ -1452,18 +1671,18 @@ export default function SmartParser() {
 
         <motion.div
           whileHover={{ y: -2, boxShadow: '0 10px 40px -10px rgba(139, 92, 246, 0.3)' }}
-          className="bg-gradient-to-br from-violet-50 via-purple-50 to-pink-50 border border-violet-200 rounded-2xl p-6 relative overflow-hidden"
+          className="bg-gradient-to-br from-accent/10 via-primary/5 to-accent/10 border border-primary/20 rounded-lg p-6 relative overflow-hidden"
         >
           <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-violet-200/30 to-transparent rounded-full -mr-10 -mt-10" />
           <div className="flex items-start gap-4 relative">
-            <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center shadow-lg shadow-violet-200">
+            <div className="w-14 h-14 rounded-lg bg-gradient-to-br from-primary/50 to-purple-600 flex items-center justify-center shadow-lg">
               <Cpu className="w-7 h-7 text-white" />
             </div>
             <div className="flex-1">
-              <h3 className="text-lg font-semibold text-gray-900 mb-2">单一来源多种格式</h3>
-              <p className="text-sm text-gray-600 leading-relaxed">使用多管道智能选择，自动识别并匹配最合适的解析器。适用于混合日志格式场景。</p>
+              <h3 className="text-lg font-semibold text-text-primary mb-2">单一来源多种格式</h3>
+              <p className="text-sm text-text-secondary leading-relaxed">使用多管道智能选择，自动识别并匹配最合适的解析器。适用于混合日志格式场景。</p>
               <div className="flex items-center gap-2 mt-4">
-                <span className="px-2 py-1 text-xs bg-violet-100 text-violet-700 rounded-lg font-medium">智能识别</span>
+                <span className="px-2 py-1 text-xs bg-accent/20 text-accent rounded-lg font-medium">智能识别</span>
                 <span className="px-2 py-1 text-xs bg-purple-100 text-purple-700 rounded-lg font-medium">多格式</span>
               </div>
             </div>
@@ -1474,10 +1693,10 @@ export default function SmartParser() {
       <div className="flex items-center gap-2">
         <button
           onClick={() => setActiveFilter('all')}
-          className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${
+          className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
             activeFilter === 'all'
-              ? 'bg-gray-900 text-white shadow-lg'
-              : 'bg-white border border-gray-200 text-gray-600 hover:text-gray-900 hover:border-gray-300'
+              ? 'bg-card-bg text-white shadow-lg'
+              : 'bg-card-bg border border-border-color text-text-secondary hover:text-text-primary hover:border-border-color-hover'
           }`}
         >
           全部
@@ -1486,10 +1705,10 @@ export default function SmartParser() {
           <button
             key={type.id}
             onClick={() => setActiveFilter(type.id)}
-            className={`px-4 py-2 rounded-xl text-sm font-medium transition-all flex items-center gap-2 ${
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2 ${
               activeFilter === type.id
                 ? `bg-gradient-to-r ${type.color} text-white shadow-lg`
-                : 'bg-white border border-gray-200 text-gray-600 hover:text-gray-900 hover:border-gray-300'
+                : 'bg-card-bg border border-border-color text-text-secondary hover:text-text-primary hover:border-border-color-hover'
             }`}
           >
             <type.icon className="w-4 h-4" />
@@ -1500,97 +1719,75 @@ export default function SmartParser() {
 
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-medium text-gray-700">解析管道 ({filteredPipelines.length})</h3>
+          <h3 className="text-sm font-medium text-text-primary">解析管道 ({filteredPipelines.length})</h3>
           <div className="flex items-center gap-2">
-            <span className="text-xs text-gray-500">启用的管道: {pipelines.filter(p => p.isActive).length}</span>
+            <span className="text-xs text-text-secondary">启用的管道: {pipelines.filter(p => p.isActive).length}</span>
           </div>
         </div>
 
-        <div className="space-y-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {filteredPipelines.map((pipeline, index) => {
             const Icon = getParserIcon(pipeline.parser);
             const parserConfig = getParserConfig(pipeline.parser);
             return (
               <motion.div
                 key={pipeline.id}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
                 transition={{ delay: index * 0.05 }}
-                whileHover={{ y: -2, boxShadow: '0 4px 20px -4px rgba(0,0,0,0.1)' }}
-                className="flex items-center gap-4 p-4 bg-white border border-gray-200 rounded-2xl hover:border-indigo-300 transition-all group"
+                whileHover={{ x: 4 }}
+                className="flex items-center gap-4 p-4 bg-card-bg border border-border-color rounded-xl hover:border-primary/30 transition-all group"
               >
-                <div className="flex flex-col items-center gap-1">
-                  <motion.button
-                    whileHover={{ scale: 1.1 }}
-                    whileTap={{ scale: 0.9 }}
-                    onClick={() => movePriority(pipeline.id, 'up')}
-                    className="p-1 text-gray-300 hover:text-indigo-600 transition-colors"
-                  >
-                    <ArrowUp className="w-3.5 h-3.5" />
-                  </motion.button>
-                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 to-blue-600 flex items-center justify-center text-white text-sm font-bold shadow-md">
-                    {pipeline.priority}
-                  </div>
-                  <motion.button
-                    whileHover={{ scale: 1.1 }}
-                    whileTap={{ scale: 0.9 }}
-                    onClick={() => movePriority(pipeline.id, 'down')}
-                    className="p-1 text-gray-300 hover:text-indigo-600 transition-colors"
-                  >
-                    <ArrowDown className="w-3.5 h-3.5" />
-                  </motion.button>
-                </div>
-
-                <div className={`w-12 h-12 rounded-xl ${parserConfig.bgColor} flex items-center justify-center border ${parserConfig.borderColor}`}>
+                <div className={`w-12 h-12 rounded-xl ${parserConfig.bgColor} flex items-center justify-center border ${parserConfig.borderColor} flex-shrink-0`}>
                   <Icon className={`w-6 h-6 ${parserConfig.textColor}`} />
                 </div>
 
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-3">
-                    <span className="font-semibold text-gray-900">{pipeline.name}</span>
-                    <span className={`px-2 py-0.5 text-xs rounded-lg font-medium ${parserConfig.bgColor} ${parserConfig.textColor} border ${parserConfig.borderColor}`}>
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-text-primary">{pipeline.name}</span>
+                    <span className={`px-2 py-0.5 text-xs rounded font-medium ${parserConfig.bgColor} ${parserConfig.textColor} border ${parserConfig.borderColor}`}>
                       {pipeline.parser}
                     </span>
                     {pipeline.mode === 'multi' && (
-                      <span className="px-2 py-0.5 text-xs bg-gradient-to-r from-violet-100 to-purple-100 text-violet-700 rounded-lg font-medium border border-violet-200 flex items-center gap-1">
+                      <span className="px-2 py-0.5 text-xs bg-gradient-to-r from-violet-100 to-purple-100 text-accent rounded font-medium border border-accent/30 flex items-center gap-1">
                         <Sparkles className="w-3 h-3" /> 智能
                       </span>
                     )}
                     {pipeline.isActive ? (
-                      <span className="flex items-center gap-1 px-2 py-0.5 text-xs bg-emerald-50 text-emerald-600 rounded-lg font-medium border border-emerald-200">
+                      <span className="flex items-center gap-1 px-2 py-0.5 text-xs bg-emerald-50 text-emerald-600 rounded font-medium border border-emerald-200">
                         <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> 运行中
                       </span>
                     ) : (
-                      <span className="flex items-center gap-1 px-2 py-0.5 text-xs bg-gray-100 text-gray-500 rounded-lg font-medium border border-gray-200">
-                        <div className="w-1.5 h-1.5 rounded-full bg-gray-400" /> 已暂停
+                      <span className="flex items-center gap-1 px-2 py-0.5 text-xs bg-page-bg text-text-secondary rounded font-medium border border-border-color">
+                        <div className="w-1.5 h-1.5 rounded-full bg-text-muted" /> 已暂停
                       </span>
                     )}
                   </div>
-                  <div className="flex items-center gap-4 mt-2">
+                  <div className="flex items-center gap-3 mt-1">
                     {pipeline.logTypeName && (
-                      <span className="text-xs text-gray-400 flex items-center gap-1">
+                      <span className="text-xs text-text-muted flex items-center gap-1">
                         <Link2 className="w-3 h-3" /> {pipeline.logTypeName}
                       </span>
                     )}
                     {pipeline.formatTemplateName && (
-                      <span className="text-xs text-indigo-600 flex items-center gap-1">
+                      <span className="text-xs text-primary flex items-center gap-1">
                         <FileJson className="w-3 h-3" /> {pipeline.formatTemplateName}
                       </span>
                     )}
                     {pipeline.fieldMappings && pipeline.fieldMappings.length > 0 && (
-                      <span className="text-xs text-indigo-600 flex items-center gap-1">
+                      <span className="text-xs text-primary flex items-center gap-1">
                         <Database className="w-3 h-3" /> {pipeline.fieldMappings.length} 个字段映射
                       </span>
                     )}
                   </div>
                 </div>
 
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
                   <motion.button
                     whileHover={{ scale: 1.1 }}
                     whileTap={{ scale: 0.9 }}
                     onClick={() => openTestModal(pipeline)}
-                    className="p-2 text-gray-400 hover:text-emerald-600 rounded-xl hover:bg-emerald-50 transition-colors"
+                    className="p-1.5 text-text-muted hover:text-emerald-600 rounded-lg hover:bg-emerald-50 transition-colors"
                     title="测试解析"
                   >
                     <Beaker className="w-4 h-4" />
@@ -1599,7 +1796,7 @@ export default function SmartParser() {
                     whileHover={{ scale: 1.1 }}
                     whileTap={{ scale: 0.9 }}
                     onClick={() => openDetail(pipeline)}
-                    className="p-2 text-gray-400 hover:text-indigo-600 rounded-xl hover:bg-indigo-50 transition-colors"
+                    className="p-1.5 text-text-muted hover:text-primary rounded-lg hover:bg-primary/10 transition-colors"
                     title="查看详情"
                   >
                     <Eye className="w-4 h-4" />
@@ -1608,7 +1805,7 @@ export default function SmartParser() {
                     whileHover={{ scale: 1.1 }}
                     whileTap={{ scale: 0.9 }}
                     onClick={() => openEdit(pipeline)}
-                    className="p-2 text-gray-400 hover:text-indigo-600 rounded-xl hover:bg-indigo-50 transition-colors"
+                    className="p-1.5 text-text-muted hover:text-primary rounded-lg hover:bg-primary/10 transition-colors"
                     title="编辑"
                   >
                     <Edit3 className="w-4 h-4" />
@@ -1617,7 +1814,7 @@ export default function SmartParser() {
                     whileHover={{ scale: 1.1 }}
                     whileTap={{ scale: 0.9 }}
                     onClick={() => toggleActive(pipeline.id)}
-                    className={`p-2 rounded-xl transition-colors ${
+                    className={`p-1.5 rounded-lg transition-colors ${
                       pipeline.isActive
                         ? 'text-amber-500 hover:bg-amber-50'
                         : 'text-emerald-500 hover:bg-emerald-50'
@@ -1630,7 +1827,7 @@ export default function SmartParser() {
                     whileHover={{ scale: 1.1 }}
                     whileTap={{ scale: 0.9 }}
                     onClick={() => setShowDeleteConfirm(pipeline)}
-                    className="p-2 text-gray-400 hover:text-rose-600 rounded-xl hover:bg-rose-50 transition-colors"
+                    className="p-1.5 text-text-muted hover:text-rose-600 rounded-lg hover:bg-rose-50 transition-colors"
                     title="删除"
                   >
                     <Trash2 className="w-4 h-4" />
@@ -1655,34 +1852,33 @@ export default function SmartParser() {
               initial={{ scale: 0.95, opacity: 0, y: 20 }}
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.95, opacity: 0, y: 20 }}
-              className="bg-white border border-gray-200 rounded-2xl w-full max-w-5xl max-h-[90vh] overflow-hidden shadow-2xl"
+              className="bg-card-bg border border-border-color rounded-xl w-full max-w-5xl max-h-[90vh] overflow-hidden shadow-2xl"
               onClick={e => e.stopPropagation()}
             >
-              <div className="sticky top-0 bg-white border-b border-gray-200 p-6 flex items-center justify-between z-10">
+              <div className="sticky top-0 bg-card-bg border-b border-border-color p-6 flex items-center justify-between z-10">
                 <div>
-                  <h2 className="text-xl font-semibold text-gray-900">{editingPipeline ? '编辑解析管道' : '添加解析管道'}</h2>
-                  <p className="text-sm text-gray-500 mt-1">配置完整的日志解析流程：基础配置 → 日志解析 → 规则分析 → 存储</p>
+                  <h2 className="text-xl font-semibold text-text-primary">{editingPipeline ? '编辑解析管道' : '添加解析管道'}</h2>
+                  <p className="text-sm text-text-secondary mt-1">配置完整的日志解析流程：基础配置 → 日志解析 → 规则分析 → 存储</p>
                 </div>
-                <button onClick={() => setShowAddModal(false)} className="p-2 text-gray-400 hover:text-gray-600 rounded-xl hover:bg-gray-100 transition-colors">
+                <button onClick={() => setShowAddModal(false)} className="p-2 text-text-muted hover:text-text-secondary rounded-lg hover:bg-page-bg transition-colors">
                   <X className="w-5 h-5" />
                 </button>
               </div>
 
-              <div className="flex border-b border-gray-200 bg-gray-50/50">
+              <div className="flex border-b border-border-color bg-page-bg/50">
                 {[
                   { id: 'basic', label: '基本配置', icon: Settings2 },
                   { id: 'parse', label: '日志解析', icon: FileJson },
                   { id: 'analysis', label: '规则分析', icon: Brain },
-                  { id: 'filter', label: '过滤', icon: Filter },
-                  { id: 'storage', label: '存储', icon: Database }
+                  { id: 'filter', label: '过滤', icon: Filter }
                 ].map(tab => (
                   <button
                     key={tab.id}
                     onClick={() => setActiveTab(tab.id as any)}
                     className={`flex items-center gap-2 px-6 py-4 text-sm font-medium transition-all relative ${
                       activeTab === tab.id
-                        ? 'text-indigo-600'
-                        : 'text-gray-500 hover:text-gray-700'
+                        ? 'text-primary'
+                        : 'text-text-secondary hover:text-text-primary'
                     }`}
                   >
                     <tab.icon className="w-4 h-4" />
@@ -1690,7 +1886,7 @@ export default function SmartParser() {
                     {activeTab === tab.id && (
                       <motion.div
                         layoutId="activeTab"
-                        className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-600"
+                        className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary"
                       />
                     )}
                   </button>
@@ -1700,36 +1896,36 @@ export default function SmartParser() {
               <div className="p-6 overflow-auto max-h-[calc(90vh-220px)]">
                 {activeTab === 'basic' && (
                   <div className="space-y-6">
-                    <div className="p-5 bg-gradient-to-r from-indigo-50 to-blue-50 rounded-2xl border border-indigo-200">
+                    <div className="p-5 bg-gradient-to-r from-primary/5 to-primary/5 rounded-lg border border-primary/20">
                       <div className="flex items-start gap-4">
-                        <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-indigo-500 to-blue-600 flex items-center justify-center shadow-lg">
+                        <div className="w-12 h-12 rounded-lg bg-gradient-to-br from-primary/50 to-primary flex items-center justify-center shadow-lg">
                           <FileJson className="w-6 h-6 text-white" />
                         </div>
                         <div className="flex-1">
-                          <h3 className="text-base font-semibold text-gray-900 mb-2">格式模板</h3>
+                          <h3 className="text-base font-semibold text-text-primary mb-2">格式模板</h3>
                           {formData.formatTemplateId ? (
                             <div className="space-y-3">
                               <div className="flex items-center gap-3">
-                                <span className="text-sm text-gray-700">
-                                  已选择: <span className="font-medium text-indigo-700">{formatTemplates.find(f => f.id === formData.formatTemplateId)?.name}</span>
+                                <span className="text-sm text-text-primary">
+                                  已选择: <span className="font-medium text-primary">{formatTemplates.find(f => f.id === formData.formatTemplateId)?.name}</span>
                                 </span>
-                                <span className="px-2 py-0.5 text-xs bg-indigo-100 text-indigo-600 rounded font-medium">
+                                <span className="px-2 py-0.5 text-xs bg-primary/20 text-primary rounded font-medium">
                                   {formatTemplates.find(f => f.id === formData.formatTemplateId)?.type}
                                 </span>
                               </div>
                               <button
                                 onClick={() => setShowTemplateSelector(true)}
-                                className="text-sm text-indigo-600 hover:text-indigo-700 font-medium flex items-center gap-1"
+                                className="text-sm text-primary hover:text-primary font-medium flex items-center gap-1"
                               >
                                 <RefreshCw className="w-3.5 h-3.5" /> 更换模板
                               </button>
                             </div>
                           ) : (
                             <div className="space-y-3">
-                              <p className="text-sm text-gray-600">选择格式模板可自动配置解析规则</p>
+                              <p className="text-sm text-text-secondary">选择格式模板可自动配置解析规则</p>
                               <button
                                 onClick={() => setShowTemplateSelector(true)}
-                                className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors flex items-center gap-2"
+                                className="px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary-hover transition-colors flex items-center gap-2"
                               >
                                 <LayoutGrid className="w-4 h-4" /> 选择模板
                               </button>
@@ -1741,80 +1937,80 @@ export default function SmartParser() {
 
                     <div className="grid grid-cols-2 gap-4">
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">管道名称</label>
+                        <label className="block text-sm font-medium text-text-primary mb-2">管道名称</label>
                         <input
                           type="text"
                           value={formData.name}
                           onChange={e => setFormData(prev => ({ ...prev, name: e.target.value }))}
-                          className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl text-gray-900 focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
+                          className="w-full px-3 py-2 bg-card-bg border border-border-color rounded-lg text-text-primary focus:ring-2 focus:ring-primary/20 focus:border-transparent transition-all"
                           placeholder="输入管道名称"
                         />
                       </div>
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">优先级</label>
+                        <label className="block text-sm font-medium text-text-primary mb-2">优先级</label>
                         <input
                           type="number"
                           value={formData.priority}
                           onChange={e => setFormData(prev => ({ ...prev, priority: parseInt(e.target.value) || 1 }))}
-                          className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl text-gray-900 focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
+                          className="w-full px-3 py-2 bg-card-bg border border-border-color rounded-lg text-text-primary focus:ring-2 focus:ring-primary/20 focus:border-transparent transition-all"
                         />
                       </div>
                     </div>
 
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-3">解析模式</label>
+                      <label className="block text-sm font-medium text-text-primary mb-3">解析模式</label>
                       <div className="grid grid-cols-2 gap-4">
                         <motion.button
                           whileHover={{ scale: 1.01 }}
                           whileTap={{ scale: 0.99 }}
                           onClick={() => setFormData(prev => ({ ...prev, mode: 'single', linkedPipelines: [] }))}
-                          className={`p-4 rounded-xl border-2 transition-all text-left ${
+                          className={`p-4 rounded-lg border-2 transition-all text-left ${
                             formData.mode === 'single'
-                              ? 'border-indigo-500 bg-gradient-to-br from-indigo-50 to-blue-50'
-                              : 'border-gray-200 hover:border-indigo-300'
+                              ? 'border-primary bg-gradient-to-br from-primary/5 to-primary/5'
+                              : 'border-border-color hover:border-primary/30'
                           }`}
                         >
                           <div className="flex items-center gap-3 mb-2">
                             <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
-                              formData.mode === 'single' ? 'bg-indigo-500' : 'bg-gray-100'
+                              formData.mode === 'single' ? 'bg-primary' : 'bg-page-bg'
                             }`}>
-                              <Workflow className={`w-4 h-4 ${formData.mode === 'single' ? 'text-white' : 'text-gray-400'}`} />
+                              <Workflow className={`w-4 h-4 ${formData.mode === 'single' ? 'text-white' : 'text-text-muted'}`} />
                             </div>
-                            <span className={`font-medium ${formData.mode === 'single' ? 'text-indigo-700' : 'text-gray-900'}`}>单一格式</span>
+                            <span className={`font-medium ${formData.mode === 'single' ? 'text-primary' : 'text-text-primary'}`}>单一格式</span>
                           </div>
-                          <p className="text-xs text-gray-500">处理固定格式的日志</p>
+                          <p className="text-xs text-text-secondary">处理固定格式的日志</p>
                         </motion.button>
                         <motion.button
                           whileHover={{ scale: 1.01 }}
                           whileTap={{ scale: 0.99 }}
                           onClick={() => setFormData(prev => ({ ...prev, mode: 'multi' }))}
-                          className={`p-4 rounded-xl border-2 transition-all text-left ${
+                          className={`p-4 rounded-lg border-2 transition-all text-left ${
                             formData.mode === 'multi'
-                              ? 'border-violet-500 bg-gradient-to-br from-violet-50 to-purple-50'
-                              : 'border-gray-200 hover:border-violet-300'
+                              ? 'border-accent bg-gradient-to-br from-violet-50 to-purple-50'
+                              : 'border-border-color hover:border-accent'
                           }`}
                         >
                           <div className="flex items-center gap-3 mb-2">
                             <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
-                              formData.mode === 'multi' ? 'bg-violet-500' : 'bg-gray-100'
+                              formData.mode === 'multi' ? 'bg-accent' : 'bg-page-bg'
                             }`}>
-                              <Cpu className={`w-4 h-4 ${formData.mode === 'multi' ? 'text-white' : 'text-gray-400'}`} />
+                              <Cpu className={`w-4 h-4 ${formData.mode === 'multi' ? 'text-white' : 'text-text-muted'}`} />
                             </div>
-                            <span className={`font-medium ${formData.mode === 'multi' ? 'text-violet-700' : 'text-gray-900'}`}>智能多格式</span>
+                            <span className={`font-medium ${formData.mode === 'multi' ? 'text-accent' : 'text-text-primary'}`}>智能多格式</span>
                           </div>
-                          <p className="text-xs text-gray-500">关联多个解析管道处理混合日志</p>
+                          <p className="text-xs text-text-secondary">关联多个解析管道处理混合日志</p>
                         </motion.button>
                       </div>
                     </div>
 
                     {formData.mode === 'multi' && (
-                      <div className="p-5 bg-gradient-to-r from-violet-50 to-purple-50 rounded-2xl border border-violet-200">
+                      <div className="p-5 bg-gradient-to-r from-violet-50 to-purple-50 rounded-lg border border-accent/30">
                         <div className="flex items-center justify-between mb-4">
                           <div>
-                            <h4 className="text-sm font-semibold text-gray-900">关联格式模板</h4>
-                            <p className="text-xs text-gray-500 mt-1">选择要关联的格式模板，系统会智能匹配最合适的模板解析日志</p>
+                            <h4 className="text-sm font-semibold text-text-primary">关联格式模板</h4>
+                            <p className="text-xs text-text-secondary mt-1">选择要关联的格式模板，系统会智能匹配最合适的模板解析日志</p>
                           </div>
-                          <span className="text-xs text-gray-500">
+                          <span className="text-xs text-text-secondary">
                             已选择 {formData.linkedTemplates?.length || 0} 个
                           </span>
                         </div>
@@ -1834,15 +2030,15 @@ export default function SmartParser() {
                                     : [...current, template.id];
                                   setFormData(prev => ({ ...prev, linkedTemplates: newLinked }));
                                 }}
-                                className={`p-3 rounded-xl border-2 cursor-pointer transition-all ${
+                                className={`p-3 rounded-lg border-2 cursor-pointer transition-all ${
                                   isSelected
-                                    ? 'bg-white border-violet-400 shadow-sm'
-                                    : 'bg-white/50 border-transparent hover:border-violet-300'
+                                    ? 'bg-card-bg border-accent shadow-sm'
+                                    : 'bg-card-bg/50 border-transparent hover:border-accent'
                                 }`}
                               >
                                 <div className="flex items-center gap-3">
                                   <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${
-                                    isSelected ? 'bg-violet-500 border-violet-500' : 'border-gray-300'
+                                    isSelected ? 'bg-accent border-accent' : 'border-border-color-hover'
                                   }`}>
                                     {isSelected && <Check className="w-3 h-3 text-white" />}
                                   </div>
@@ -1851,23 +2047,23 @@ export default function SmartParser() {
                                   </div>
                                   <div className="flex-1 min-w-0">
                                     <div className="flex items-center gap-2">
-                                      <span className="font-medium text-gray-900 text-sm">{template.name}</span>
+                                      <span className="font-medium text-text-primary text-sm">{template.name}</span>
                                       <span className={`px-2 py-0.5 text-xs rounded ${parserConfig.bgColor} ${parserConfig.textColor}`}>
                                         {template.parserType}
                                       </span>
                                       {template.isPreset && (
-                                        <span className="px-1.5 py-0.5 text-xs bg-amber-100 text-amber-600 rounded">预设</span>
+                                        <span className="px-1.5 py-0.5 text-xs bg-amber-100 text-amber-600 rounded-full font-medium">预设</span>
                                       )}
                                     </div>
-                                    <p className="text-xs text-gray-500 truncate">{template.description}</p>
+                                    <p className="text-xs text-text-secondary truncate">{template.description}</p>
                                   </div>
-                                  <div className="text-xs text-gray-400">{template.fields.length} 字段</div>
+                                  <div className="text-xs text-text-muted">{template.fieldCount} 字段</div>
                                 </div>
                                 {isSelected && (
                                   <div className="mt-2 pt-2 border-t border-violet-100">
                                     <div className="flex items-center gap-2">
                                       <Database className="w-3 h-3 text-indigo-500" />
-                                      <span className="text-xs text-gray-600">存储表:</span>
+                                      <span className="text-xs text-text-secondary">存储表:</span>
                                       <select
                                         value={storageTable?.tableId || ''}
                                         onChange={e => {
@@ -1881,7 +2077,7 @@ export default function SmartParser() {
                                             }
                                           }));
                                         }}
-                                        className="text-xs px-2 py-1 bg-white border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                                        className="text-xs px-2 py-1 bg-card-bg border border-border-color rounded-lg focus:ring-2 focus:ring-primary/20"
                                       >
                                         <option value="">选择存储表</option>
                                         {storageTables.map(table => (
@@ -1899,7 +2095,7 @@ export default function SmartParser() {
                         <div className="mt-4 p-3 bg-amber-50 rounded-lg border border-amber-200">
                           <div className="flex items-start gap-2">
                             <AlertTriangle className="w-4 h-4 text-amber-600 mt-0.5" />
-                            <p className="text-xs text-gray-600">
+                            <p className="text-xs text-text-secondary">
                               智能多格式模式会按优先级顺序尝试匹配关联的格式模板，第一个成功匹配的模板将解析该日志，并可存储到各自配置的表中。
                             </p>
                           </div>
@@ -1909,7 +2105,7 @@ export default function SmartParser() {
 
                     {!formData.formatTemplateId && (
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-3">解析器类型</label>
+                        <label className="block text-sm font-medium text-text-primary mb-3">解析器类型</label>
                         <div className="grid grid-cols-5 gap-2">
                           {parserTypes.map(parser => (
                             <motion.button
@@ -1917,10 +2113,10 @@ export default function SmartParser() {
                               whileHover={{ scale: 1.02 }}
                               whileTap={{ scale: 0.98 }}
                               onClick={() => setFormData(prev => ({ ...prev, parser: parser.id }))}
-                              className={`p-3 rounded-xl border-2 transition-all flex flex-col items-center gap-1 ${
+                              className={`p-3 rounded-lg border-2 transition-all flex flex-col items-center gap-1 ${
                                 formData.parser === parser.id
                                   ? `border-transparent bg-gradient-to-r ${parser.color} text-white shadow-lg`
-                                  : 'border-gray-200 hover:border-gray-300'
+                                  : 'border-border-color hover:border-border-color-hover'
                               }`}
                             >
                               <parser.icon className="w-4 h-4" />
@@ -1932,11 +2128,11 @@ export default function SmartParser() {
                     )}
 
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">描述</label>
+                      <label className="block text-sm font-medium text-text-primary mb-2">描述</label>
                       <textarea
                         value={formData.description}
                         onChange={e => setFormData(prev => ({ ...prev, description: e.target.value }))}
-                        className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl text-gray-900 h-20 resize-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
+                        className="w-full px-3 py-2 bg-card-bg border border-border-color rounded-lg text-text-primary h-20 resize-none focus:ring-2 focus:ring-primary/20 focus:border-transparent transition-all"
                         placeholder="输入描述"
                       />
                     </div>
@@ -1945,15 +2141,15 @@ export default function SmartParser() {
 
                 {activeTab === 'parse' && (
                   <div className="space-y-6">
-                    <div className="p-5 bg-slate-50 rounded-2xl border border-slate-200">
+                    <div className="p-5 bg-page-bg rounded-lg border border-border-color">
                       <div className="flex items-center justify-between mb-3">
-                        <label className="block text-sm font-medium text-gray-700 flex items-center gap-2">
-                          <Beaker className="w-4 h-4 text-indigo-600" /> 样本日志
+                        <label className="block text-sm font-medium text-text-primary flex items-center gap-2">
+                          <Beaker className="w-4 h-4 text-primary" /> 样本日志
                         </label>
                         <button
                           onClick={handleConfigTest}
                           disabled={!formData.sample.trim() || isTestingConfig}
-                          className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                          className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                         >
                           {isTestingConfig ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
                           运行测试
@@ -1962,9 +2158,62 @@ export default function SmartParser() {
                       <textarea
                         value={formData.sample}
                         onChange={e => setFormData(prev => ({ ...prev, sample: e.target.value }))}
-                        className="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-emerald-400 h-32 font-mono text-sm resize-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                        className="w-full px-4 py-3 bg-gray-900 border border-gray-700 rounded-lg text-green-400 h-32 font-mono text-sm resize-none focus:ring-2 focus:ring-primary/20 focus:border-transparent"
                         placeholder="粘贴日志内容，点击运行测试识别字段..."
                       />
+                    </div>
+
+                    {/* 目标存储表选择 */}
+                    <div className="p-5 bg-primary/5 rounded-lg border border-primary/20">
+                      <div className="flex items-start gap-4">
+                        <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-primary to-indigo-600 flex items-center justify-center shadow-lg flex-shrink-0">
+                          <Database className="w-5 h-5 text-white" />
+                        </div>
+                        <div className="flex-1">
+                          <div className="flex items-center gap-3 mb-2">
+                            <label className="text-sm font-semibold text-text-primary">目标存储表</label>
+                            {formData.storageTableId && (
+                              <span className="text-xs px-2 py-0.5 bg-primary/20 text-primary rounded-full font-medium">
+                                {storageTables.find(t => String(t.id) === String(formData.storageTableId))?.columnDefs?.length || 0} 个字段
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-xs text-text-secondary mb-3">选择日志数据最终存储的目标表，表字段将作为字段映射的目标</p>
+                          <select
+                            value={formData.storageTableId || ''}
+                            onChange={e => handleTargetTableChange(e.target.value)}
+                            className="w-full px-3 py-2 bg-card-bg border border-primary/30 rounded-lg text-sm text-text-primary focus:ring-2 focus:ring-primary/20 focus:border-transparent transition-all"
+                          >
+                            <option value="">-- 选择目标存储表 --</option>
+                            {storageTables.map(table => (
+                              <option key={table.id} value={table.id}>
+                                {table.name} {table.columnDefs?.length ? `(${table.columnDefs.length} 列)` : ''}
+                              </option>
+                            ))}
+                          </select>
+                          {formData.storageTableId && (() => {
+                            const table = storageTables.find(t => String(t.id) === String(formData.storageTableId));
+                            if (table?.columnDefs && table.columnDefs.length > 0) {
+                              return (
+                                <div className="mt-3 flex flex-wrap gap-1.5">
+                                  {table.columnDefs.map((col: any) => (
+                                    <span key={col.name} className={`text-xs px-2 py-1 rounded-md font-medium border ${
+                                      col.required
+                                        ? 'bg-red-50 text-red-600 border-red-200'
+                                        : 'bg-card-bg text-text-secondary border-border-color'
+                                    }`}>
+                                      {col.label || col.name}
+                                      <span className="ml-1 text-[10px] opacity-60">({col.type})</span>
+                                      {col.required && <span className="ml-0.5 text-red-500">*</span>}
+                                    </span>
+                                  ))}
+                                </div>
+                              );
+                            }
+                            return null;
+                          })()}
+                        </div>
+                      </div>
                     </div>
 
                     {renderParserConfig()}
@@ -1975,9 +2224,9 @@ export default function SmartParser() {
                         {/* ====== 头部统计 ====== */}
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-3">
-                            <Sparkles className="w-5 h-5 text-indigo-600" />
-                            <span className="font-bold text-gray-900">字段映射</span>
-                            <span className="text-sm text-gray-500">解析出 {parsedFields.length} 个字段</span>
+                            <Sparkles className="w-5 h-5 text-primary" />
+                            <span className="font-bold text-text-primary">字段映射</span>
+                            <span className="text-sm text-text-secondary">解析出 {parsedFields.length} 个字段</span>
                             <span className="text-xs px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded-full font-medium border border-emerald-200">
                               <CheckCircle className="w-3 h-3 inline mr-1" />
                               {fieldMappings.filter(m => m.sourceField !== null).length} / {fieldMappings.length} 已映射
@@ -1987,7 +2236,7 @@ export default function SmartParser() {
                             <button
                               onClick={() => saveFieldMappingsToDb(editingPipeline.id!)}
                               disabled={savingMappings}
-                              className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                              className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary-hover disabled:opacity-50 transition-colors"
                             >
                               {savingMappings ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
                               保存映射
@@ -1996,24 +2245,36 @@ export default function SmartParser() {
                         </div>
 
                         {/* 简要说明 */}
-                        <div className="p-3 bg-blue-50/80 border border-blue-200 rounded-xl text-xs text-blue-800 flex items-start gap-2">
+                        <div className="p-3 bg-blue-50/80 border border-blue-200 rounded-lg text-xs text-blue-800 flex items-start gap-2">
                           <ShieldAlert className="w-4 h-4 text-blue-500 mt-0.5 flex-shrink-0" />
                           <span>
                             <strong>字段映射：</strong>
-                            从上方列表选择解析后的字段，映射到右侧的标准告警字段。已映射的字段会写入 TimescaleDB 告警表。
-                            未映射的字段存入 parsedData JSON。
+                            从上方列表选择解析后的字段，映射到目标存储表
+                            <strong className="text-emerald-700">{
+                              formData.storageTableId
+                                ? (storageTables.find(t => String(t.id) === String(formData.storageTableId))?.name || '目标表')
+                                : '标准告警'
+                            }</strong>的字段。已映射的字段会写入对应存储表，未映射的字段存入 parsedData JSON。
                           </span>
                         </div>
 
-                        {/* ========== Section 1: 标准告警字段（固定列表）========== */}
+                        {/* ========== Section 1: 目标表字段 ========== */}
                         <div>
-                          <div className="flex items-center gap-2 mb-3 pb-1.5 border-b-2 border-emerald-300">
-                            <LayoutGrid className="w-5 h-5 text-emerald-600" />
-                            <span className="text-base font-bold text-emerald-800">标准告警字段</span>
-                            <span className="text-xs px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded-full">
+                          <div className="flex items-center gap-2 mb-3 pb-1.5 border-b-2 border-primary/30">
+                            <LayoutGrid className="w-5 h-5 text-primary" />
+                            <span className="text-base font-bold text-text-primary">{
+                              formData.storageTableId
+                                ? `${storageTables.find(t => String(t.id) === String(formData.storageTableId))?.name || '目标表'} 字段`
+                                : '标准告警字段'
+                            }</span>
+                            <span className="text-xs px-2 py-0.5 bg-primary/20 text-primary rounded-full">
                               {fieldMappings.filter(m => m.sourceField !== null).length} / {fieldMappings.length} 已配置
                             </span>
-                            <span className="text-xs text-gray-400 ml-auto">→ 写入 TimescaleDB 告警表</span>
+                            <span className="text-xs text-text-muted ml-auto">→ 写入 {
+                              formData.storageTableId
+                                ? (storageTables.find(t => String(t.id) === String(formData.storageTableId))?.name || '存储表')
+                                : 'TimescaleDB 告警表'
+                            }</span>
                           </div>
                           
                           <div className="space-y-2">
@@ -2022,16 +2283,16 @@ export default function SmartParser() {
                               return (
                                 <div 
                                   key={mapping.targetField}
-                                  className={`p-4 rounded-xl border-2 transition-all ${
+                                  className={`p-4 rounded-lg border-2 transition-all ${
                                     isMapped 
-                                      ? 'bg-gradient-to-r from-emerald-50 to-teal-50 border-emerald-300 shadow-sm' 
-                                      : 'bg-white border-gray-200 hover:border-gray-300'
+                                      ? 'bg-primary/5 border-primary/30 shadow-sm' 
+                                      : 'bg-card-bg border-border-color hover:border-border-color-hover'
                                   }`}
                                 >
                                   <div className="flex items-center gap-4">
                                     {/* 映射状态指示 */}
                                     <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${
-                                      isMapped ? 'bg-emerald-500 text-white' : 'bg-gray-200 text-gray-400'
+                                      isMapped ? 'bg-primary text-white' : 'bg-page-bg text-text-muted'
                                     }`}>
                                       {isMapped ? <Check className="w-5 h-5" /> : <span className="text-sm font-bold">{mapping.targetField[0].toUpperCase()}</span>}
                                     </div>
@@ -2039,33 +2300,33 @@ export default function SmartParser() {
                                     {/* 目标标准字段信息 */}
                                     <div className="flex-1 min-w-0">
                                       <div className="flex flex-wrap items-center gap-2 mb-1">
-                                        <span className="font-bold text-emerald-900">{mapping.targetLabel}</span>
-                                        <code className="text-xs px-1.5 py-0.5 bg-emerald-100 text-emerald-700 rounded font-mono">{mapping.targetField}</code>
+                                        <span className="font-bold text-text-primary">{mapping.targetLabel}</span>
+                                        <code className="text-xs px-1.5 py-0.5 bg-primary/20 text-primary rounded font-mono">{mapping.targetField}</code>
                                         <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
-                                          mapping.fieldType === 'datetime' ? 'bg-purple-100 text-purple-600' :
-                                          mapping.fieldType === 'number' ? 'bg-blue-100 text-blue-600' :
-                                          'bg-gray-100 text-gray-600'
+                                          mapping.fieldType === 'datetime' ? 'bg-purple-50 text-purple-600' :
+                                          mapping.fieldType === 'number' ? 'bg-primary/10 text-primary' :
+                                          'bg-page-bg text-text-secondary'
                                         }`}>{mapping.fieldType}</span>
                                         {mapping.isRequired && (
-                                          <span className="text-xs px-1.5 py-0.5 bg-rose-100 text-rose-600 rounded font-medium">
+                                          <span className="text-xs px-1.5 py-0.5 bg-red-50 text-red-600 rounded font-medium">
                                             <Zap className="w-3 h-3 inline mr-0.5" />必填
                                           </span>
                                         )}
-                                        <span className="text-xs px-1.5 py-0.5 bg-cyan-50 text-cyan-700 rounded border border-cyan-200">
+                                        <span className="text-xs px-1.5 py-0.5 bg-page-bg text-text-secondary rounded border border-border-color">
                                           {mapping.targetField.split('_')[0]}
                                         </span>
                                       </div>
                                       
                                       {/* 映射的下拉选择 */}
                                       <div className="flex items-center gap-2 mt-2">
-                                        <span className="text-xs text-gray-500 whitespace-nowrap">← 映射自:</span>
+                                        <span className="text-xs text-text-secondary whitespace-nowrap">← 映射自:</span>
                                         <select
                                           value={mapping.sourceField || ''}
                                           onChange={(e) => updateMappingSourceField(mapping.targetField, e.target.value || null)}
-                                          className={`flex-1 text-sm px-3 py-1.5 rounded-lg border-2 transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-emerald-400 ${
+                                          className={`flex-1 text-sm px-3 py-1.5 rounded-lg border-2 transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary/20 ${
                                             isMapped 
-                                              ? 'bg-white border-emerald-300 text-emerald-800' 
-                                              : 'bg-gray-50 border-gray-200 text-gray-500'
+                                              ? 'bg-card-bg border-primary/30 text-primary' 
+                                              : 'bg-page-bg border-border-color text-text-secondary'
                                           }`}
                                         >
                                           <option value="">-- 选择解析字段 --</option>
@@ -2080,7 +2341,7 @@ export default function SmartParser() {
                                       
                                       {/* 样本值预览 */}
                                       {mapping.sampleValue !== undefined && (
-                                        <div className="mt-2 text-xs text-gray-500 font-mono bg-slate-100 p-2 rounded border border-slate-200 truncate">
+                                        <div className="mt-2 text-xs text-text-secondary font-mono bg-page-bg p-2 rounded border border-border-color truncate">
                                           样本值: {String(mapping.sampleValue).substring(0, 80)}{String(mapping.sampleValue).length > 80 ? '...' : ''}
                                         </div>
                                       )}
@@ -2111,13 +2372,13 @@ export default function SmartParser() {
 
                         {/* ========== Section 2: 解析字段列表（可选择映射）========== */}
                         <div>
-                          <div className="flex items-center gap-2 mb-3 pb-1.5 border-b-2 border-gray-300">
-                            <FileJson className="w-5 h-5 text-gray-500" />
-                            <span className="text-base font-bold text-gray-700">解析字段</span>
-                            <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-600 rounded-full">
+                          <div className="flex items-center gap-2 mb-3 pb-1.5 border-b-2 border-border-color-hover">
+                            <FileJson className="w-5 h-5 text-text-secondary" />
+                            <span className="text-base font-bold text-text-primary">解析字段</span>
+                            <span className="text-xs px-2 py-0.5 bg-page-bg text-text-secondary rounded-full">
                               {parsedFields.length} 个字段
                             </span>
-                            <span className="text-xs text-gray-400 ml-auto">→ 选择字段映射到上方标准字段</span>
+                            <span className="text-xs text-text-muted ml-auto">→ 选择字段映射到上方标准字段</span>
                           </div>
                           
                           <div className="grid grid-cols-2 gap-2">
@@ -2130,24 +2391,24 @@ export default function SmartParser() {
                                   className={`group p-3 rounded-lg border-2 transition-all cursor-default ${
                                     isMapped 
                                       ? 'bg-emerald-50/50 border-emerald-200 opacity-60' 
-                                      : 'bg-gray-50 border-gray-200 hover:border-indigo-300'
+                                      : 'bg-page-bg border-border-color hover:border-primary/30'
                                   }`}
                                 >
                                   <div className="flex items-start gap-2">
                                     <div className={`w-5 h-5 rounded flex items-center justify-center flex-shrink-0 mt-0.5 ${
-                                      isMapped ? 'bg-emerald-500 text-white' : 'bg-gray-200 text-gray-500'
+                                      isMapped ? 'bg-emerald-500 text-white' : 'bg-page-bg text-text-secondary'
                                     }`}>
                                       {isMapped ? <Check className="w-3 h-3" /> : <span className="text-[10px] font-bold">{idx + 1}</span>}
                                     </div>
                                     <div className="flex-1 min-w-0">
                                       <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
-                                        <span className={`text-xs font-semibold truncate ${isMapped ? 'text-emerald-700' : 'text-gray-800'}`}>
+                                        <span className={`text-xs font-semibold truncate ${isMapped ? 'text-emerald-700' : 'text-text-primary'}`}>
                                           {field.name}
                                         </span>
                                         <span className={`text-[10px] px-1 py-px rounded font-mono ${
                                           field.type === 'datetime' ? 'bg-purple-100 text-purple-600' :
                                           field.type === 'number' ? 'bg-blue-100 text-blue-600' :
-                                          'bg-gray-200 text-gray-500'
+                                          'bg-page-bg text-text-secondary'
                                         }`}>{field.type}</span>
                                         {isMapped && (
                                           <span className="text-[10px] px-1 py-px bg-emerald-100 text-emerald-600 rounded">
@@ -2155,7 +2416,7 @@ export default function SmartParser() {
                                           </span>
                                         )}
                                       </div>
-                                      <div className="text-[11px] text-gray-500 font-mono truncate" title={String(field.value)}>
+                                      <div className="text-[11px] text-text-secondary font-mono truncate" title={String(field.value)}>
                                         {String(field.value).substring(0, 40)}{String(field.value).length > 40 ? '...' : ''}
                                       </div>
                                     </div>
@@ -2167,19 +2428,19 @@ export default function SmartParser() {
                         </div>
 
                         {/* 统计信息 */}
-                        <div className="p-4 bg-slate-50 rounded-xl border border-slate-200">
+                        <div className="p-4 bg-page-bg rounded-lg border border-border-color">
                           <div className="grid grid-cols-3 gap-4 text-center">
                             <div>
                               <div className="text-2xl font-bold text-emerald-600">{fieldMappings.filter(m => m.sourceField !== null).length}</div>
-                              <div className="text-xs text-gray-500">已映射字段</div>
+                              <div className="text-xs text-text-secondary">已映射字段</div>
                             </div>
                             <div>
                               <div className="text-2xl font-bold text-amber-600">{fieldMappings.filter(m => m.isRequired && !m.sourceField && !m.defaultValue).length}</div>
-                              <div className="text-xs text-gray-500">缺少必填映射</div>
+                              <div className="text-xs text-text-secondary">缺少必填映射</div>
                             </div>
                             <div>
-                              <div className="text-2xl font-bold text-gray-600">{parsedFields.length - fieldMappings.filter(m => m.sourceField !== null).length}</div>
-                              <div className="text-xs text-gray-500">额外字段</div>
+                              <div className="text-2xl font-bold text-text-secondary">{parsedFields.length - fieldMappings.filter(m => m.sourceField !== null).length}</div>
+                              <div className="text-xs text-text-secondary">额外字段</div>
                             </div>
                           </div>
                         </div>
@@ -2190,22 +2451,22 @@ export default function SmartParser() {
 
                 {activeTab === 'analysis' && (
                   <div className="space-y-6">
-                    <div className="p-5 bg-gradient-to-r from-indigo-50 to-blue-50 rounded-2xl border border-indigo-200">
+                    <div className="p-5 bg-gradient-to-r from-primary/5 to-primary/5 rounded-lg border border-primary/20">
                       <div className="flex items-start gap-4">
-                        <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-indigo-500 to-blue-600 flex items-center justify-center shadow-lg">
+                        <div className="w-12 h-12 rounded-lg bg-gradient-to-br from-primary/50 to-primary flex items-center justify-center shadow-lg">
                           <Brain className="w-6 h-6 text-white" />
                         </div>
                         <div className="flex-1">
-                          <h3 className="text-base font-semibold text-gray-900 mb-2">实时安全分析配置</h3>
-                          <p className="text-sm text-gray-600">配置当前解析管道需要执行的检测规则。解析完成后，系统会自动将日志与选中的规则进行匹配。</p>
+                          <h3 className="text-base font-semibold text-text-primary mb-2">实时安全分析配置</h3>
+                          <p className="text-sm text-text-secondary">配置当前解析管道需要执行的检测规则。解析完成后，系统会自动将日志与选中的规则进行匹配。</p>
                         </div>
                       </div>
                     </div>
 
                     <div>
                       <div className="flex items-center justify-between mb-4">
-                        <h4 className="text-sm font-semibold text-gray-900">选择检测规则</h4>
-                        <span className="text-xs text-gray-500">
+                        <h4 className="text-sm font-semibold text-text-primary">选择检测规则</h4>
+                        <span className="text-xs text-text-secondary">
                           已选择 {formData.selectedRules?.length || 0} 条规则
                         </span>
                       </div>
@@ -2223,21 +2484,21 @@ export default function SmartParser() {
                                   : [...currentRules, rule.id];
                                 setFormData(prev => ({ ...prev, selectedRules: newRules }));
                               }}
-                              className={`p-4 rounded-xl border-2 cursor-pointer transition-all ${
+                              className={`p-4 rounded-lg border-2 cursor-pointer transition-all ${
                                 isSelected
-                                  ? 'bg-gradient-to-r from-violet-50 to-purple-50 border-violet-400 shadow-md'
-                                  : 'bg-white border-gray-200 hover:border-violet-300'
+                                  ? 'bg-gradient-to-r from-violet-50 to-purple-50 border-accent shadow-md'
+                                  : 'bg-card-bg border-border-color hover:border-accent'
                               }`}
                             >
                               <div className="flex items-start gap-3">
                                 <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${
-                                  isSelected ? 'bg-violet-500 border-violet-500' : 'border-gray-300'
+                                  isSelected ? 'bg-accent border-accent' : 'border-border-color-hover'
                                 }`}>
                                   {isSelected && <Check className="w-3 h-3 text-white" />}
                                 </div>
                                 <div className="flex-1 min-w-0">
                                   <div className="flex items-center gap-2">
-                                    <span className="font-medium text-gray-900 text-sm">{rule.name}</span>
+                                    <span className="font-medium text-text-primary text-sm">{rule.name}</span>
                                     <span className={`text-xs px-2 py-0.5 rounded ${
                                       rule.severity === 'critical' ? 'bg-rose-100 text-rose-600' :
                                       rule.severity === 'high' ? 'bg-orange-100 text-orange-600' :
@@ -2256,8 +2517,8 @@ export default function SmartParser() {
                                       {rule.type === 'single' ? '单事件' : rule.type === 'correlation' ? '关联' : '时序'}
                                     </span>
                                   </div>
-                                  <p className="text-xs text-gray-500 mt-1">{rule.description}</p>
-                                  <div className="flex items-center gap-4 mt-2 text-xs text-gray-400">
+                                  <p className="text-xs text-text-secondary mt-1">{rule.description}</p>
+                                  <div className="flex items-center gap-4 mt-2 text-xs text-text-muted">
                                     <span>数据源: {rule.dataSourceIds?.length || 0} 个</span>
                                     <span>命中: {rule.hitCount} 次</span>
                                   </div>
@@ -2269,12 +2530,12 @@ export default function SmartParser() {
                       </div>
                     </div>
 
-                    <div className="p-4 bg-amber-50 rounded-xl border border-amber-200">
+                    <div className="p-4 bg-amber-50 rounded-lg border border-amber-200">
                       <div className="flex items-start gap-3">
                         <AlertTriangle className="w-5 h-5 text-amber-600 mt-0.5" />
                         <div>
-                          <h4 className="font-medium text-gray-900 text-sm">分析流程说明</h4>
-                          <p className="text-sm text-gray-600 mt-1">
+                          <h4 className="font-medium text-text-primary text-sm">分析流程说明</h4>
+                          <p className="text-sm text-text-secondary mt-1">
                             1. 日志解析完成后，系统自动提取关键字段<br/>
                             2. 将解析结果与选中的检测规则进行匹配<br/>
                             3. 规则命中时立即生成安全事件并推送至事件工作台<br/>
@@ -2288,21 +2549,21 @@ export default function SmartParser() {
 
                 {activeTab === 'filter' && (
                   <div className="space-y-6">
-                    <div className="p-5 bg-gradient-to-r from-cyan-50 to-blue-50 rounded-2xl border border-cyan-200">
+                    <div className="p-5 bg-gradient-to-r from-cyan-50 to-primary/5 rounded-lg border border-cyan-200">
                       <div className="flex items-start gap-4">
-                        <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center shadow-lg">
+                        <div className="w-12 h-12 rounded-lg bg-gradient-to-br from-cyan-500 to-primary flex items-center justify-center shadow-lg">
                           <Filter className="w-6 h-6 text-white" />
                         </div>
                         <div className="flex-1">
-                          <h3 className="text-base font-semibold text-gray-900 mb-2">解析后过滤</h3>
-                          <p className="text-sm text-gray-600">配置过滤规则，只保留符合条件的日志。不满足过滤条件的日志将被丢弃，不会进入存储和分析流程。</p>
+                          <h3 className="text-base font-semibold text-text-primary mb-2">解析后过滤</h3>
+                          <p className="text-sm text-text-secondary">配置过滤规则，只保留符合条件的日志。不满足过滤条件的日志将被丢弃，不会进入存储和分析流程。</p>
                         </div>
                       </div>
                     </div>
 
                     <div>
                       <div className="flex items-center justify-between mb-4">
-                        <h4 className="text-sm font-semibold text-gray-900">过滤规则</h4>
+                        <h4 className="text-sm font-semibold text-text-primary">过滤规则</h4>
                         <button
                           onClick={() => {
                             setFormData(prev => ({
@@ -2317,10 +2578,10 @@ export default function SmartParser() {
                       </div>
 
                       {(formData.filterRules || []).length === 0 ? (
-                        <div className="text-center py-8 bg-gray-50 rounded-xl border border-gray-200">
-                          <Filter className="w-10 h-10 text-gray-300 mx-auto mb-2" />
-                          <p className="text-sm text-gray-500">暂无过滤规则</p>
-                          <p className="text-xs text-gray-400 mt-1">所有解析后的日志都将被保留</p>
+                        <div className="text-center py-8 bg-page-bg rounded-lg border border-border-color">
+                          <Filter className="w-10 h-10 text-text-muted mx-auto mb-2" />
+                          <p className="text-sm text-text-secondary">暂无过滤规则</p>
+                          <p className="text-xs text-text-muted mt-1">所有解析后的日志都将被保留</p>
                         </div>
                       ) : (
                         <div className="space-y-3">
@@ -2329,7 +2590,7 @@ export default function SmartParser() {
                               key={index}
                               initial={{ opacity: 0, y: 10 }}
                               animate={{ opacity: 1, y: 0 }}
-                              className="p-4 bg-white border border-gray-200 rounded-xl"
+                              className="p-4 bg-card-bg border border-border-color rounded-lg"
                             >
                               <div className="flex items-center gap-3">
                                 {index > 0 && (
@@ -2340,7 +2601,7 @@ export default function SmartParser() {
                                       newRules[index].logic = e.target.value as 'and' | 'or';
                                       setFormData(prev => ({ ...prev, filterRules: newRules }));
                                     }}
-                                    className="px-2 py-1.5 bg-gray-100 border border-gray-200 rounded-lg text-xs font-medium"
+                                    className="px-2 py-1.5 bg-page-bg border border-border-color rounded-lg text-xs font-medium"
                                   >
                                     <option value="and">且</option>
                                     <option value="or">或</option>
@@ -2356,7 +2617,7 @@ export default function SmartParser() {
                                       setFormData(prev => ({ ...prev, filterRules: newRules }));
                                     }}
                                     placeholder="字段名"
-                                    className="px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-cyan-500"
+                                    className="px-3 py-2 bg-card-bg border border-border-color rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-transparent"
                                   />
                                   <select
                                     value={rule.operator}
@@ -2365,7 +2626,7 @@ export default function SmartParser() {
                                       newRules[index].operator = e.target.value as any;
                                       setFormData(prev => ({ ...prev, filterRules: newRules }));
                                     }}
-                                    className="px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-cyan-500"
+                                    className="px-3 py-2 bg-card-bg border border-border-color rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-transparent"
                                   >
                                     <option value="eq">等于</option>
                                     <option value="ne">不等于</option>
@@ -2383,7 +2644,7 @@ export default function SmartParser() {
                                       setFormData(prev => ({ ...prev, filterRules: newRules }));
                                     }}
                                     placeholder="值"
-                                    className="px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-cyan-500"
+                                    className="px-3 py-2 bg-card-bg border border-border-color rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-transparent"
                                   />
                                 </div>
                                 <button
@@ -2391,7 +2652,7 @@ export default function SmartParser() {
                                     const newRules = (formData.filterRules || []).filter((_, i) => i !== index);
                                     setFormData(prev => ({ ...prev, filterRules: newRules }));
                                   }}
-                                  className="p-2 text-gray-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
+                                  className="p-1.5 text-text-muted hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
                                 >
                                   <Trash2 className="w-4 h-4" />
                                 </button>
@@ -2402,12 +2663,12 @@ export default function SmartParser() {
                       )}
                     </div>
 
-                    <div className="p-4 bg-cyan-50 rounded-xl border border-cyan-200">
+                    <div className="p-4 bg-cyan-50 rounded-lg border border-cyan-200">
                       <div className="flex items-start gap-3">
                         <AlertCircle className="w-5 h-5 text-cyan-600 mt-0.5" />
                         <div>
-                          <h4 className="font-medium text-gray-900 text-sm">过滤规则说明</h4>
-                          <p className="text-sm text-gray-600 mt-1">
+                          <h4 className="font-medium text-text-primary text-sm">过滤规则说明</h4>
+                          <p className="text-sm text-text-secondary mt-1">
                             • 支持多条件组合，使用"且"/"或"逻辑连接<br/>
                             • 正则匹配支持标准正则表达式语法<br/>
                             • 字段名支持嵌套路径，如 user.name、data.level<br/>
@@ -2419,229 +2680,21 @@ export default function SmartParser() {
                   </div>
                 )}
 
-                {activeTab === 'storage' && (
-                  <div className="space-y-6">
-                    <div>
-                      <h3 className="text-base font-semibold text-gray-900 mb-4">存储目标</h3>
-                      <div className="grid grid-cols-5 gap-3">
-                        {storageTargets.map(target => (
-                          <motion.button
-                            key={target.id}
-                            whileHover={{ scale: 1.02, y: -2 }}
-                            whileTap={{ scale: 0.98 }}
-                            onClick={() => setStorageConfig(prev => ({ ...prev, target: target.id }))}
-                            className={`p-4 rounded-xl border-2 transition-all text-left relative overflow-hidden ${
-                              storageConfig.target === target.id
-                                ? 'border-indigo-500 bg-gradient-to-br from-indigo-50 to-blue-50 shadow-lg shadow-indigo-100'
-                                : 'border-gray-200 hover:border-indigo-300 hover:shadow-md bg-white'
-                            }`}
-                          >
-                            <div className={`w-10 h-10 rounded-lg ${target.color} flex items-center justify-center mb-3 shadow-md`}>
-                              <target.icon className="w-5 h-5 text-white" />
-                            </div>
-                            <span className="font-medium text-gray-900 text-sm">{target.name}</span>
-                            <p className="text-xs text-gray-500 mt-1 line-clamp-2">{target.desc}</p>
-                            {storageConfig.target === target.id && (
-                              <div className="absolute top-2 right-2">
-                                <div className="w-5 h-5 rounded-full bg-indigo-500 flex items-center justify-center">
-                                  <Check className="w-3 h-3 text-white" />
-                                </div>
-                              </div>
-                            )}
-                          </motion.button>
-                        ))}
-                      </div>
-                    </div>
-
-                    {storageConfig.target && (
-                      <motion.div
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        className="space-y-6"
-                      >
-                        <div className="p-4 bg-gradient-to-r from-indigo-50 to-blue-50 rounded-xl border border-indigo-200">
-                          <div className="flex items-center gap-3">
-                            <div className={`w-8 h-8 rounded-lg ${storageTargets.find(t => t.id === storageConfig.target)?.color} flex items-center justify-center`}>
-                              {storageTargets.find(t => t.id === storageConfig.target)?.icon && (
-                                <span className="text-white text-sm">
-                                  {React.createElement(storageTargets.find(t => t.id === storageConfig.target)!.icon, { className: 'w-4 h-4' })}
-                                </span>
-                              )}
-                            </div>
-                            <div>
-                              <span className="font-medium text-gray-900">{storageTargets.find(t => t.id === storageConfig.target)?.name}</span>
-                              <span className="text-sm text-gray-500 ml-2">特性:</span>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              {storageTargets.find(t => t.id === storageConfig.target)?.features.map((feature, idx) => (
-                                <span key={idx} className="px-2 py-0.5 text-xs bg-white text-indigo-600 rounded-lg border border-indigo-200">
-                                  {feature}
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="bg-white border border-gray-200 rounded-2xl p-6">
-                          <h4 className="text-sm font-semibold text-gray-900 mb-4 flex items-center gap-2">
-                            <Settings2 className="w-4 h-4 text-indigo-600" />
-                            基础配置
-                          </h4>
-                          <div className="grid grid-cols-2 gap-4">
-                            {storageTargetConfigs[storageConfig.target]?.fields.map((field: any) => (
-                              <div key={field.key}>
-                                <label className="block text-sm font-medium text-gray-700 mb-2">{field.label}</label>
-                                {field.type === 'select' ? (
-                                  <select
-                                    value={storageConfig[storageConfig.target]?.[field.key] || ''}
-                                    onChange={e => setStorageConfig(prev => ({
-                                      ...prev,
-                                      [storageConfig.target]: { ...prev[storageConfig.target], [field.key]: e.target.value }
-                                    }))}
-                                    className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
-                                  >
-                                    {field.options?.map((opt: string) => (
-                                      <option key={opt} value={opt}>{opt}</option>
-                                    ))}
-                                  </select>
-                                ) : field.type === 'checkbox' ? (
-                                  <label className="flex items-center gap-2 cursor-pointer py-2">
-                                    <input
-                                      type="checkbox"
-                                      checked={storageConfig[storageConfig.target]?.[field.key] || false}
-                                      onChange={e => setStorageConfig(prev => ({
-                                        ...prev,
-                                        [storageConfig.target]: { ...prev[storageConfig.target], [field.key]: e.target.checked }
-                                      }))}
-                                      className="w-4 h-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
-                                    />
-                                    <span className="text-sm text-gray-600">启用</span>
-                                  </label>
-                                ) : (
-                                  <input
-                                    type={field.type === 'number' ? 'number' : field.type === 'password' ? 'password' : 'text'}
-                                    value={storageConfig[storageConfig.target]?.[field.key] || ''}
-                                    onChange={e => setStorageConfig(prev => ({
-                                      ...prev,
-                                      [storageConfig.target]: { ...prev[storageConfig.target], [field.key]: e.target.value }
-                                    }))}
-                                    placeholder={field.placeholder}
-                                    className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
-                                  />
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-
-                        <div className="bg-white border border-gray-200 rounded-2xl p-6">
-                          <button
-                            onClick={() => setShowAdvancedStorage(!showAdvancedStorage)}
-                            className="flex items-center justify-between w-full text-left"
-                          >
-                            <h4 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
-                              <Zap className="w-4 h-4 text-amber-500" />
-                              高级配置
-                            </h4>
-                            <motion.div
-                              animate={{ rotate: showAdvancedStorage ? 180 : 0 }}
-                              transition={{ duration: 0.2 }}
-                            >
-                              <ChevronRight className="w-5 h-5 text-gray-400 rotate-90" />
-                            </motion.div>
-                          </button>
-                          <AnimatePresence>
-                            {showAdvancedStorage && (
-                              <motion.div
-                                initial={{ opacity: 0, height: 0 }}
-                                animate={{ opacity: 1, height: 'auto' }}
-                                exit={{ opacity: 0, height: 0 }}
-                                className="mt-4 pt-4 border-t border-gray-100"
-                              >
-                                <div className="grid grid-cols-2 gap-4">
-                                  {storageTargetConfigs[storageConfig.target]?.advancedFields?.map((field: any) => (
-                                    <div key={field.key}>
-                                      <label className="block text-sm font-medium text-gray-700 mb-2">{field.label}</label>
-                                      {field.type === 'select' ? (
-                                        <select
-                                          value={storageConfig[storageConfig.target]?.[field.key] || ''}
-                                          onChange={e => setStorageConfig(prev => ({
-                                            ...prev,
-                                            [storageConfig.target]: { ...prev[storageConfig.target], [field.key]: e.target.value }
-                                          }))}
-                                          className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
-                                        >
-                                          {field.options?.map((opt: string) => (
-                                            <option key={opt} value={opt}>{opt}</option>
-                                          ))}
-                                        </select>
-                                      ) : field.type === 'checkbox' ? (
-                                        <label className="flex items-center gap-2 cursor-pointer py-2">
-                                          <input
-                                            type="checkbox"
-                                            checked={storageConfig[storageConfig.target]?.[field.key] || false}
-                                            onChange={e => setStorageConfig(prev => ({
-                                              ...prev,
-                                              [storageConfig.target]: { ...prev[storageConfig.target], [field.key]: e.target.checked }
-                                            }))}
-                                            className="w-4 h-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
-                                          />
-                                          <span className="text-sm text-gray-600">启用</span>
-                                        </label>
-                                      ) : (
-                                        <input
-                                          type={field.type === 'number' ? 'number' : 'text'}
-                                          value={storageConfig[storageConfig.target]?.[field.key] || ''}
-                                          onChange={e => setStorageConfig(prev => ({
-                                            ...prev,
-                                            [storageConfig.target]: { ...prev[storageConfig.target], [field.key]: e.target.value }
-                                          }))}
-                                          placeholder={field.placeholder}
-                                          className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
-                                        />
-                                      )}
-                                    </div>
-                                  ))}
-                                </div>
-                              </motion.div>
-                            )}
-                          </AnimatePresence>
-                        </div>
-
-                        <div className="p-4 bg-amber-50 rounded-xl border border-amber-200">
-                          <div className="flex items-start gap-3">
-                            <AlertTriangle className="w-5 h-5 text-amber-600 mt-0.5" />
-                            <div>
-                              <h4 className="font-medium text-gray-900 text-sm">存储配置说明</h4>
-                              <p className="text-sm text-gray-600 mt-1">
-                                {storageConfig.target === 'timescaledb' && 'TimescaleDB 适合时序数据存储，支持自动分区和数据压缩，推荐用于需要复杂查询分析的场景。'}
-                                {storageConfig.target === 'elasticsearch' && 'Elasticsearch 提供强大的全文检索能力，适合需要快速搜索和聚合分析的场景。'}
-                                {storageConfig.target === 'kafka' && 'Kafka 作为消息队列，适合流式处理和实时消费场景，可对接多个下游系统。'}
-                                {storageConfig.target === 's3' && 'S3 对象存储成本低、可靠性高，适合长期归档和备份场景。'}
-                                {storageConfig.target === 'local' && '本地文件存储简单快速，无需网络依赖，适合开发和测试环境。'}
-                              </p>
-                            </div>
-                          </div>
-                        </div>
-                      </motion.div>
-                    )}
-                  </div>
-                )}
               </div>
 
-              <div className="sticky bottom-0 bg-white border-t border-gray-200 p-6 flex justify-between items-center">
+              <div className="sticky bottom-0 bg-card-bg border-t border-border-color p-6 flex justify-between items-center">
                 <div className="flex items-center gap-2">
-                  <span className="text-sm text-gray-500">
-                    步骤 {['basic', 'parse', 'analysis', 'filter', 'storage'].indexOf(activeTab) + 1} / 5
+                  <span className="text-sm text-text-secondary">
+                    步骤 {['basic', 'parse', 'analysis', 'filter'].indexOf(activeTab) + 1} / 4
                   </span>
                   <div className="flex items-center gap-1">
-                    {['basic', 'parse', 'analysis', 'filter', 'storage'].map((tab, idx) => (
+                    {['basic', 'parse', 'analysis', 'filter'].map((tab, idx) => (
                       <div
                         key={tab}
                         className={`w-2 h-2 rounded-full transition-colors ${
-                          ['basic', 'parse', 'analysis', 'filter', 'storage'].indexOf(activeTab) >= idx
-                            ? 'bg-indigo-500'
-                            : 'bg-gray-300'
+                          ['basic', 'parse', 'analysis', 'filter'].indexOf(activeTab) >= idx
+                            ? 'bg-primary'
+                            : 'bg-page-bg'
                         }`}
                       />
                     ))}
@@ -2650,22 +2703,22 @@ export default function SmartParser() {
                 <div className="flex items-center gap-3">
                   <button
                     onClick={() => setShowAddModal(false)}
-                    className="px-6 py-2 text-gray-600 hover:text-gray-900 text-sm font-medium transition-colors"
+                    className="px-4 py-2 text-text-secondary hover:text-text-primary text-sm font-medium transition-colors"
                   >
                     取消
                   </button>
-                  {activeTab !== 'storage' ? (
+                  {activeTab !== 'filter' ? (
                     <motion.button
                       whileHover={{ scale: 1.02 }}
                       whileTap={{ scale: 0.98 }}
                       onClick={() => {
-                        const tabs = ['basic', 'parse', 'analysis', 'filter', 'storage'];
+                        const tabs = ['basic', 'parse', 'analysis', 'filter'];
                         const currentIndex = tabs.indexOf(activeTab);
                         if (currentIndex < tabs.length - 1) {
                           setActiveTab(tabs[currentIndex + 1] as any);
                         }
                       }}
-                      className="px-6 py-2 bg-gradient-to-r from-indigo-600 to-blue-600 text-white rounded-xl text-sm font-medium shadow-lg shadow-indigo-200 hover:shadow-xl transition-all flex items-center gap-2"
+                      className="px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium flex items-center gap-2"
                     >
                       下一步<ChevronRight className="w-4 h-4" />
                     </motion.button>
@@ -2674,7 +2727,7 @@ export default function SmartParser() {
                       whileHover={{ scale: 1.02 }}
                       whileTap={{ scale: 0.98 }}
                       onClick={editingPipeline ? handleEdit : handleAdd}
-                      className="px-6 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 text-white rounded-xl text-sm font-medium shadow-lg shadow-emerald-200 hover:shadow-xl transition-all flex items-center gap-2"
+                      className="px-6 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 text-white rounded-lg text-sm font-medium shadow-lg hover:shadow-xl transition-all flex items-center gap-2"
                     >
                       <Save className="w-4 h-4" />保存
                     </motion.button>
@@ -2697,15 +2750,15 @@ export default function SmartParser() {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white border border-gray-200 rounded-2xl w-full max-w-2xl max-h-[80vh] overflow-hidden shadow-2xl"
+              className="bg-card-bg border border-border-color rounded-xl w-full max-w-2xl max-h-[80vh] overflow-hidden shadow-2xl"
               onClick={e => e.stopPropagation()}
             >
-              <div className="sticky top-0 bg-white border-b border-gray-200 p-6 flex items-center justify-between z-10">
+              <div className="sticky top-0 bg-card-bg border-b border-border-color p-6 flex items-center justify-between z-10">
                 <div>
-                  <h2 className="text-xl font-semibold text-gray-900">选择格式模板</h2>
-                  <p className="text-sm text-gray-500 mt-1">选择模板将自动配置解析规则</p>
+                  <h2 className="text-xl font-semibold text-text-primary">选择格式模板</h2>
+                  <p className="text-sm text-text-secondary mt-1">选择模板将自动配置解析规则</p>
                 </div>
-                <button onClick={() => setShowTemplateSelector(false)} className="p-2 text-gray-400 hover:text-gray-600 rounded-xl hover:bg-gray-100 transition-colors">
+                <button onClick={() => setShowTemplateSelector(false)} className="p-2 text-text-muted hover:text-text-secondary rounded-lg hover:bg-page-bg transition-colors">
                   <X className="w-5 h-5" />
                 </button>
               </div>
@@ -2728,29 +2781,29 @@ export default function SmartParser() {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white border border-gray-200 rounded-2xl p-6 w-full max-w-4xl shadow-2xl max-h-[90vh] overflow-auto"
+              className="bg-card-bg border border-border-color rounded-xl p-6 w-full max-w-4xl shadow-2xl max-h-[90vh] overflow-auto"
               onClick={e => e.stopPropagation()}
             >
               <div className="flex items-center justify-between mb-6">
                 <div>
-                  <h2 className="text-lg font-semibold text-gray-900">测试解析与实时分析</h2>
-                  <p className="text-sm text-gray-500 mt-1">测试 {selectedPipeline.name} 的解析效果并执行实时安全分析</p>
+                  <h2 className="text-lg font-semibold text-text-primary">测试解析与实时分析</h2>
+                  <p className="text-sm text-text-secondary mt-1">测试 {selectedPipeline.name} 的解析效果并执行实时安全分析</p>
                 </div>
-                <button onClick={() => setShowTestModal(false)} className="p-2 text-gray-400 hover:text-gray-600 rounded-xl hover:bg-gray-100 transition-colors">
+                <button onClick={() => setShowTestModal(false)} className="p-2 text-text-muted hover:text-text-secondary rounded-lg hover:bg-page-bg transition-colors">
                   <X className="w-5 h-5" />
                 </button>
               </div>
 
               <div className="space-y-6">
-                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200">
+                <div className="p-4 bg-page-bg rounded-lg border border-border-color">
                   <div className="flex items-center justify-between mb-3">
-                    <label className="block text-sm font-medium text-gray-700 flex items-center gap-2">
-                      <Beaker className="w-4 h-4 text-indigo-600" /> 样本日志
+                    <label className="block text-sm font-medium text-text-primary flex items-center gap-2">
+                      <Beaker className="w-4 h-4 text-primary" /> 样本日志
                     </label>
                     <button
                       onClick={runTest}
                       disabled={!testLog.trim()}
-                      className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                      className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                     >
                       <Zap className="w-4 h-4" /> 解析并分析
                     </button>
@@ -2758,7 +2811,7 @@ export default function SmartParser() {
                   <textarea
                     value={testLog}
                     onChange={e => setTestLog(e.target.value)}
-                    className="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-emerald-400 h-32 font-mono text-sm resize-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                    className="w-full px-4 py-3 bg-card-bg border border-border-color rounded-lg text-emerald-400 h-32 font-mono text-sm resize-none focus:ring-2 focus:ring-primary/20 focus:border-transparent"
                     placeholder={`示例日志格式：
 {"timestamp":"2026-05-03T10:30:00Z","event_type":"login","status":"failed","source_ip":"192.168.1.100","hostname":"web-server-01","user":"admin"}`}
                   />
@@ -2770,18 +2823,18 @@ export default function SmartParser() {
                     animate={{ opacity: 1, y: 0 }}
                     className="space-y-4"
                   >
-                    <div className="flex items-center gap-2 p-3 bg-emerald-50 border border-emerald-200 rounded-xl">
+                    <div className="flex items-center gap-2 p-3 bg-emerald-50 border border-emerald-200 rounded-lg">
                       <CheckCircle className="w-5 h-5 text-emerald-600" />
                       <span className="text-sm font-medium text-emerald-700">解析成功</span>
                       <span className="text-xs text-emerald-600 px-2 py-1 bg-emerald-100 rounded-lg font-medium">{testResult.format}</span>
                     </div>
 
-                    <div className="bg-white border border-gray-200 rounded-2xl p-4">
+                    <div className="bg-card-bg border border-border-color rounded-lg p-4">
                       <div className="flex items-center justify-between mb-4">
                         <div className="flex items-center gap-2">
                           <Sparkles className="w-5 h-5 text-amber-500" />
-                          <span className="font-semibold text-gray-900">识别字段</span>
-                          <span className="text-sm text-gray-500">({detectedFields.length}个)</span>
+                          <span className="font-semibold text-text-primary">识别字段</span>
+                          <span className="text-sm text-text-secondary">({detectedFields.length}个)</span>
                         </div>
                       </div>
 
@@ -2791,18 +2844,18 @@ export default function SmartParser() {
                             key={idx}
                             initial={{ opacity: 0 }}
                             animate={{ opacity: 1 }}
-                            className="p-3 rounded-xl border bg-gray-50 border-gray-200"
+                            className="p-3 rounded-lg border bg-page-bg border-border-color"
                           >
                             <div className="flex items-center gap-3">
-                              <span className="font-semibold text-gray-900">{field.name}</span>
+                              <span className="font-semibold text-text-primary">{field.name}</span>
                               <span className={`text-xs px-2 py-0.5 rounded-lg font-medium ${
                                 field.type === 'datetime' ? 'bg-purple-100 text-purple-600' :
                                 field.type === 'number' ? 'bg-blue-100 text-blue-600' :
                                 field.type === 'boolean' ? 'bg-amber-100 text-amber-600' :
-                                'bg-gray-100 text-gray-600'
+                                'bg-page-bg text-text-secondary'
                               }`}>{field.type}</span>
                             </div>
-                            <div className="text-sm text-gray-600 font-mono mt-1 break-all">
+                            <div className="text-sm text-text-secondary font-mono mt-1 break-all">
                               {String(field.value).length > 100 ? String(field.value).substring(0, 100) + '...' : String(field.value)}
                             </div>
                           </motion.div>
@@ -2810,14 +2863,14 @@ export default function SmartParser() {
                       </div>
                     </div>
 
-                    <div className="bg-white border border-gray-200 rounded-2xl p-4">
+                    <div className="bg-card-bg border border-border-color rounded-lg p-4">
                       <div className="flex items-center justify-between mb-4">
                         <div className="flex items-center gap-2">
                           <Brain className="w-5 h-5 text-violet-500" />
-                          <span className="font-semibold text-gray-900">实时安全分析</span>
+                          <span className="font-semibold text-text-primary">实时安全分析</span>
                         </div>
                         {isAnalyzing && (
-                          <span className="flex items-center gap-2 text-sm text-gray-500">
+                          <span className="flex items-center gap-2 text-sm text-text-secondary">
                             <RefreshCw className="w-4 h-4 animate-spin" /> 分析中...
                           </span>
                         )}
@@ -2830,7 +2883,7 @@ export default function SmartParser() {
                               key={idx}
                               initial={{ opacity: 0, y: 10 }}
                               animate={{ opacity: 1, y: 0 }}
-                              className={`p-4 rounded-xl border ${
+                              className={`p-4 rounded-lg border ${
                                 result.severity === 'critical' ? 'bg-rose-50 border-rose-200' :
                                 result.severity === 'high' ? 'bg-orange-50 border-orange-200' :
                                 'bg-amber-50 border-amber-200'
@@ -2846,7 +2899,7 @@ export default function SmartParser() {
                                 </div>
                                 <div className="flex-1">
                                   <div className="flex items-center gap-2 mb-1">
-                                    <span className="font-semibold text-gray-900">{result.rule.name}</span>
+                                    <span className="font-semibold text-text-primary">{result.rule.name}</span>
                                     <span className={`px-2 py-0.5 text-xs rounded font-medium ${
                                       result.severity === 'critical' ? 'bg-rose-100 text-rose-600' :
                                       result.severity === 'high' ? 'bg-orange-100 text-orange-600' :
@@ -2855,15 +2908,15 @@ export default function SmartParser() {
                                       {result.severity}
                                     </span>
                                   </div>
-                                  <p className="text-sm text-gray-600">{result.rule.description}</p>
+                                  <p className="text-sm text-text-secondary">{result.rule.description}</p>
                                   {result.event && (
-                                    <div className="mt-3 p-3 bg-white rounded-lg border border-gray-200">
+                                    <div className="mt-3 p-3 bg-card-bg rounded-lg border border-border-color">
                                       <div className="flex items-center gap-2 mb-2">
                                         <ShieldAlert className="w-4 h-4 text-rose-500" />
-                                        <span className="font-medium text-gray-900">生成的安全事件</span>
+                                        <span className="font-medium text-text-primary">生成的安全事件</span>
                                       </div>
-                                      <div className="text-xs text-gray-500 space-y-1">
-                                        <div>事件ID: <span className="font-mono text-gray-700">{result.event.id}</span></div>
+                                      <div className="text-xs text-text-secondary space-y-1">
+                                        <div>事件ID: <span className="font-mono text-text-primary">{result.event.id}</span></div>
                                         <div>标题: {result.event.title}</div>
                                         <div>置信度: {result.event.confidence}%</div>
                                         <div>受影响资产: {result.event.affectedAssets.join(', ')}</div>
@@ -2877,7 +2930,7 @@ export default function SmartParser() {
                           ))}
                         </div>
                       ) : !isAnalyzing && testResult ? (
-                        <div className="text-center py-8 text-gray-400">
+                        <div className="text-center py-8 text-text-muted">
                           <ShieldCheck className="w-12 h-12 mx-auto mb-3 opacity-50" />
                           <p>未检测到安全威胁</p>
                           <p className="text-sm mt-1">当前日志未命中任何检测规则</p>
@@ -2886,12 +2939,12 @@ export default function SmartParser() {
                     </div>
 
                     {generatedEvents.length > 0 && (
-                      <div className="bg-gradient-to-r from-rose-50 to-orange-50 border border-rose-200 rounded-2xl p-4">
+                      <div className="bg-gradient-to-r from-rose-50 to-orange-50 border border-rose-200 rounded-lg p-4">
                         <div className="flex items-center gap-2 mb-3">
                           <Target className="w-5 h-5 text-rose-500" />
-                          <span className="font-semibold text-gray-900">已生成 {generatedEvents.length} 个安全事件</span>
+                          <span className="font-semibold text-text-primary">已生成 {generatedEvents.length} 个安全事件</span>
                         </div>
-                        <p className="text-sm text-gray-600">
+                        <p className="text-sm text-text-secondary">
                           这些事件已推送至事件工作台，可在"检测与分析" → "事件工作台"中查看详情
                         </p>
                       </div>
@@ -2900,12 +2953,12 @@ export default function SmartParser() {
                 )}
               </div>
 
-              <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-200">
-                <button onClick={() => setShowTestModal(false)} className="px-6 py-2 text-gray-600 hover:text-gray-900 text-sm font-medium transition-colors">关闭</button>
+              <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-border-color">
+                <button onClick={() => setShowTestModal(false)} className="px-4 py-2 text-text-secondary hover:text-text-primary text-sm font-medium transition-colors">关闭</button>
                 {testResult && (
                   <button
                     onClick={saveFieldMappings}
-                    className="px-6 py-2 bg-gradient-to-r from-indigo-600 to-blue-600 text-white rounded-xl text-sm font-medium shadow-lg shadow-indigo-200 hover:shadow-xl transition-all flex items-center gap-2"
+                    className="px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium flex items-center gap-2"
                   >
                     <Save className="w-4 h-4" />保存字段映射
                   </button>
@@ -2927,12 +2980,12 @@ export default function SmartParser() {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white border border-gray-200 rounded-2xl p-6 w-full max-w-lg max-h-[80vh] overflow-auto shadow-2xl"
+              className="bg-card-bg border border-border-color rounded-xl p-6 w-full max-w-lg max-h-[80vh] overflow-auto shadow-2xl"
               onClick={e => e.stopPropagation()}
             >
               <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-semibold text-gray-900">{selectedPipeline.name}</h2>
-                <button onClick={() => setShowDetailModal(false)} className="p-2 text-gray-400 hover:text-gray-600 rounded-xl hover:bg-gray-100 transition-colors">
+                <h2 className="text-lg font-semibold text-text-primary">{selectedPipeline.name}</h2>
+                <button onClick={() => setShowDetailModal(false)} className="p-2 text-text-muted hover:text-text-secondary rounded-lg hover:bg-page-bg transition-colors">
                   <X className="w-5 h-5" />
                 </button>
               </div>
@@ -2941,13 +2994,13 @@ export default function SmartParser() {
               <div className="flex gap-2 mb-4">
                 <button
                   onClick={() => { setShowDetailModal(false); openEdit(selectedPipeline); }}
-                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-600 rounded-xl hover:bg-indigo-100 transition-colors text-sm font-medium"
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-primary/10 text-primary rounded-lg hover:bg-primary/20 transition-colors text-sm font-medium"
                 >
                   <Edit3 className="w-4 h-4" /> 编辑
                 </button>
                 <button
                   onClick={() => { toggleActive(selectedPipeline.id!); setShowDetailModal(false); }}
-                  className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-xl transition-colors text-sm font-medium ${
+                  className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg transition-colors text-sm font-medium ${
                     selectedPipeline.isActive 
                       ? 'bg-amber-50 text-amber-600 hover:bg-amber-100' 
                       : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100'
@@ -2958,7 +3011,7 @@ export default function SmartParser() {
                 </button>
                 <button
                   onClick={() => { setShowDetailModal(false); setShowDeleteConfirm(selectedPipeline); }}
-                  className="flex items-center justify-center gap-2 px-4 py-2 bg-rose-50 text-rose-600 rounded-xl hover:bg-rose-100 transition-colors text-sm font-medium"
+                  className="flex items-center justify-center gap-2 px-4 py-2 bg-rose-50 text-rose-600 rounded-lg hover:bg-rose-100 transition-colors text-sm font-medium"
                 >
                   <Trash2 className="w-4 h-4" /> 删除
                 </button>
@@ -2966,56 +3019,56 @@ export default function SmartParser() {
               
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-4 text-sm">
-                  <div className="p-4 bg-gray-50 rounded-xl">
-                    <div className="text-gray-500 text-xs mb-1">解析器</div>
-                    <div className="text-gray-900 font-semibold">{selectedPipeline.parser}</div>
+                  <div className="p-4 bg-page-bg rounded-lg">
+                    <div className="text-text-secondary text-xs mb-1">解析器</div>
+                    <div className="text-text-primary font-semibold">{selectedPipeline.parser}</div>
                   </div>
-                  <div className="p-4 bg-gray-50 rounded-xl">
-                    <div className="text-gray-500 text-xs mb-1">优先级</div>
-                    <div className="text-gray-900 font-semibold">{selectedPipeline.priority}</div>
+                  <div className="p-4 bg-page-bg rounded-lg">
+                    <div className="text-text-secondary text-xs mb-1">优先级</div>
+                    <div className="text-text-primary font-semibold">{selectedPipeline.priority}</div>
                   </div>
-                  <div className="p-4 bg-gray-50 rounded-xl">
-                    <div className="text-gray-500 text-xs mb-1">状态</div>
-                    <div className={selectedPipeline.isActive ? 'text-emerald-600 font-semibold' : 'text-gray-500'}>
+                  <div className="p-4 bg-page-bg rounded-lg">
+                    <div className="text-text-secondary text-xs mb-1">状态</div>
+                    <div className={selectedPipeline.isActive ? 'text-emerald-600 font-semibold' : 'text-text-secondary'}>
                       {selectedPipeline.isActive ? '运行中' : '已暂停'}
                     </div>
                   </div>
-                  <div className="p-4 bg-gray-50 rounded-xl">
-                    <div className="text-gray-500 text-xs mb-1">解析模式</div>
-                    <div className="text-gray-900 font-semibold">{selectedPipeline.mode === 'multi' ? '智能多格式' : '单一格式'}</div>
+                  <div className="p-4 bg-page-bg rounded-lg">
+                    <div className="text-text-secondary text-xs mb-1">解析模式</div>
+                    <div className="text-text-primary font-semibold">{selectedPipeline.mode === 'multi' ? '智能多格式' : '单一格式'}</div>
                   </div>
                 </div>
 
                 {selectedPipeline.description && (
-                  <div className="p-4 bg-gray-50 rounded-xl">
-                    <div className="text-gray-500 text-xs mb-1">描述</div>
-                    <div className="text-gray-900 text-sm">{selectedPipeline.description}</div>
+                  <div className="p-4 bg-page-bg rounded-lg">
+                    <div className="text-text-secondary text-xs mb-1">描述</div>
+                    <div className="text-text-primary text-sm">{selectedPipeline.description}</div>
                   </div>
                 )}
 
                 {(selectedPipeline.logTypeName || selectedPipeline.storageTableName || selectedPipeline.formatTemplateName) && (
-                  <div className="p-4 bg-gray-50 rounded-xl">
-                    <div className="text-gray-500 text-xs mb-3">关联配置</div>
+                  <div className="p-4 bg-page-bg rounded-lg">
+                    <div className="text-text-secondary text-xs mb-3">关联配置</div>
                     <div className="space-y-2">
                       {selectedPipeline.logTypeName && (
                         <div className="flex items-center gap-2 text-sm">
-                          <Layers className="w-4 h-4 text-indigo-600" />
-                          <span className="text-gray-600">日志类型:</span>
-                          <span className="text-gray-900 font-medium">{selectedPipeline.logTypeName}</span>
+                          <Layers className="w-4 h-4 text-primary" />
+                          <span className="text-text-secondary">日志类型:</span>
+                          <span className="text-text-primary font-medium">{selectedPipeline.logTypeName}</span>
                         </div>
                       )}
                       {selectedPipeline.storageTableName && (
                         <div className="flex items-center gap-2 text-sm">
-                          <Database className="w-4 h-4 text-indigo-600" />
-                          <span className="text-gray-600">存储表:</span>
-                          <span className="text-gray-900 font-medium">{selectedPipeline.storageTableName}</span>
+                          <Database className="w-4 h-4 text-primary" />
+                          <span className="text-text-secondary">存储表:</span>
+                          <span className="text-text-primary font-medium">{selectedPipeline.storageTableName}</span>
                         </div>
                       )}
                       {selectedPipeline.formatTemplateName && (
                         <div className="flex items-center gap-2 text-sm">
-                          <FileJson className="w-4 h-4 text-indigo-600" />
-                          <span className="text-gray-600">格式模板:</span>
-                          <span className="text-gray-900 font-medium">{selectedPipeline.formatTemplateName}</span>
+                          <FileJson className="w-4 h-4 text-primary" />
+                          <span className="text-text-secondary">格式模板:</span>
+                          <span className="text-text-primary font-medium">{selectedPipeline.formatTemplateName}</span>
                         </div>
                       )}
                     </div>
@@ -3024,17 +3077,17 @@ export default function SmartParser() {
 
                 {selectedPipeline.fieldMappings && selectedPipeline.fieldMappings.length > 0 && (
                   <div>
-                    <h3 className="text-sm font-medium text-gray-900 mb-3">字段映射</h3>
+                    <h3 className="text-sm font-medium text-text-primary mb-3">字段映射</h3>
                     <div className="space-y-2">
                       {selectedPipeline.fieldMappings.map((fm, i) => (
-                        <div key={i} className="flex items-center justify-between p-3 bg-gray-50 rounded-xl text-sm">
-                          <span className="text-gray-600 font-mono">{fm.sourceField}</span>
-                          <ChevronRight className="w-4 h-4 text-gray-400" />
-                          <span className="text-gray-900 font-mono">{fm.targetField}</span>
+                        <div key={i} className="flex items-center justify-between p-3 bg-page-bg rounded-lg text-sm">
+                          <span className="text-text-secondary font-mono">{fm.sourceField}</span>
+                          <ChevronRight className="w-4 h-4 text-text-muted" />
+                          <span className="text-text-primary font-mono">{fm.targetField}</span>
                           {fm.defaultValue && (
                             <span className="text-xs text-amber-600" title="默认值">= {fm.defaultValue}</span>
                           )}
-                          <span className="px-2 py-0.5 text-xs bg-indigo-100 text-indigo-600 rounded-lg font-medium">{fm.type}</span>
+                          <span className="px-2 py-0.5 text-xs bg-primary/20 text-primary rounded-lg font-medium">{fm.type}</span>
                         </div>
                       ))}
                     </div>
@@ -3057,19 +3110,19 @@ export default function SmartParser() {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white border border-gray-200 rounded-2xl p-6 w-full max-w-sm shadow-2xl"
+              className="bg-card-bg border border-border-color rounded-xl p-6 w-full max-w-sm shadow-2xl"
               onClick={e => e.stopPropagation()}
             >
               <div className="flex items-center gap-3 mb-4">
                 <div className="w-12 h-12 rounded-full bg-rose-100 flex items-center justify-center">
                   <AlertCircle className="w-6 h-6 text-rose-600" />
                 </div>
-                <h2 className="text-lg font-semibold text-gray-900">确认删除</h2>
+                <h2 className="text-lg font-semibold text-text-primary">确认删除</h2>
               </div>
-              <p className="text-gray-600 mb-6">确定要删除解析管道 <span className="font-semibold text-gray-900">{showDeleteConfirm.name}</span> 吗？</p>
+              <p className="text-text-secondary mb-6">确定要删除解析管道 <span className="font-semibold text-text-primary">{showDeleteConfirm.name}</span> 吗？</p>
               <div className="flex justify-end gap-3">
-                <button onClick={() => setShowDeleteConfirm(null)} className="px-6 py-2 text-gray-600 hover:text-gray-900 text-sm font-medium transition-colors">取消</button>
-                <button onClick={handleDelete} className="px-6 py-2 bg-rose-600 text-white rounded-xl hover:bg-rose-700 text-sm font-medium transition-colors">确认删除</button>
+                <button onClick={() => setShowDeleteConfirm(null)} className="px-4 py-2 text-text-secondary hover:text-text-primary text-sm font-medium transition-colors">取消</button>
+                <button onClick={handleDelete} className="px-4 py-2 bg-rose-600 text-white rounded-lg hover:bg-rose-700 text-sm font-medium">确认删除</button>
               </div>
             </motion.div>
           </motion.div>

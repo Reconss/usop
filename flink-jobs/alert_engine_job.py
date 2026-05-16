@@ -13,11 +13,12 @@ Flink 告警引擎任务
 """
 
 from pyflink.datastream import StreamExecutionEnvironment, TimeCharacteristic
+import os
 from pyflink.datastream.connectors.kafka import KafkaSource, KafkaOffsetsInitializer
 from pyflink.datastream.connectors.kafka import KafkaSink, KafkaRecordSerializationSchema
-from pyflink.datastream.formats.json import JsonRowSerializationSchema
+from pyflink.datastream.formats.json import JsonRowSerializationSchema, JsonRowDeserializationSchema
 from pyflink.common.typeinfo import Types
-from pyflink.common import Row, Time
+from pyflink.common import Row, WatermarkStrategy, Time
 from pyflink.datastream.window import SlidingEventTimeWindows, TumblingEventTimeWindows
 import json
 import re
@@ -288,7 +289,7 @@ def create_flink_job():
     
     # 创建执行环境
     env = StreamExecutionEnvironment.get_execution_environment()
-    env.set_parallelism(4)
+    env.set_parallelism(int(os.environ.get('JOB_PARALLELISM', '1')))
     env.set_stream_time_characteristic(TimeCharacteristic.EventTime)
     
     # 配置 Kafka Source (消费解析后日志)
@@ -299,14 +300,14 @@ def create_flink_job():
         .set_starting_offsets(KafkaOffsetsInitializer.earliest()) \
         .set_value_only_deserializer(JsonRowDeserializationSchema.builder()
             .type_info(Types.ROW_NAMED(
-                ['id', 'source_id', 'log_type', 'timestamp', 'src_ip', 'dst_ip', 
+                ['id', 'source_id', 'log_type', 'timestamp', 'src_ip', 'dst_ip',
                  'username', 'action', 'result', 'raw_message', 'details'],
-                Types.STRING, Types.INT, Types.STRING, Types.STRING, Types.STRING,
-                Types.STRING, Types.STRING, Types.STRING, Types.STRING, Types.STRING, Types.STRING
+                [Types.STRING(), Types.INT(), Types.STRING(), Types.STRING(), Types.STRING(),
+                 Types.STRING(), Types.STRING(), Types.STRING(), Types.STRING(), Types.STRING(), Types.STRING()]
             ))
             .build()) \
         .build()
-    
+
     # 添加 Kafka Source
     stream = env.from_source(
         kafka_source,
@@ -371,14 +372,14 @@ def create_flink_job():
                 .with_type_info(Types.ROW_NAMED(
                     ['id', 'rule_id', 'rule_name', 'severity', 'alert_type',
                      'message', 'src_ip', 'dst_ip', 'username', 'source_id', 'timestamp', 'details'],
-                    Types.STRING, Types.STRING, Types.STRING, Types.INT, Types.STRING,
-                    Types.STRING, Types.STRING, Types.STRING, Types.STRING, Types.INT, Types.STRING, Types.STRING
+                    [Types.STRING(), Types.STRING(), Types.STRING(), Types.INT(), Types.STRING(),
+                     Types.STRING(), Types.STRING(), Types.STRING(), Types.STRING(), Types.INT(), Types.STRING(), Types.STRING()]
                 ))
                 .build())
             .build()) \
         .build()
     
-    alerts.add_sink(kafka_sink)
+    alerts.sink_to(kafka_sink)
     
     # 打印告警到控制台 (用于调试)
     alerts.print()

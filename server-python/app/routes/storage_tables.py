@@ -22,6 +22,7 @@ class StorageTable(db.Model):
     retention_days = db.Column(db.Integer, default=90)
     partition_interval = db.Column(db.String(20), default='1天')
     indexes = db.Column(db.JSON, default=list)
+    columns = db.Column(db.JSON, default=list)
     row_count = db.Column(db.BigInteger, default=0)
     size = db.Column(db.String(20))
     compression = db.Column(db.Boolean, default=True)
@@ -41,6 +42,7 @@ class StorageTable(db.Model):
             'retentionDays': self.retention_days,
             'partitionInterval': self.partition_interval,
             'indexes': self.indexes or [],
+            'columns': self.columns or [],
             'rowCount': self.row_count or 0,
             'size': self.size or '0 MB',
             'compression': self.compression,
@@ -101,6 +103,7 @@ def create_storage_table():
         retention_days=data.get('retentionDays', 90),
         partition_interval=data.get('partitionInterval', '1天'),
         indexes=data.get('indexes', []),
+        columns=data.get('columns', []),
         compression=data.get('compression', True),
         auto_created=False
     )
@@ -130,6 +133,8 @@ def update_storage_table(table_id):
         table.partition_interval = data['partitionInterval']
     if 'indexes' in data:
         table.indexes = data['indexes']
+    if 'columns' in data:
+        table.columns = data['columns']
     if 'compression' in data:
         table.compression = data['compression']
     

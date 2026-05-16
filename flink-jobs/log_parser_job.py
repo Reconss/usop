@@ -11,9 +11,10 @@ from pyflink.datastream.connectors.kafka import KafkaSource, KafkaSink, KafkaOff
 from pyflink.datastream.connectors.kafka import KafkaRecordSerializationSchema
 from pyflink.datastream.formats.json import JsonRowDeserializationSchema, JsonRowSerializationSchema
 from pyflink.common.typeinfo import Types
-from pyflink.common import Row
+from pyflink.common import Row, WatermarkStrategy
 import json
 import re
+import os
 from datetime import datetime
 from typing import Dict, Any, Optional
 import logging
@@ -259,18 +260,18 @@ class TimescaleDBSink:
 
 def create_flink_job():
     """创建 Flink 日志解析任务"""
-    
+
     env = StreamExecutionEnvironment.get_execution_environment()
-    env.set_parallelism(4)
-    
+    env.set_parallelism(int(os.environ.get('JOB_PARALLELISM', '1')))
+
     # Kafka Source (消费原始日志)
     kafka_source = KafkaSource.builder() \
-        .set_bootstrap_servers("kafka:29092") \
+        .set_bootstrap_servers(os.environ.get('KAFKA_BOOTSTRAP_SERVERS', 'kafka:29092')) \
         .set_topics("raw-logs") \
         .set_group_id("flink-log-parser") \
         .set_starting_offsets(KafkaOffsetsInitializer.earliest()) \
         .set_value_only_deserializer(JsonRowDeserializationSchema.builder()
-            .type_info(Types.ROW(Types.STRING, Types.STRING, Types.STRING, Types.STRING))
+            .type_info(Types.ROW([Types.STRING(), Types.STRING(), Types.STRING(), Types.STRING(), Types.STRING(), Types.STRING()]))
             .build()) \
         .build()
     
@@ -282,15 +283,15 @@ def create_flink_job():
     
     # Kafka Sink (输出解析后日志)
     kafka_sink = KafkaSink.builder() \
-        .set_bootstrap_servers("kafka:29092") \
+        .set_bootstrap_servers(os.environ.get('KAFKA_BOOTSTRAP_SERVERS', 'kafka:29092')) \
         .set_record_serializer(KafkaRecordSerializationSchema.builder()
             .set_topic("parsed-logs")
             .set_value_serialization_schema(JsonRowSerializationSchema.builder()
                 .with_type_info(Types.ROW_NAMED(
                     ['id', 'source_id', 'log_type', 'timestamp', 'src_ip', 'dst_ip',
                      'username', 'action', 'result', 'raw_message', 'details'],
-                    Types.STRING, Types.INT, Types.STRING, Types.STRING, Types.STRING,
-                    Types.STRING, Types.STRING, Types.STRING, Types.STRING, Types.STRING, Types.STRING
+                    [Types.STRING(), Types.INT(), Types.STRING(), Types.STRING(), Types.STRING(),
+                     Types.STRING(), Types.STRING(), Types.STRING(), Types.STRING(), Types.STRING(), Types.STRING()]
                 ))
                 .build())
             .build()) \
@@ -298,11 +299,11 @@ def create_flink_job():
     
     # TimescaleDB Sink
     tsdb_sink = TimescaleDBSink(
-        host='timescale',
-        port=5432,
-        database='timescale',
-        user='postgres',
-        password='timescale_pass'
+        host=os.environ.get('TIMESCALE_HOST', 'timescale'),
+        port=int(os.environ.get('TIMESCALE_PORT', '5432')),
+        database=os.environ.get('TIMESCALE_DB', 'postgres'),
+        user=os.environ.get('TIMESCALE_USER', 'postgres'),
+        password=os.environ.get('TIMESCALE_PASSWORD', 'postgres')
     )
     
     # 处理函数
@@ -346,7 +347,7 @@ def create_flink_job():
     parsed_stream = stream.map(process_log).filter(lambda x: x is not None)
     
     # 输出到 Kafka
-    parsed_stream.add_sink(kafka_sink)
+    parsed_stream.sink_to(kafka_sink)
     
     # 打印到控制台 (用于调试)
     parsed_stream.print()

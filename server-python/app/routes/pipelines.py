@@ -63,12 +63,13 @@ def create_pipeline():
         if not product:
             return jsonify({'success': False, 'error': '产品不存在'}), 400
     
-    # 验证格式模板存在
-    format_id = data.get('format_id')
+    # 格式模板关联（可选，允许引用预设/内置格式）
+    format_id = data.get('format_id') or None
     if format_id:
         from app.models import FormatTemplate
         format_template = FormatTemplate.query.get(format_id)
-        if not format_template:
+        # 仅当 format_id 看起来像 DB 记录时才严格要求存在
+        if format_template is None and format_id.isdigit():
             return jsonify({'success': False, 'error': '格式模板不存在'}), 400
     
     # 验证下一管道是否存在
@@ -82,7 +83,9 @@ def create_pipeline():
         name=data['name'],
         description=data.get('description'),
         product_id=product_id,
+        log_type_id=data.get('log_type_id'),
         format_id=format_id,
+        output_table_id=data.get('output_table_id'),
         input_format=data.get('input_format', 'json'),
         input_config=data.get('input_config', {}),
         field_mapping=data.get('field_mapping', {}),
@@ -122,14 +125,18 @@ def update_pipeline(id):
         pipeline.description = data['description']
     if 'product_id' in data:
         pipeline.product_id = data['product_id']
+    if 'log_type_id' in data:
+        pipeline.log_type_id = data['log_type_id']
     if 'format_id' in data:
-        # 验证格式模板存在
         if data['format_id']:
             from app.models import FormatTemplate
             format_template = FormatTemplate.query.get(data['format_id'])
-            if not format_template:
+            # 仅当 format_id 看起来像 DB 数值记录时才严格要求存在
+            if format_template is None and data['format_id'].isdigit():
                 return jsonify({'success': False, 'error': '格式模板不存在'}), 400
         pipeline.format_id = data['format_id']
+    if 'output_table_id' in data:
+        pipeline.output_table_id = data['output_table_id']
     if 'input_format' in data:
         pipeline.input_format = data['input_format']
     if 'input_config' in data:
@@ -588,38 +595,90 @@ def delete_format(format_id):
 @pipelines_bp.route('/templates', methods=['GET'])
 @login_required
 def list_templates():
-    """获取预设解析模板"""
-    templates = [
+    """获取解析模板（含预设模板 + 用户自定义模板）"""
+    from app.models import FormatTemplate as FtModel
+
+    # 预设模板
+    presets = [
         {
-            'id': 'nginx_access',
+            'id': 'preset_nginx_access',
             'name': 'Nginx Access Log',
-            'format': 'grok',
+            'type': 'grok',
             'pattern': '%{IPV4:client_ip} - %{WORD:user} \\[%{HTTPDATE:timestamp}\\] "%{WORD:method} %{URIPATHPARAM:request} HTTP/%{NUMBER:http_version}" %{NUMBER:status:int} %{NUMBER:bytes:int}',
-            'description': '标准Nginx访问日志'
+            'description': '标准Nginx访问日志',
+            'is_system': True,
+            'parserType': 'grok',
+            'parserConfig': {'grokPattern': '%{IPV4:client_ip} - %{WORD:user} \\[%{HTTPDATE:timestamp}\\] "%{WORD:method} %{URIPATHPARAM:request} HTTP/%{NUMBER:http_version}" %{NUMBER:status:int} %{NUMBER:bytes:int}'},
+            'fields': [],
+            'fieldCount': 0,
+            'category': 'web',
         },
         {
-            'id': 'firewall_iptables',
+            'id': 'preset_iptables',
             'name': 'IPTables Firewall',
-            'format': 'syslog',
-            'description': 'Linux iptables防火墙日志'
+            'type': 'syslog',
+            'description': 'Linux iptables防火墙日志',
+            'is_system': True,
+            'parserType': 'syslog',
+            'parserConfig': {},
+            'fields': [],
+            'fieldCount': 0,
+            'category': 'system',
         },
         {
-            'id': 'aws_waf',
+            'id': 'preset_aws_waf',
             'name': 'AWS WAF',
-            'format': 'json',
-            'description': 'AWS WAF日志格式'
+            'type': 'json',
+            'description': 'AWS WAF日志格式',
+            'is_system': True,
+            'parserType': 'json',
+            'parserConfig': {},
+            'fields': [],
+            'fieldCount': 0,
+            'category': 'application',
         },
         {
-            'id': 'cef_generic',
+            'id': 'preset_cef',
             'name': 'CEF通用格式',
-            'format': 'syslog',
-            'description': '通用CEF格式，安全设备通用'
-        }
+            'type': 'syslog',
+            'description': '通用CEF格式，安全设备通用',
+            'is_system': True,
+            'parserType': 'syslog',
+            'parserConfig': {},
+            'fields': [],
+            'fieldCount': 0,
+            'category': 'security',
+        },
     ]
-    
+
+    # 用户自定义模板 (从 format_templates 表)
+    try:
+        db_templates = FtModel.query.order_by(FtModel.priority, FtModel.name).all()
+        user_templates = [
+            {
+                'id': str(t.id),
+                'name': t.name,
+                'type': t.type or 'json',
+                'description': t.description or '',
+                'is_system': False,
+                'parserType': t.type or 'json',
+                'parserConfig': t.input_config or {},
+                'fields': t.fields or [],
+                'fieldCount': len(t.fields) if isinstance(t.fields, list) else 0,
+                'category': t.log_type_id or 'other',
+                'sample': t.sample,
+                'grok_pattern': t.grok_pattern,
+                'regex_pattern': t.regex_pattern,
+                'delimiter': t.delimiter,
+            }
+            for t in db_templates
+        ]
+    except Exception:
+        user_templates = []
+
     return jsonify({
         'success': True,
-        'data': templates
+        'data': presets + user_templates
     })
 
 

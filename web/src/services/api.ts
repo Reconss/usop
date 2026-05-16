@@ -31,10 +31,13 @@ export async function request<T = any>(
 
   // 尝试通过代理请求（同源），失败则 fallback 到直连后端
   let response: Response;
+  let useDirectConnect = false;
+  
   try {
     response = await fetch(`${API_BASE}${endpoint}`, fetchOptions);
   } catch (proxyError) {
     // 代理不可用时（如 IDE 预览环境），直接连接后端
+    useDirectConnect = true;
     try {
       response = await fetch(`${BACKEND_FALLBACK}${API_BASE}${endpoint}`, fetchOptions);
     } catch (directError) {
@@ -42,7 +45,17 @@ export async function request<T = any>(
     }
   }
 
-  const data = await response.json();
+  // 检查响应是否为HTML（代理失败）
+  const contentType = response.headers.get('content-type') || '';
+  const responseText = await response.text();
+  
+  if (responseText.startsWith('<') && !responseText.startsWith('[{')) {
+    // 返回的是HTML而不是JSON，说明代理或直连都失败了
+    console.error('API代理失败，请求返回HTML:', responseText.substring(0, 200));
+    throw new Error(`无法连接到API服务，请确保后端服务运行在 ${useDirectConnect ? BACKEND_FALLBACK : 'localhost:5001'}`);
+  }
+  
+  const data = JSON.parse(responseText);
   
   if (!response.ok) {
     if (response.status === 401) {
@@ -246,13 +259,30 @@ export const rulesApi = {
     if (params?.search) searchParams.append('search', params.search);
     return request(`/rules-api/rules?${searchParams.toString()}`);
   },
-  
-  getRule: (id: number) => request(`/rules-api/rules/${id}`),
+
+  getRule: (id: string | number) => request(`/rules-api/rules/${id}`),
   createRule: (data: any) => request('/rules-api/rules', { method: 'POST', body: data }),
-  updateRule: (id: number, data: any) => request(`/rules-api/rules/${id}`, { method: 'PUT', body: data }),
-  deleteRule: (id: number) => request(`/rules-api/rules/${id}`, { method: 'DELETE' }),
-  toggleRule: (id: number) => request(`/rules-api/rules/${id}/toggle`, { method: 'POST' }),
-  testRule: (id: number) => request(`/rules-api/rules/${id}/test`, { method: 'POST' }),
+  updateRule: (id: string | number, data: any) => request(`/rules-api/rules/${id}`, { method: 'PUT', body: data }),
+  deleteRule: (id: string | number) => request(`/rules-api/rules/${id}`, { method: 'DELETE' }),
+  toggleRule: (id: string | number) => request(`/rules-api/rules/${id}/toggle`, { method: 'POST' }),
+  testRule: (id: string | number) => request(`/rules-api/rules/${id}/test`, { method: 'POST' }),
+
+  getFields: (dataSourceIds: (string | number)[], type?: string) => {
+    const params = new URLSearchParams();
+    if (dataSourceIds.length > 0) params.append('data_source_ids', dataSourceIds.join(','));
+    if (type) params.append('type', type);
+    return request(`/rules-api/rules/fields?${params.toString()}`);
+  },
+
+  previewRule: (id: string | number) => request(`/rules-api/rules/${id}/preview`),
+
+  /** 从存储表直接检测最近数据 */
+  testRuleFromStorage: (id: string | number, params?: { time_range_minutes?: number }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.time_range_minutes) searchParams.append('time_range_minutes', String(params.time_range_minutes));
+    const query = searchParams.toString();
+    return request(`/rules-api/rules/${id}/test-storage${query ? `?${query}` : ''}`, { method: 'POST' });
+  },
 };
 
 // Playbooks API
@@ -331,11 +361,12 @@ export const rolesApi = {
 
 // Data Sources API
 export const dataSourcesApi = {
-  getDataSources: (params?: { page?: number; page_size?: number; type?: string }) => {
+  getDataSources: (params?: { page?: number; page_size?: number; type?: string; configured?: boolean }) => {
     const searchParams = new URLSearchParams();
     if (params?.page) searchParams.append('page', String(params.page));
     if (params?.page_size) searchParams.append('page_size', String(params.page_size));
     if (params?.type) searchParams.append('type', params.type);
+    if (params?.configured) searchParams.append('configured', 'true');
     return request(`/datasources-api/datasources?${searchParams.toString()}`);
   },
   
@@ -393,9 +424,53 @@ export const logTypesApi = {
   },
   
   createLogType: (data: any) => request('/log-types-api/log-types', { method: 'POST', body: data }),
-  updateLogType: (id: number, data: any) => request(`/log-types-api/log-types/${id}`, { method: 'PUT', body: data }),
-  deleteLogType: (id: number) => request(`/log-types-api/log-types/${id}`, { method: 'DELETE' }),
+  updateLogType: (id: number | string, data: any) => request(`/log-types-api/log-types/${id}`, { method: 'PUT', body: data }),
+  deleteLogType: (id: number | string) => request(`/log-types-api/log-types/${id}`, { method: 'DELETE' }),
 };
+
+// SSE 流式读取辅助函数
+export function readSSEStream(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  onChunk: (content: string) => void,
+  onDone: (messageId?: string) => void,
+  onError: (error: string) => void,
+  abortSignal?: AbortSignal
+): Promise<void> {
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  return new Promise((resolve) => {
+    function pump(): Promise<void> {
+      if (abortSignal?.aborted) {
+        resolve();
+        return Promise.resolve();
+      }
+      return reader.read().then(({ done, value }) => {
+        if (done) { resolve(); return; }
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith('data: ')) continue;
+          const data = trimmed.slice(6);
+          if (data === '[DONE]') continue;
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.error) { onError(parsed.error); resolve(); return; }
+            if (parsed.done) { onDone(parsed.message_id); resolve(); return; }
+            if (parsed.content !== undefined) { onChunk(parsed.content); }
+          } catch { /* skip malformed frame */ }
+        }
+        return pump();
+      }).catch((err) => {
+        onError(err.message || 'SSE 读取失败');
+        resolve();
+      });
+    }
+    return pump();
+  });
+}
 
 // AI API
 export const aiApi = {
@@ -405,7 +480,7 @@ export const aiApi = {
     if (params?.page_size) searchParams.append('page_size', String(params.page_size));
     return request(`/ai-api/models?${searchParams.toString()}`);
   },
-  
+
   getModel: (id: number) => request(`/ai-api/models/${id}`),
   createModel: (data: any) => request('/ai-api/models', { method: 'POST', body: data }),
   updateModel: (id: number, data: any) => request(`/ai-api/models/${id}`, { method: 'PUT', body: data }),
@@ -417,6 +492,88 @@ export const aiApi = {
     if (params?.page_size) searchParams.append('page_size', String(params.page_size));
     return request(`/ai-api/tasks?${searchParams.toString()}`);
   },
+
+  // ========== 对话会话管理 ==========
+
+  /** 获取会话列表 */
+  getSessions: () => request('/ai-api/chat/sessions'),
+
+  /** 创建新会话 */
+  createSession: (data: { title?: string; model_id?: string; context?: Record<string, any> }) =>
+    request('/ai-api/chat/sessions', { method: 'POST', body: data }),
+
+  /** 获取会话详情 */
+  getSession: (sessionId: string) => request(`/ai-api/chat/sessions/${sessionId}`),
+
+  /** 删除会话 */
+  deleteSession: (sessionId: string) =>
+    request(`/ai-api/chat/sessions/${sessionId}`, { method: 'DELETE' }),
+
+  // ========== 消息发送与流式对话 ==========
+
+  /**
+   * 发送消息（非流式）
+   */
+  sendMessage: (sessionId: string, data: { content: string; model?: string; temperature?: number; max_tokens?: number }) =>
+    request(`/ai-api/chat/sessions/${sessionId}/messages`, {
+      method: 'POST',
+      body: { ...data, stream: false },
+    }),
+
+  /**
+   * 发送消息（流式 SSE）
+   * 返回一个 controller（AbortController）用于中断请求
+   */
+  sendMessageStream: (
+    sessionId: string,
+    params: { content: string; model?: string; temperature?: number; max_tokens?: number },
+    callbacks: {
+      onChunk: (content: string) => void;
+      onDone: (messageId?: string) => void;
+      onError: (error: string) => void;
+    },
+  ): AbortController => {
+    const controller = new AbortController();
+    const token = localStorage.getItem('token');
+    const baseUrl = window.location.origin;
+    const url = `${baseUrl}/api/ai-api/chat/sessions/${sessionId}/messages`;
+
+    fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ ...params, stream: true }),
+      signal: controller.signal,
+    }).then(async (response) => {
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        callbacks.onError(`请求失败 (${response.status}): ${text}`);
+        return;
+      }
+      const reader = response.body?.getReader();
+      if (!reader) { callbacks.onError('响应体不可读'); return; }
+      await readSSEStream(
+        reader,
+        callbacks.onChunk,
+        callbacks.onDone,
+        callbacks.onError,
+        controller.signal,
+      );
+    }).catch((err) => {
+      if (err.name === 'AbortError') return;
+      callbacks.onError(err.message || '请求失败');
+    });
+
+    return controller;
+  },
+
+  // ========== AI 分析 ==========
+
+  /** 实时安全分析 */
+  analyze: (data: { type: string; data: any }) =>
+    request('/ai-api/analyze', { method: 'POST', body: data }),
 };
 
 // Products API
@@ -576,6 +733,50 @@ export const eventActionsApi = {
     request('/event-actions-api/events/batch', { method: 'DELETE', body: { event_ids: eventIds } }),
 };
 
+// Format Templates API (ingestion formats)
+export const formatTemplatesApi = {
+  getFormats: (params?: { page?: number; page_size?: number; log_type_id?: string; status?: string }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.page) searchParams.append('page', String(params.page));
+    if (params?.page_size) searchParams.append('page_size', String(params.page_size));
+    if (params?.log_type_id) searchParams.append('log_type_id', params.log_type_id);
+    if (params?.status) searchParams.append('status', params.status);
+    const query = searchParams.toString();
+    return request(`/ingestion/formats${query ? `?${query}` : ''}`);
+  },
+
+  getFormat: (id: string) => request(`/ingestion/formats/${id}`),
+  createFormat: (data: any) => request('/ingestion/formats', { method: 'POST', body: data }),
+  updateFormat: (id: string, data: any) => request(`/ingestion/formats/${id}`, { method: 'PUT', body: data }),
+  deleteFormat: (id: string) => request(`/ingestion/formats/${id}`, { method: 'DELETE' }),
+};
+
+// Pipelines API
+export const pipelinesApi = {
+  getPipelines: (params?: { page?: number; page_size?: number; status?: string; product_id?: string }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.page) searchParams.append('page', String(params.page));
+    if (params?.page_size) searchParams.append('page_size', String(params.page_size));
+    if (params?.status) searchParams.append('status', params.status);
+    if (params?.product_id) searchParams.append('product_id', params.product_id);
+    const query = searchParams.toString();
+    return request(`/pipelines${query ? `?${query}` : ''}`);
+  },
+
+  getPipeline: (id: number) => request(`/pipelines/${id}`),
+  createPipeline: (data: any) => request('/pipelines', { method: 'POST', body: data }),
+  updatePipeline: (id: number, data: any) => request(`/pipelines/${id}`, { method: 'PUT', body: data }),
+  deletePipeline: (id: number) => request(`/pipelines/${id}`, { method: 'DELETE' }),
+  togglePipeline: (id: number) => request(`/pipelines/${id}/toggle`, { method: 'POST' }),
+  getFormats: () => request('/pipelines/formats'),
+  createFormat: (data: any) => request('/pipelines/formats', { method: 'POST', body: data }),
+  getTemplates: () => request('/pipelines/templates'),
+  parseLog: (data: { raw_log: string; pipeline_id?: number; format?: string; config?: any }) =>
+    request('/pipelines/parse', { method: 'POST', body: data }),
+  testParse: (data: { raw_log: string; format: string; config?: any }) =>
+    request('/pipelines/parse/test', { method: 'POST', body: data }),
+};
+
 // Storage Tables API
 export const storageTablesApi = {
   // 获取所有存储表
@@ -613,4 +814,14 @@ export const storageTablesApi = {
   // 批量删除存储表
   batchDelete: (ids: number[]) =>
     request('/storage-tables/batch-delete', { method: 'POST', body: { ids } }),
+};
+
+// System Config API
+export const systemConfigApi = {
+  getConfigs: () => request('/config/config'),
+  getConfig: (key: string) => request(`/config/config/${key}`),
+  updateConfig: (key: string, value: string, category?: string) =>
+    request(`/config/config/${key}`, { method: 'PUT', body: { value, category } }),
+  batchUpdate: (items: { key: string; value: string; category?: string }[]) =>
+    request('/config/config/batch', { method: 'POST', body: { items } }),
 };

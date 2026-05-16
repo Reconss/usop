@@ -757,10 +757,12 @@ def create_alerts_hypertable(session):
         
         if not table_exists:
             # 创建 alerts 表
+            # 注意: TimescaleDB hypertable 要求所有唯一索引包含分区列(first_seen)
+            # 因此不能使用 PRIMARY KEY 或 UNIQUE 约束（它们会创建不包含 first_seen 的唯一索引）
             session.execute(text("""
                 CREATE TABLE alerts (
-                    id SERIAL PRIMARY KEY,
-                    alert_code VARCHAR(20) UNIQUE NOT NULL,
+                    id SERIAL,
+                    alert_code VARCHAR(20) NOT NULL,
                     title VARCHAR(200) NOT NULL,
                     description TEXT,
                     severity VARCHAR(20) DEFAULT 'medium',
@@ -800,7 +802,9 @@ def create_alerts_hypertable(session):
                 )
             """))
             
-            # 创建索引
+            # 创建索引（不使用 UNIQUE 约束，因为 hypertable 要求唯一索引包含分区列）
+            session.execute(text("CREATE INDEX IF NOT EXISTS idx_alerts_id ON alerts(id)"))
+            session.execute(text("CREATE INDEX IF NOT EXISTS idx_alerts_alert_code ON alerts(alert_code)"))
             session.execute(text("CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity)"))
             session.execute(text("CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status)"))
             session.execute(text("CREATE INDEX IF NOT EXISTS idx_alerts_source ON alerts(source)"))
@@ -822,11 +826,23 @@ def create_alerts_hypertable(session):
                 print(f"Compression policy already exists or error: {e}")
         else:
             # 表已存在，检查是否是 hypertable
-            result = session.execute(text("""
-                SELECT 1 FROM timescaledb_information.hypertables 
-                WHERE table_name = 'alerts'
-            """))
-            if not result.fetchone():
+            try:
+                result = session.execute(text("""
+                    SELECT 1 FROM timescaledb_information.hypertables
+                    WHERE hypertable_name = 'alerts'
+                """))
+                is_hypertable = result.fetchone() is not None
+            except Exception:
+                # 兼容旧版本 TimescaleDB
+                try:
+                    result = session.execute(text("""
+                        SELECT 1 FROM timescaledb_information.hypertables
+                        WHERE table_name = 'alerts'
+                    """))
+                    is_hypertable = result.fetchone() is not None
+                except Exception:
+                    is_hypertable = False
+            if not is_hypertable:
                 # 不是 hypertable，尝试转换
                 try:
                     session.execute(text("""
@@ -1200,3 +1216,128 @@ def get_alert_trend(session, bucket: str = '1 hour',
     
     result = session.execute(query, params)
     return [dict(row._mapping) for row in result]
+
+
+def create_parsed_logs_hypertable(session) -> bool:
+    """
+    创建 parsed_logs 超表 (如不存在)
+    用于存储解析后的日志数据, 供规则引擎查询
+    """
+    try:
+        session.execute(text("""
+            CREATE TABLE IF NOT EXISTS parsed_logs (
+                id BIGSERIAL,
+                source_id VARCHAR(100),
+                log_type VARCHAR(100),
+                timestamp TIMESTAMPTZ NOT NULL,
+                src_ip VARCHAR(45),
+                dst_ip VARCHAR(45),
+                src_port INTEGER,
+                dst_port INTEGER,
+                protocol VARCHAR(20),
+                hostname VARCHAR(255),
+                username VARCHAR(255),
+                action VARCHAR(50),
+                result VARCHAR(50),
+                raw_message TEXT,
+                details JSONB DEFAULT '{}',
+                search_vector TSVECTOR
+            )
+        """))
+        session.commit()
+
+        session.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_parsed_logs_timestamp
+            ON parsed_logs (timestamp DESC)
+        """))
+        session.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_parsed_logs_log_type
+            ON parsed_logs (log_type)
+        """))
+        session.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_parsed_logs_src_ip
+            ON parsed_logs (src_ip)
+        """))
+        session.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_parsed_logs_action
+            ON parsed_logs (action)
+        """))
+
+        try:
+            session.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_parsed_logs_search
+                ON parsed_logs USING GIN (search_vector)
+            """))
+        except Exception:
+            pass
+
+        try:
+            session.execute(text("""
+                SELECT create_hypertable('parsed_logs', 'timestamp',
+                    if_not_exists => TRUE,
+                    migrate_data => TRUE
+                )
+            """))
+        except Exception as e:
+            print(f"Hypertable conversion note: {e}")
+
+        session.commit()
+        print("parsed_logs hypertable ready")
+        return True
+    except Exception as e:
+        session.rollback()
+        print(f"Error creating parsed_logs hypertable: {e}")
+        return False
+
+
+def create_alert_events_hypertable(session) -> bool:
+    """
+    创建 alert_events 超表 (如不存在)
+    用于存储规则评估触发的告警事件
+    """
+    try:
+        session.execute(text("""
+            CREATE TABLE IF NOT EXISTS alert_events (
+                id BIGSERIAL,
+                rule_id VARCHAR(50),
+                rule_name VARCHAR(200),
+                severity INTEGER DEFAULT 3,
+                alert_type VARCHAR(50),
+                message TEXT,
+                src_ip VARCHAR(45),
+                dst_ip VARCHAR(45),
+                username VARCHAR(255),
+                source_id VARCHAR(100),
+                log_ids JSONB DEFAULT '[]',
+                metadata JSONB DEFAULT '{}',
+                timestamp TIMESTAMPTZ NOT NULL
+            )
+        """))
+        session.commit()
+
+        session.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_alert_events_timestamp
+            ON alert_events (timestamp DESC)
+        """))
+        session.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_alert_events_rule_id
+            ON alert_events (rule_id)
+        """))
+
+        try:
+            session.execute(text("""
+                SELECT create_hypertable('alert_events', 'timestamp',
+                    if_not_exists => TRUE,
+                    migrate_data => TRUE
+                )
+            """))
+        except Exception as e:
+            print(f"Hypertable conversion note: {e}")
+
+        session.commit()
+        print("alert_events hypertable ready")
+        return True
+    except Exception as e:
+        session.rollback()
+        print(f"Error creating alert_events hypertable: {e}")
+        return False

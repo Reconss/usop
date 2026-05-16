@@ -232,7 +232,7 @@ case $COMMAND in
         echo "=========================================="
         echo ""
         echo "访问地址:"
-        echo "  - 前端:     http://localhost:3000"
+        echo "  - 前端:     http://localhost:3266"
         echo "  - 后端 API: http://localhost:5000"
         echo "  - Flink:    http://localhost:8081"
         echo "  - Kafka UI: http://localhost:8080"
