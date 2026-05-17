@@ -170,7 +170,7 @@ export default function DataIngestion() {
           dataSources={dataSources} 
           onMappingUpdate={handleMappingUpdate}
           onEditSource={(source) => {
-            setActiveSection('parsing'); // 跳转到解析管道配置
+            // 不自动跳转，留在当前页面
           }}
           onDeleteSource={(source) => {
             setDataSources(prev => prev.filter(s => s.id !== source.id));

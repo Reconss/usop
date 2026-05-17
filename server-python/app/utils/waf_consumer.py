@@ -10,15 +10,14 @@ from datetime import datetime
 from typing import Dict, Any, Optional
 from kafka import KafkaConsumer
 from kafka.errors import KafkaError
-from app.timescaledb import get_tsdb, insert_alert
-from app.database import db
-from app.models import DataSource, LogType
+import time
+import os
 
 logger = logging.getLogger(__name__)
 
 
 class WAFLogConsumer:
-    """WAF 日志消费者 - 从 Kafka 消费 WAF 告警并存储"""
+    """WAF 日志消费者 - 从 Kafka 消费 WAF 告警并存储到 alerts 表"""
     
     _instance = None
     _lock = threading.Lock()
@@ -26,10 +25,15 @@ class WAFLogConsumer:
     # WAF 告警严重程度映射
     SEVERITY_MAP = {
         '严重': 'critical',
+        '高危': 'high',
         '高': 'high',
         '中': 'medium',
         '低': 'low',
         '信息': 'low',
+        'critical': 'critical',
+        'high': 'high',
+        'medium': 'medium',
+        'low': 'low',
     }
     
     def __new__(cls, *args, **kwargs):
@@ -39,11 +43,12 @@ class WAFLogConsumer:
                     cls._instance = super().__new__(cls)
         return cls._instance
     
-    def __init__(self, bootstrap_servers: str = "kafka:29092"):
+    def __init__(self, bootstrap_servers: str = None):
         if hasattr(self, '_initialized'):
             return
         
-        self.bootstrap_servers = bootstrap_servers
+        # 从环境变量获取 Kafka 配置
+        self.bootstrap_servers = bootstrap_servers or os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'kafka:29092')
         self.topic = "waf-alert"
         self.group_id = "waf-consumer-group"
         self._consumer: Optional[KafkaConsumer] = None
@@ -53,23 +58,17 @@ class WAFLogConsumer:
         self._data_source_id = None
         self._log_type_id = None
         
-        # 确保数据源存在
-        self._ensure_data_source()
+        logger.info(f"WAF Consumer 初始化: Kafka={self.bootstrap_servers}, Topic={self.topic}")
     
-    def _ensure_data_source(self):
-        """确保 WAF 数据源和日志类型存在"""
-        try:
-            # 查找或创建 WAF 数据源
-            self._data_source_id = 1  # 使用已有的数据源或创建新的
-            self._log_type_id = "waf_alert"
-        except Exception as e:
-            logger.warning(f"数据源初始化: {e}")
+    def _map_severity(self, risk_level: str) -> str:
+        """映射风险等级到严重程度"""
+        return self.SEVERITY_MAP.get(risk_level, 'medium')
     
     def _parse_waf_log(self, raw_log: Dict[str, Any]) -> Dict[str, Any]:
         """
-        解析 WAF 日志为告警格式
+        解析 WAF 日志为 alerts 表格式
         
-        样例日志:
+        WAF 日志样例:
         {
             "timestamp": "2026-05-16T13:53:06.403614",
             "alert_id": "WAF-1778910786403",
@@ -88,21 +87,35 @@ class WAFLogConsumer:
             "message": "检测到SQL注入，来源IP已加入黑名单",
             "action": "log"
         }
+        
+        alerts 表字段:
+        - alert_code, title, description, severity, status, source
+        - src_ip, src_port, dst_ip, dst_port, protocol, hostname
+        - raw_log, parsed_data, first_seen, last_seen, tags, category
         """
-        # 转换严重程度
         risk_level = raw_log.get('risk_level', '中')
-        severity = self.SEVERITY_MAP.get(risk_level, 'medium')
+        severity = self._map_severity(risk_level)
         
         # 生成告警编号
         alert_id = raw_log.get('alert_id', '')
         if not alert_id:
-            import time
             alert_id = f"WAF-{int(time.time() * 1000)}"
         
-        # 构建告警数据
+        # 解析时间戳
+        timestamp = raw_log.get('timestamp', '')
+        try:
+            if isinstance(timestamp, str):
+                # 处理 ISO 格式时间戳
+                first_seen = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+            else:
+                first_seen = datetime.utcnow()
+        except Exception:
+            first_seen = datetime.utcnow()
+        
+        # 构建告警数据（匹配 alerts 表结构）
         alert_data = {
             'alert_code': alert_id,
-            'title': f"[WAF] {raw_log.get('attack_type', '未知攻击类型')} - {raw_log.get('src_ip', '未知')}",
+            'title': f"[WAF] {raw_log.get('attack_type', '未知攻击')} - {raw_log.get('src_ip', '未知')}",
             'description': raw_log.get('message', ''),
             'severity': severity,
             'status': 'new',
@@ -120,7 +133,7 @@ class WAFLogConsumer:
             'protocol': raw_log.get('protocol'),
             'hostname': raw_log.get('host'),
             
-            # 其他信息
+            # 原始数据
             'raw_log': json.dumps(raw_log, ensure_ascii=False),
             'parsed_data': {
                 'method': raw_log.get('method'),
@@ -134,29 +147,75 @@ class WAFLogConsumer:
             },
             'extra_data': {},
             
-            # 时间
-            'first_seen': raw_log.get('timestamp'),
-            'last_seen': raw_log.get('timestamp'),
-            'tags': [raw_log.get('attack_type', 'WAF'), 'waf-alert'],
+            # 时间字段（TimescaleDB 分区键）
+            'first_seen': first_seen,
+            'last_seen': first_seen,
+            
+            # 标签
+            'tags': json.dumps([raw_log.get('attack_type', 'WAF'), 'waf-alert'], ensure_ascii=False),
         }
         
         return alert_data
     
-    def _process_message(self, message: Dict[str, Any]):
-        """处理接收到的 WAF 日志消息"""
+    def _insert_to_db(self, alert_data: Dict[str, Any]) -> bool:
+        """插入告警到 TimescaleDB alerts 表"""
         try:
-            logger.info(f"收到 WAF 日志: {message.get('alert_id', 'N/A')}")
+            from app.timescaledb import get_tsdb
+            from psycopg2.extras import Json
+            from sqlalchemy import text
             
-            # 解析日志
-            alert_data = self._parse_waf_log(message)
-            
-            # 存储到 TimescaleDB
             tsdb = get_tsdb()
             session = tsdb.get_session()
             
             try:
-                alert_id = insert_alert(session, alert_data)
+                query = text("""
+                    INSERT INTO alerts (
+                        alert_code, title, description, severity, status,
+                        source, source_product, source_type, category, confidence,
+                        src_ip, src_port, dst_ip, dst_port, protocol, hostname,
+                        raw_log, parsed_data, extra_data,
+                        first_seen, last_seen, tags
+                    ) VALUES (
+                        :alert_code, :title, :description, :severity, :status,
+                        :source, :source_product, :source_type, :category, :confidence,
+                        :src_ip, :src_port, :dst_ip, :dst_port, :protocol, :hostname,
+                        :raw_log, :parsed_data, :extra_data,
+                        :first_seen, :last_seen, :tags
+                    )
+                    RETURNING id
+                """)
+                
+                params = {
+                    'alert_code': alert_data['alert_code'],
+                    'title': alert_data['title'],
+                    'description': alert_data.get('description', ''),
+                    'severity': alert_data['severity'],
+                    'status': alert_data['status'],
+                    'source': alert_data['source'],
+                    'source_product': alert_data.get('source_product', ''),
+                    'source_type': alert_data.get('source_type', ''),
+                    'category': alert_data.get('category', ''),
+                    'confidence': alert_data.get('confidence', 100.0),
+                    'src_ip': alert_data.get('src_ip'),
+                    'src_port': alert_data.get('src_port'),
+                    'dst_ip': alert_data.get('dst_ip'),
+                    'dst_port': alert_data.get('dst_port'),
+                    'protocol': alert_data.get('protocol'),
+                    'hostname': alert_data.get('hostname'),
+                    'raw_log': alert_data.get('raw_log', ''),
+                    'parsed_data': Json(alert_data.get('parsed_data', {})),
+                    'extra_data': Json(alert_data.get('extra_data', {})),
+                    'first_seen': alert_data['first_seen'],
+                    'last_seen': alert_data['last_seen'],
+                    'tags': alert_data.get('tags', '[]'),
+                }
+                
+                result = session.execute(query, params)
+                session.commit()
+                
+                alert_id = result.scalar()
                 logger.info(f"WAF 告警已存储: ID={alert_id}, alert_code={alert_data['alert_code']}")
+                return True
                 
             except Exception as e:
                 session.rollback()
@@ -164,6 +223,25 @@ class WAFLogConsumer:
                 raise
             finally:
                 tsdb.close_session(session)
+                
+        except Exception as e:
+            logger.error(f"数据库操作失败: {e}")
+            return False
+    
+    def _process_message(self, message: Dict[str, Any]):
+        """处理接收到的 WAF 日志消息"""
+        try:
+            logger.info(f"收到 WAF 日志: alert_id={message.get('alert_id', 'N/A')}, src_ip={message.get('src_ip', 'N/A')}")
+            
+            # 解析日志
+            alert_data = self._parse_waf_log(message)
+            
+            # 存储到 TimescaleDB
+            success = self._insert_to_db(alert_data)
+            if success:
+                logger.info(f"WAF 告警处理成功: {alert_data['alert_code']}")
+            else:
+                logger.error(f"WAF 告警处理失败: {alert_data['alert_code']}")
                 
         except Exception as e:
             logger.error(f"处理 WAF 日志失败: {e}")
@@ -240,28 +318,23 @@ def get_waf_consumer() -> WAFLogConsumer:
     """获取 WAF 消费者单例"""
     global _waf_consumer
     if _waf_consumer is None:
-        # 从环境变���获取 Kafka 配置
-        bootstrap_servers = "kafka:29092"  # Docker 内部使用
-        import os
-        if os.getenv('KAFKA_BOOTSTRAP_SERVERS'):
-            bootstrap_servers = os.getenv('KAFKA_BOOTSTRAP_SERVERS')
-        elif not os.path.exists('/.dockerenv'):
-            # 本地开发环境
-            bootstrap_servers = "localhost:9092"
-        
-        _waf_consumer = WAFLogConsumer(bootstrap_servers=bootstrap_servers)
+        _waf_consumer = WAFLogConsumer()
     return _waf_consumer
 
 
 def init_waf_consumer(app=None):
     """初始化 WAF 消费者（Flask 应用）"""
-    consumer = get_waf_consumer()
-    consumer.start()
-    
-    if app:
-        @app.teardown_appcontext
-        def cleanup(exception=None):
-            pass  # 可在此添加清理逻辑
+    try:
+        consumer = get_waf_consumer()
+        consumer.start()
+        logger.info("WAF 日志消费者已启动，监听 topic: waf-alert")
+        
+        if app:
+            @app.teardown_appcontext
+            def cleanup(exception=None):
+                pass
+    except Exception as e:
+        logger.error(f"WAF 消费者初始化失败: {e}")
     
     return consumer
 
@@ -272,7 +345,6 @@ if __name__ == "__main__":
     consumer = get_waf_consumer()
     consumer.start()
     
-    import time
     try:
         while True:
             time.sleep(10)

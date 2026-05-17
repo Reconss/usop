@@ -268,12 +268,19 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
     }
   };
 
-  // 打开关联配置弹窗时获取数据
+  // 打开关联配置弹窗时获取数据并恢复已保存的配置
   useEffect(() => {
-    if (showMappingModal) {
+    if (showMappingModal && selectedSource) {
+      // 从已选择的数据源恢复配置
+      const source = selectedSource as any;
+      setSelectedLogType(source.logTypeId || source.log_type_id || '');
+      const pipeIds = source.parsePipelines?.filter((p: any) => p?.id).map((p: any) => p.id) 
+        || source.pipelineIds || source.pipeline_ids || [];
+      setSelectedPipelines(pipeIds);
+      setSelectedStorageConfig(source.storageTableName || source.storage_table_name || '');
       fetchMappingData();
     }
-  }, [showMappingModal]);
+  }, [showMappingModal, selectedSource]);
 
   const fetchData = async () => {
     try {
@@ -525,13 +532,36 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
                   </div>
                   <div className="flex items-center gap-3 mt-1 text-xs text-text-secondary">
                     <button
-                      onClick={() => {
-                        setSelectedSource(source);
-                        setSelectedLogType((source as any).logTypeId || (source as any).log_type_id || '');
-                        const pipeIds = (source as any).parsePipelines?.filter((p: any) => p?.id).map((p: any) => p.id) || (source as any).pipelineIds || (source as any).pipeline_ids || [];
-                        setSelectedPipelines(pipeIds);
-                        // 从数据源已有的映射配置中恢复存储配置，等 fetchMappingData 完成后精确匹配
-                        setSelectedStorageConfig(String((source as any).storageConfigId || ''));
+                      onClick={async () => {
+                        // 点击配置按钮时直接从API获取最新数据
+                        try {
+                          const res = await dataSourcesApi.getDataSource(Number(source.id));
+                          if (res.success && res.data) {
+                            const latestSource = {
+                              ...source,
+                              ...res.data,
+                              id: String(res.data.id),
+                            };
+                            setSelectedSource(latestSource);
+                            setSelectedLogType(latestSource.log_type_id || latestSource.logTypeId || '');
+                            const pipeIds = (latestSource.pipeline_ids || latestSource.pipelineIds || []).map((id: any) => String(id));
+                            setSelectedPipelines(pipeIds);
+                            setSelectedStorageConfig(latestSource.storage_table_name || latestSource.storageTableName || '');
+                          } else {
+                            setSelectedSource(source);
+                            setSelectedLogType((source as any).logTypeId || (source as any).log_type_id || '');
+                            const pipeIds = (source.pipelineIds || source.pipeline_ids || []).map((id: any) => String(id));
+                            setSelectedPipelines(pipeIds);
+                            setSelectedStorageConfig(source.storageTableName || source.storage_table_name || '');
+                          }
+                        } catch (e) {
+                          // 失败时使用本地数据
+                          setSelectedSource(source);
+                          setSelectedLogType((source as any).logTypeId || (source as any).log_type_id || '');
+                          const pipeIds = (source.pipelineIds || source.pipeline_ids || []).map((id: any) => String(id));
+                          setSelectedPipelines(pipeIds);
+                          setSelectedStorageConfig(source.storageTableName || source.storage_table_name || '');
+                        }
                         setShowMappingModal(true);
                       }}
                       className="flex items-center gap-1 hover:text-primary transition-colors"
@@ -1076,7 +1106,7 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
                     const result = await saveMappingConfig(selectedSource.id, mappingConfig);
 
                     if (!result.success) {
-                      alert('保存关联配置失败，请检查后端服务');
+                      showToast(result.error || '保存关联配置失败，请检查后端服务', 'error');
                       return;
                     }
 

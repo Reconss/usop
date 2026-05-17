@@ -85,6 +85,46 @@ services:
       timeout: 10s
       retries: 5
 
+  # Flink 集群
+  flink-jobmanager:
+    image: flink:1.18.1-scala_2.12-java11
+    container_name: flink-jobmanager
+    ports:
+      - "8081:8081"
+    command: jobmanager
+    environment:
+      - FLINK_PROPERTIES=
+      - jobmanager.rpc.address=flink-jobmanager
+      - state.backend.filesystem
+      - state.checkpoints.dir=file:///opt/flink/checkpoints
+    volumes:
+      - ./flink-jobs:/opt/flink/jobs
+      - ./data/flink:/opt/flink/checkpoints
+    networks:
+      - log-platform
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8081/overview || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  flink-taskmanager:
+    image: flink:1.18.1-scala_2.12-java11
+    command: taskmanager
+    depends_on:
+      - flink-jobmanager
+    environment:
+      - FLINK_PROPERTIES=
+      - jobmanager.rpc.address=flink-jobmanager
+      - taskmanager.numberOfTaskSlots=4
+    volumes:
+      - ./flink-jobs:/opt/flink/jobs
+      - ./data/flink:/opt/flink/checkpoints
+    networks:
+      - log-platform
+    deploy:
+      replicas: 2
+
   # 统一后端服务（包含后端API + 前端）
   usop:
     build:
@@ -105,6 +145,10 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - FLINK_REST_API=http://flink-jobmanager:8081
+    volumes:
+      - ./server-python/app:/app/app
+      - ./web/src:/app/web/src
     depends_on:
       postgres:
         condition: service_healthy
@@ -114,9 +158,6 @@ services:
         condition: service_healthy
     networks:
       - log-platform
-    volumes:
-      - ./server-python/app:/app/app
-      - ./web/src:/app/web/src
     restart: unless-stopped
 
 networks:

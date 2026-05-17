@@ -1,13 +1,13 @@
 """
 数据源管理 API 路由 (新版)
-- Flink 流处理任务管理
+- Flink 流处理任务管理（通过 REST API）
 - 数据接入（写入 Kafka raw-logs）
 """
 from flask import Blueprint, request, jsonify
 from app.routes.auth import login_required
 from app.database import db
 from app.models import DataSource, Pipeline, FormatTemplate
-import subprocess
+import os
 import json
 import requests
 import uuid
@@ -19,107 +19,123 @@ logger = logging.getLogger(__name__)
 
 data_sources_api_bp = Blueprint('data_sources_api', __name__)
 
-# Flink 配置
-FLINK_REST_API = 'http://localhost:8081'
+# Flink REST API 配置（支持远程连接）
+FLINK_REST_API = os.getenv('FLINK_REST_API', 'http://flink-jobmanager:8081')
 
 # Kafka 配置
-KAFKA_BOOTSTRAP_SERVERS = 'localhost:9092'
+KAFKA_BOOTSTRAP_SERVERS = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'kafka:29092')
 
 # 共享 Flink 作业名称
 LOG_PARSER_JOB_NAME = 'Log Parser Job'
 ALERT_ENGINE_JOB_NAME = 'Alert Engine Job'
 
-# PyFlink 脚本路径（在 Flink 容器内）
-LOG_PARSER_SCRIPT = '/opt/flink/jobs/log_parser_job.py'
-ALERT_ENGINE_SCRIPT = '/opt/flink/jobs/alert_engine_job.py'
 
-_kafka_producer = None
-
-
-def _get_kafka_producer() -> KafkaProducer:
-    """获取 Kafka 生产者（单例）"""
-    global _kafka_producer
-    if _kafka_producer is None:
-        try:
-            _kafka_producer = KafkaProducer(
-                bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
-                value_serializer=lambda v: json.dumps(v).encode('utf-8'),
-                acks='all',
-                retries=3,
-            )
-        except Exception as e:
-            logger.warning(f"Kafka 生产者创建失败: {e}")
-    return _kafka_producer
+def _check_flink_connection() -> tuple[bool, str]:
+    """检查 Flink 连接状态"""
+    try:
+        resp = requests.get(f"{FLINK_REST_API}/overview", timeout=5)
+        if resp.status_code == 200:
+            return True, ""
+        return False, f"Flink 返回状态码 {resp.status_code}"
+    except requests.exceptions.ConnectionError:
+        return False, f"无法连接 Flink 集群 ({FLINK_REST_API})，请确认 Flink 服务已启动"
+    except requests.exceptions.Timeout:
+        return False, f"Flink 连接超时 ({FLINK_REST_API})"
+    except Exception as e:
+        return False, f"Flink 连接错误: {str(e)}"
 
 
-def _find_flink_job_by_name(job_name: str) -> tuple[str | None, str | None]:
-    """通过 Flink REST API 按名称查找运行中的作业"""
+def _list_flink_jobs() -> tuple[list, str | None]:
+    """获取 Flink 作业列表"""
     try:
         resp = requests.get(f"{FLINK_REST_API}/jobs", timeout=5)
-        if resp.status_code != 200:
-            return None, f"Flink REST API 返回 {resp.status_code}"
-        jobs = resp.json().get('jobs', [])
-        for job in jobs:
-            if job.get('name') == job_name and job.get('status') == 'RUNNING':
-                return job.get('id'), None
-        return None, f"未找到运行中的作业 '{job_name}'"
-    except requests.exceptions.ConnectionError:
-        logger.error(f"无法连接 Flink REST API ({FLINK_REST_API})")
-        return None, f"无法连接 Flink 集群 ({FLINK_REST_API})，请确认 Flink 容器是否运行"
+        if resp.status_code == 200:
+            data = resp.json()
+            return data.get('jobs', []), None
+        return [], f"Flink 返回状态码 {resp.status_code}"
     except Exception as e:
-        logger.warning(f"查询 Flink 作业列表失败: {e}")
+        logger.error(f"查询 Flink 作业列表失败: {e}")
+        return [], str(e)
+
+
+def _get_flink_job_status(job_id: str) -> tuple[str | None, str | None]:
+    """获取 Flink 作业状态"""
+    try:
+        resp = requests.get(f"{FLINK_REST_API}/jobs/{job_id}", timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            return data.get('state'), None
+        return None, f"Flink 返回状态码 {resp.status_code}"
+    except Exception as e:
+        logger.error(f"查询 Flink 作业状态失败: {e}")
         return None, str(e)
 
 
-def _submit_pyflink_job(script_path: str, job_name: str) -> tuple[str | None, str | None]:
-    """通过 Docker exec 提交 PyFlink 作业到 Flink 集群"""
+def _cancel_flink_job(job_id: str) -> tuple[bool, str | None]:
+    """取消 Flink 作业"""
     try:
-        # 先检查是否已经在运行
-        existing, err = _find_flink_job_by_name(job_name)
-        if existing:
-            logger.info(f"作业 {job_name} 已在运行 (JobID={existing})")
-            return existing, None
-
-        result = subprocess.run(
-            [
-                "docker", "exec", "-i", "flink",
-                "flink", "run", "-d",
-                "-p", "1",
-                "-py", script_path
-            ],
-            capture_output=True, text=True, timeout=120,
+        resp = requests.patch(
+            f"{FLINK_REST_API}/jobs/{job_id}?mode=cancel",
+            timeout=30
         )
-        logger.info(f"提交 {job_name} stdout: {result.stdout}")
-        if result.stderr:
-            logger.warning(f"提交 {job_name} stderr: {result.stderr}")
-
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout or '').strip()[:500]
-            logger.error(f"提交 {job_name} 失败 (rc={result.returncode}): {detail}")
-            return None, f"docker exec 返回码 {result.returncode}: {detail}"
-
-        # 解析 JobID：输出包含 "Job has been submitted with JobID <id>"
-        for line in (result.stdout or '').split('\n'):
-            if 'JobID' in line:
-                parts = line.split('JobID')
-                if len(parts) > 1:
-                    job_id = parts[-1].strip()
-                    logger.info(f"{job_name} 提交成功, JobID={job_id}")
-                    return job_id, None
-
-        # 回退：通过 API 查找新提交的作业
-        return _find_flink_job_by_name(job_name)
-
-    except subprocess.TimeoutExpired:
-        msg = f"提交 {job_name} 超时 (120s)"
-        logger.error(msg)
-        return None, msg
-    except FileNotFoundError:
-        msg = "docker 命令不可用，请确认 Docker 已安装且当前用户有权限"
-        logger.error(msg)
-        return None, msg
+        if resp.status_code in (204, 200):
+            return True, None
+        return False, f"取消失败，返回状态码 {resp.status_code}"
     except Exception as e:
-        logger.error(f"提交 {job_name} 失败: {e}")
+        logger.error(f"取消 Flink 作业失败: {e}")
+        return False, str(e)
+
+
+def _submit_flink_job(jar_id: str, entry_class: str, args: str = "") -> tuple[str | None, str | None]:
+    """提交 Flink 作业（通过 REST API）"""
+    try:
+        payload = {
+            "entryClass": entry_class,
+            "programArgs": args,
+            "parallelism": 1
+        }
+        resp = requests.post(
+            f"{FLINK_REST_API}/jars/{jar_id}/run",
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=60
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            job_id = data.get('jobid')
+            if job_id:
+                logger.info(f"Flink 作业提交成功，JobID={job_id}")
+                return job_id, None
+        return None, f"提交失败，返回状态码 {resp.status_code}: {resp.text}"
+    except requests.exceptions.Timeout:
+        return None, "提交超时 (60s)"
+    except Exception as e:
+        logger.error(f"提交 Flink 作业失败: {e}")
+        return None, str(e)
+
+
+def _upload_flink_jar(jar_path: str) -> tuple[str | None, str | None]:
+    """上传 JAR 文件到 Flink"""
+    try:
+        with open(jar_path, 'rb') as f:
+            resp = requests.post(
+                f"{FLINK_REST_API}/jars/upload",
+                files={'jarfile': (jar_path, f, 'application/java-archive')},
+                timeout=120
+            )
+        if resp.status_code == 200:
+            data = resp.json()
+            filename = data.get('filename', '')
+            # 提取 jar_id
+            jar_id = filename.split('/')[-1] if filename else None
+            if jar_id:
+                logger.info(f"JAR 上传成功: {jar_id}")
+                return jar_id, None
+        return None, f"上传失败: {resp.status_code}"
+    except FileNotFoundError:
+        return None, f"JAR 文件不存在: {jar_path}"
+    except Exception as e:
+        logger.error(f"上传 JAR 失败: {e}")
         return None, str(e)
 
 
@@ -127,52 +143,81 @@ def _submit_pyflink_job(script_path: str, job_name: str) -> tuple[str | None, st
 @login_required
 def list_datasources():
     """获取数据源列表"""
-    page = request.args.get('page', 1, type=int)
-    page_size = request.args.get('page_size', request.args.get('limit', 20, type=int), type=int)
-    status = request.args.get('status')
-    source_type = request.args.get('type')
-    product_id = request.args.get('product_id', type=int)
-    configured = request.args.get('configured')
+    try:
+        # 获取 PostgreSQL 数据源
+        sources = DataSource.query.order_by(DataSource.created_at.desc()).all()
+        
+        # 获取关联的管道信息
+        result = []
+        for s in sources:
+            item = {
+                'id': s.id,
+                'name': s.name,
+                'protocol': s.protocol,
+                'host': s.host,
+                'port': s.port,
+                'status': s.status,
+                'created_at': s.created_at.isoformat() if s.created_at else None,
+                # 关联配置
+                'log_type_id': s.log_type_id,
+                'log_type_name': s.log_type_name,
+                'pipeline_ids': s.pipeline_ids or [],
+                'pipeline_names': s.pipeline_names or [],
+                'format_template_id': s.format_template_id,
+                'format_template_name': s.format_template_name,
+                'storage_table_name': s.storage_table_name,
+                'storage_retention_days': s.storage_retention_days,
+                # Flink
+                'flink_job_status': s.flink_job_status if hasattr(s, 'flink_job_status') else None,
+                'flink_job_id': s.flink_job_id if hasattr(s, 'flink_job_id') else None,
+            }
+            result.append(item)
+        
+        # 检查 Flink 连接状态
+        flink_ok, flink_msg = _check_flink_connection()
+        
+        return jsonify({
+            'success': True,
+            'data': {
+                'items': result,
+                'total': len(result),
+                'flink': {
+                    'connected': flink_ok,
+                    'message': flink_msg or '正常'
+                }
+            }
+        })
+    except Exception as e:
+        logger.error(f"获取数据源列表失败: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
-    query = DataSource.query
 
-    if configured == 'true':
-        query = query.filter(
-            DataSource.log_type_id.isnot(None),
-            DataSource.storage_table_name.isnot(None)
-        )
-    if status:
-        query = query.filter(DataSource.status == status)
-    if source_type:
-        query = query.filter(DataSource.source_type == source_type)
-    if product_id:
-        query = query.filter(DataSource.product_id == product_id)
-
-    total = query.count()
-    datasources = query.order_by(DataSource.updated_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
-
+@data_sources_api_bp.route('/datasources/<int:id>', methods=['GET'])
+@login_required
+def get_datasource(id):
+    """获取单个数据源详情"""
+    source = DataSource.query.get_or_404(id)
     return jsonify({
         'success': True,
         'data': {
-            'items': [ds.to_dict() for ds in datasources],
-            'total': total,
-            'page': page,
-            'page_size': page_size
+            'id': source.id,
+            'name': source.name,
+            'protocol': source.protocol,
+            'host': source.host,
+            'port': source.port,
+            'status': source.status,
+            'config': source.config or {},
+            'created_at': source.created_at.isoformat() if source.created_at else None,
+            # 关联配置
+            'log_type_id': source.log_type_id,
+            'log_type_name': source.log_type_name,
+            'pipeline_ids': source.pipeline_ids or [],
+            'pipeline_names': source.pipeline_names or [],
+            'format_template_id': source.format_template_id,
+            'format_template_name': source.format_template_name,
+            'storage_table_name': source.storage_table_name,
+            'storage_retention_days': source.storage_retention_days,
         }
-    })
-
-
-@data_sources_api_bp.route('/datasources/<int:ds_id>', methods=['GET'])
-@login_required
-def get_datasource(ds_id):
-    """获取数据源详情"""
-    datasource = DataSource.query.get(ds_id)
-    if not datasource:
-        return jsonify({'success': False, 'error': '数据源不存在'}), 404
-
-    return jsonify({
-        'success': True,
-        'data': datasource.to_dict()
     })
 
 
@@ -182,508 +227,387 @@ def create_datasource():
     """创建数据源"""
     data = request.get_json()
     
-    datasource = DataSource(
-        name=data.get('name'),
-        source_type=data.get('type'),
-        protocol=data.get('protocol'),
-        product_id=data.get('product_id'),
+    # 验证必填字段
+    if not data.get('name'):
+        return jsonify({'success': False, 'error': '名称不能为空'}), 400
+    if not data.get('protocol'):
+        return jsonify({'success': False, 'error': '协议类型不能为空'}), 400
+    
+    source = DataSource(
+        name=data['name'],
+        protocol=data['protocol'],
         host=data.get('host'),
         port=data.get('port'),
-        username=data.get('username'),
-        password=data.get('password'),
-        description=data.get('description'),
+        status=data.get('status', 'inactive'),
         config=data.get('config', {}),
-        status=data.get('status', 'inactive')
     )
     
-    db.session.add(datasource)
+    db.session.add(source)
     db.session.commit()
-
-    return jsonify({
-        'success': True,
-        'data': datasource.to_dict()
-    }), 201
-
-
-@data_sources_api_bp.route('/datasources/<int:ds_id>', methods=['PUT'])
-@login_required
-def update_datasource(ds_id):
-    """更新数据源"""
-    datasource = DataSource.query.get(ds_id)
-    if not datasource:
-        return jsonify({'success': False, 'error': '数据源不存在'}), 404
-
-    data = request.get_json()
-    for key in ['name', 'source_type', 'protocol', 'host', 'port', 'username', 'password', 'description', 'config', 'status']:
-        if key in data:
-            setattr(datasource, key, data[key])
-
-    db.session.commit()
-
-    return jsonify({
-        'success': True,
-        'data': datasource.to_dict()
-    })
-
-
-@data_sources_api_bp.route('/datasources/<int:ds_id>', methods=['DELETE'])
-@login_required
-def delete_datasource(ds_id):
-    """删除数据源"""
-    datasource = DataSource.query.get(ds_id)
-    if not datasource:
-        return jsonify({'success': False, 'error': '数据源不存在'}), 404
     
-    # 如果有运行的 Flink 任务，先停止
-    if datasource.flink_job_id:
-        stop_flink_job(datasource.flink_job_id)
-
-    db.session.delete(datasource)
-    db.session.commit()
-
-    return jsonify({'success': True, 'message': '删除成功'})
-
-
-@data_sources_api_bp.route('/datasources/<int:ds_id>/test', methods=['POST'])
-@login_required
-def test_datasource(ds_id):
-    """测试数据源连接"""
-    datasource = DataSource.query.get(ds_id)
-    if not datasource:
-        return jsonify({'success': False, 'error': '数据源不存在'}), 404
-
     return jsonify({
         'success': True,
         'data': {
-            'status': 'success',
-            'message': '连接测试成功',
-            'tested_at': datetime.utcnow().isoformat()
-        }
-    })
+            'id': source.id,
+            'name': source.name,
+            'protocol': source.protocol,
+        },
+        'message': '数据源创建成功'
+    }), 201
 
 
-@data_sources_api_bp.route('/datasources/<int:ds_id>/mapping', methods=['POST'])
+@data_sources_api_bp.route('/datasources/<int:id>', methods=['PUT'])
 @login_required
-def save_mapping_config(ds_id):
-    """保存数据流关联配置"""
-    datasource = DataSource.query.get(ds_id)
-    if not datasource:
-        return jsonify({'success': False, 'error': '数据源不存在'}), 404
-
+def update_datasource(id):
+    """更新数据源"""
+    source = DataSource.query.get_or_404(id)
     data = request.get_json()
     
-    # 更新关联配置
-    datasource.log_type_id = data.get('logTypeId')
-    datasource.log_type_name = data.get('logTypeName')
-    datasource.pipeline_ids = data.get('pipelineIds', [])
-    datasource.pipeline_names = data.get('pipelineNames', [])
-    datasource.format_template_id = data.get('formatTemplateId')
-    datasource.format_template_name = data.get('formatTemplateName')
-    datasource.storage_table_name = data.get('storageTableName')
-    datasource.storage_retention_days = data.get('storageRetentionDays', 90)
-    datasource.storage_partition = data.get('storagePartition', '1d')
-    datasource.storage_compression = data.get('storageCompression', True)
-    datasource.storage_indexes = data.get('storageIndexes', [])
+    if 'name' in data:
+        source.name = data['name']
+    if 'protocol' in data:
+        source.protocol = data['protocol']
+    if 'host' in data:
+        source.host = data['host']
+    if 'port' in data:
+        source.port = data['port']
+    if 'status' in data:
+        source.status = data['status']
+    if 'config' in data:
+        source.config = data['config']
     
     db.session.commit()
-
+    
     return jsonify({
         'success': True,
-        'data': datasource.to_dict(),
-        'message': '关联配置已保存'
+        'message': '数据源更新成功'
     })
 
 
-@data_sources_api_bp.route('/datasources/<int:ds_id>/start', methods=['POST'])
+@data_sources_api_bp.route('/datasources/<int:id>', methods=['DELETE'])
 @login_required
-def start_flink_job(ds_id):
-    """启动数据源的 Flink 解析任务"""
-    datasource = DataSource.query.get(ds_id)
-    if not datasource:
-        return jsonify({'success': False, 'error': '数据源不存在'}), 404
-
-    # 检查是否已有关联配置
-    if not datasource.log_type_id or not datasource.storage_table_name:
+def delete_datasource(id):
+    """删除数据源"""
+    source = DataSource.query.get_or_404(id)
+    
+    # 检查是否有关联的管道
+    if source.pipeline_ids and len(source.pipeline_ids) > 0:
         return jsonify({
-            'success': False, 
-            'error': '请先配置日志类型和存储配置'
+            'success': False,
+            'error': f'该数据源已关联 {len(source.pipeline_ids)} 个解析管道，请先删除或迁移'
         }), 400
+    
+    db.session.delete(source)
+    db.session.commit()
+    
+    return jsonify({
+        'success': True,
+        'message': '数据源已删除'
+    })
 
-    # 如果任务已在运行，先停止
-    if datasource.flink_job_id and datasource.flink_job_status == 'running':
-        stop_result = stop_flink_job(datasource.flink_job_id)
-        if not stop_result:
-            return jsonify({'success': False, 'error': '停止旧任务失败'}), 500
 
+@data_sources_api_bp.route('/datasources/<int:id>/start-flink', methods=['POST'])
+@login_required
+def start_flink_job(id):
+    """启动 Flink 作业"""
+    source = DataSource.query.get_or_404(id)
+    
+    # 检查 Flink 连接
+    flink_ok, flink_msg = _check_flink_connection()
+    if not flink_ok:
+        return jsonify({
+            'success': False,
+            'error': f'无法连接 Flink 集群: {flink_msg}'
+        }), 503
+    
     try:
-        job_params = build_flink_job_params(datasource)
-
-        # 调用 Flink REST API 提交任务
-        job_id, submit_err = submit_flink_job(job_params)
-
+        job_name = f"{source.name} Job"
+        
+        # 获取作业列表
+        jobs, err = _list_flink_jobs()
+        if err:
+            return jsonify({'success': False, 'error': err}), 500
+        
+        # 检查作业是否已存在
+        existing_job = next((j for j in jobs if j.get('name') == job_name and j.get('state') != 'CANCELED'), None)
+        if existing_job:
+            return jsonify({
+                'success': False,
+                'error': f'作业已存在 (JobID={existing_job["id"]})，状态: {existing_job.get("state")}'
+            }), 400
+        
+        # 提交作业
+        # 注意：这里需要实际的 JAR 文件和入口类
+        # 示例中使用占位符，实际使用时替换为真实的 JAR 路径和类名
+        jar_path = f"/opt/flink/examples/streaming/LogParserJob.jar"
+        entry_class = "com.usop.LogParserJob"
+        
+        jar_id, err = _upload_flink_jar(jar_path) if jar_path else None, None
+        if err:
+            return jsonify({'success': False, 'error': f'JOB 上传失败: {err}'}), 500
+        
+        if jar_id:
+            job_id, err = _submit_flink_job(jar_id, entry_class, f"--source-id={source.id}")
+        else:
+            job_id, err = None, "JOB 文件未配置或上传失败"
+        
         if job_id:
-            datasource.flink_job_id = job_id
-            datasource.flink_job_status = 'running'
-            datasource.flink_last_heartbeat = datetime.utcnow()
-            datasource.status = 'active'
+            source.flink_job_id = job_id
+            source.flink_job_status = 'running'
             db.session.commit()
-
+            
             return jsonify({
                 'success': True,
                 'data': {
                     'flink_job_id': job_id,
-                    'status': 'running',
-                    'message': 'Flink 任务已启动'
-                }
+                    'flink_job_status': 'running'
+                },
+                'message': f'作业已启动 (JobID={job_id})'
             })
         else:
-            error_msg = submit_err or 'Flink 任务提交失败'
-            return jsonify({'success': False, 'error': error_msg}), 500
-
+            return jsonify({
+                'success': False,
+                'error': err or '提交失败'
+            }), 500
+            
     except Exception as e:
-        logger.error(f"启动 Flink 任务失败: {str(e)}")
-        datasource.flink_job_status = 'failed'
-        datasource.last_error = str(e)
+        logger.error(f"启动 Flink 作业失败: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@data_sources_api_bp.route('/datasources/<int:id>/stop-flink', methods=['POST'])
+@login_required
+def stop_flink_job(id):
+    """停止 Flink 作业"""
+    source = DataSource.query.get_or_404(id)
+    
+    if not source.flink_job_id:
+        return jsonify({'success': False, 'error': '该数据源没有关联的 Flink 作业'}), 400
+    
+    success, err = _cancel_flink_job(source.flink_job_id)
+    
+    if success:
+        source.flink_job_status = 'stopped'
         db.session.commit()
-
-        return jsonify({
-            'success': False,
-            'error': f'启动失败: {str(e)}'
-        }), 500
-
-
-@data_sources_api_bp.route('/datasources/<int:ds_id>/stop', methods=['POST'])
-@login_required
-def stop_flink_job_api(ds_id):
-    """停止数据源的 Flink 解析任务"""
-    datasource = DataSource.query.get(ds_id)
-    if not datasource:
-        return jsonify({'success': False, 'error': '数据源不存在'}), 404
-
-    if not datasource.flink_job_id:
-        return jsonify({'success': False, 'error': '没有正在运行的任务'}), 400
-
-    try:
-        result = stop_flink_job(datasource.flink_job_id)
         
-        if result:
-            datasource.flink_job_status = 'stopped'
-            datasource.status = 'inactive'
-            db.session.commit()
-            
-            return jsonify({
-                'success': True,
-                'message': 'Flink 任务已停止'
-            })
-        else:
-            return jsonify({'success': False, 'error': '停止任务失败'}), 500
-            
-    except Exception as e:
-        logger.error(f"停止 Flink 任务失败: {str(e)}")
         return jsonify({
-            'success': False,
-            'error': f'停止失败: {str(e)}'
-        }), 500
+            'success': True,
+            'message': f'作业已停止 (JobID={source.flink_job_id})'
+        })
+    else:
+        return jsonify({'success': False, 'error': err or '停止失败'}), 500
 
 
-@data_sources_api_bp.route('/datasources/<int:ds_id>/status', methods=['GET'])
+@data_sources_api_bp.route('/flink/status', methods=['GET'])
 @login_required
-def get_flink_status(ds_id):
-    """获取 Flink 任务状态"""
-    datasource = DataSource.query.get(ds_id)
-    if not datasource:
-        return jsonify({'success': False, 'error': '数据源不存在'}), 404
-
-    if not datasource.flink_job_id:
-        return jsonify({
-            'success': True,
-            'data': {
-                'status': 'stopped',
-                'job_id': None
-            }
-        })
-
-    # 模拟模式：直接返回数据库状态，不请求 Flink
-    if datasource.flink_job_id.startswith('sim_'):
-        return jsonify({
-            'success': True,
-            'data': {
-                'job_id': datasource.flink_job_id,
-                'status': datasource.flink_job_status,
-                'simulated': True
-            }
-        })
-
-    try:
-        # 调用 Flink REST API 获取任务状态
-        response = requests.get(f"{FLINK_REST_API}/jobs/{datasource.flink_job_id}", timeout=5)
-        
-        if response.status_code == 200:
-            job_info = response.json()
-            flink_status = job_info.get('state', 'unknown')
-            
-            # 同步状态到数据库
-            if flink_status == 'RUNNING':
-                datasource.flink_job_status = 'running'
-                datasource.flink_last_heartbeat = datetime.utcnow()
-            elif flink_status in ['FAILED', 'CANCELED']:
-                datasource.flink_job_status = 'stopped'
-            db.session.commit()
-            
-            return jsonify({
-                'success': True,
-                'data': {
-                    'job_id': datasource.flink_job_id,
-                    'status': datasource.flink_job_status,
-                    'flink_state': flink_status,
-                    'last_heartbeat': datasource.flink_last_heartbeat.isoformat() if datasource.flink_last_heartbeat else None
-                }
-            })
-        else:
-            return jsonify({
-                'success': True,
-                'data': {
-                    'job_id': datasource.flink_job_id,
-                    'status': 'unknown',
-                    'error': f'Flink API 返回: {response.status_code}'
-                }
-            })
-            
-    except requests.exceptions.RequestException as e:
-        logger.error(f"获取 Flink 状态失败: {str(e)}")
-        return jsonify({
-            'success': True,
-            'data': {
-                'job_id': datasource.flink_job_id,
-                'status': datasource.flink_job_status,
-                'error': f'连接 Flink 失败: {str(e)}'
-            }
-        })
-
-
-def build_flink_job_params(datasource: DataSource) -> dict:
-    """构建 Flink 任务完整参数（含管道详情、格式模板、存储配置）"""
-    # 加载管道完整配置
-    pipeline_details = []
-    if datasource.pipeline_ids:
-        for pid in datasource.pipeline_ids:
-            try:
-                pipeline = Pipeline.query.get(int(pid))
-                if pipeline:
-                    pipeline_details.append({
-                        'id': pipeline.id,
-                        'name': pipeline.name,
-                        'input_format': pipeline.input_format,
-                        'input_config': pipeline.input_config or {},
-                        'field_mapping': pipeline.field_mapping or {},
-                        'filter_rules': pipeline.filter_rules or [],
-                        'transform_rules': pipeline.transform_rules or {},
-                        'output_target': pipeline.output_target,
-                        'output_config': pipeline.output_config or {},
-                        'status': pipeline.status,
-                        'priority': pipeline.priority,
-                        'match_conditions': pipeline.match_conditions or {},
-                        'rule_type': pipeline.rule_type,
-                    })
-            except (ValueError, TypeError):
-                pass
-
-    # 加载格式模板完整配置
-    format_template_config = None
-    if datasource.format_template_id:
-        try:
-            template = FormatTemplate.query.get(datasource.format_template_id)
-            if template:
-                format_template_config = {
-                    'id': template.id,
-                    'name': template.name,
-                    'type': template.type,
-                    'fields': template.fields or [],
-                    'input_config': template.input_config or {},
-                    'grok_pattern': template.grok_pattern,
-                    'regex_pattern': template.regex_pattern,
-                    'delimiter': template.delimiter,
-                }
-        except Exception:
-            pass
-
-    return {
-        'datasource_id': datasource.id,
-        'datasource_name': datasource.name,
-        'protocol': datasource.protocol,
-        'config': datasource.config,
-        'log_type_id': datasource.log_type_id,
-        'log_type_name': datasource.log_type_name,
-        'pipeline_ids': datasource.pipeline_ids or [],
-        'pipeline_details': pipeline_details,
-        'format_template_id': datasource.format_template_id,
-        'format_template_config': format_template_config,
-        'storage_table': datasource.storage_table_name,
-        'storage_retention_days': datasource.storage_retention_days,
-        'storage_partition': datasource.storage_partition or '1d',
-        'storage_compression': datasource.storage_compression,
-        'storage_indexes': datasource.storage_indexes or [],
-    }
-
-
-def submit_flink_job(params: dict) -> tuple[str | None, str | None]:
-    """提交 Flink 任务（共享作业模式）
-
-    不再为每个数据源单独提交作业，而是维护两个共享流处理作业：
-      1. Log Parser Job - 消费 raw-logs → 解析 → 写入 parsed-logs + TimescaleDB
-      2. Alert Engine Job - 消费 parsed-logs → 告警检测 → 写入 alerts topic
-
-    如果作业已在运行则复用，否则自动提交。
-
-    Returns:
-        (job_id, error) — job_id 为 None 时 error 包含错误描述
-    """
-    # 提交/复用 Log Parser Job
-    parser_job_id, err = _submit_pyflink_job(LOG_PARSER_SCRIPT, LOG_PARSER_JOB_NAME)
-    if not parser_job_id:
-        logger.error(f"Log Parser Job 提交失败: {err}")
-        return None, err
-
-    # 提交/复用 Alert Engine Job
-    alert_job_id, alert_err = _submit_pyflink_job(ALERT_ENGINE_SCRIPT, ALERT_ENGINE_JOB_NAME)
-    if not alert_job_id:
-        logger.warning(f"Alert Engine Job 提交失败（不影响日志解析）: {alert_err}")
-
-    # 返回主作业 ID
-    datasource_id = params.get('datasource_id')
-    logger.info(f"数据源 {datasource_id} 启动完成: parser={parser_job_id}, alert={alert_job_id}")
-    return parser_job_id, None
-
-
-def stop_flink_job(job_id: str) -> bool:
-    """停止 Flink 任务（通过 REST API 取消作业）"""
-    try:
-        if job_id.startswith('sim_'):
-            return True
-
-        # 先检查作业当前状态
-        status_resp = requests.get(f"{FLINK_REST_API}/jobs/{job_id}", timeout=10)
-        if status_resp.status_code == 200:
-            job_state = status_resp.json().get('state', '').upper()
-            # 终态作业无需取消
-            if job_state in ('FINISHED', 'CANCELLED', 'FAILED', 'SUSPENDED'):
-                logger.info(f"Flink 作业 {job_id} 已处于终态 ({job_state})，无需取消")
-                return True
-        elif status_resp.status_code == 404:
-            # 作业不存在（已被 Flink 清理或 ID 过期），视为已停止
-            logger.info(f"Flink 作业 {job_id} 不存在（可能已被清理），视为已停止")
-            return True
-
-        # Flink REST API: PATCH /jobs/<job_id>?mode=cancel
-        resp = requests.patch(
-            f"{FLINK_REST_API}/jobs/{job_id}?mode=cancel",
-            timeout=10
-        )
-        if resp.status_code in (200, 202):
-            logger.info(f"Flink 作业 {job_id} 已取消")
-            return True
-
-        logger.warning(f"取消 Flink 作业 {job_id} 返回 {resp.status_code}")
-        return False
-
-    except requests.exceptions.ConnectionError:
-        logger.warning(f"无法连接 Flink ({FLINK_REST_API})，视作业 {job_id} 为已停止")
-        return True
-    except Exception as e:
-        logger.error(f"停止 Flink 任务失败: {e}")
-        return False
-
-
-@data_sources_api_bp.route('/datasources/batch/start', methods=['POST'])
-@login_required
-def start_all_datasources():
-    """批量启动所有已配置的数据源"""
-    datasources = DataSource.query.filter(
-        DataSource.log_type_id.isnot(None),
-        DataSource.storage_table_name.isnot(None),
-        DataSource.flink_job_status != 'running'
-    ).all()
+def get_flink_status():
+    """获取 Flink 集群状态"""
+    flink_ok, flink_msg = _check_flink_connection()
     
-    results = []
-    for ds in datasources:
+    if not flink_ok:
+        return jsonify({
+            'success': True,
+            'data': {
+                'connected': False,
+                'message': flink_msg,
+                'jobs': []
+            }
+        })
+    
+    try:
+        # 获取作业列表
+        jobs, err = _list_flink_jobs()
+        
+        return jsonify({
+            'success': True,
+            'data': {
+                'connected': True,
+                'message': '正常',
+                'jobs': [{
+                    'id': j.get('id'),
+                    'name': j.get('name'),
+                    'state': j.get('state'),
+                    'start_time': j.get('start_time'),
+                } for j in jobs] if jobs else []
+            }
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@data_sources_api_bp.route('/flink/jobs/<job_id>', methods=['DELETE'])
+@login_required
+def cancel_flink_job(job_id):
+    """取消 Flink 作业"""
+    success, err = _cancel_flink_job(job_id)
+    
+    if success:
+        return jsonify({
+            'success': True,
+            'message': f'作业已取消 (JobID={job_id})'
+        })
+    else:
+        return jsonify({'success': False, 'error': err or '取消失败'}), 500
+
+
+# Kafka 生产者
+_producer = None
+
+def get_kafka_producer():
+    global _producer
+    if _producer is None:
         try:
-            job_params = build_flink_job_params(ds)
-
-            job_id, submit_err = submit_flink_job(job_params)
-
-            if job_id:
-                ds.flink_job_id = job_id
-                ds.flink_job_status = 'running'
-                ds.status = 'active'
-                db.session.commit()
-                results.append({'id': ds.id, 'name': ds.name, 'job_id': job_id, 'status': 'success'})
-            else:
-                results.append({'id': ds.id, 'name': ds.name, 'status': 'failed', 'error': submit_err or '提交失败'})
+            _producer = KafkaProducer(
+                bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+                value_serializer=lambda v: json.dumps(v).encode('utf-8'),
+            )
         except Exception as e:
-            results.append({'id': ds.id, 'name': ds.name, 'status': 'error', 'error': str(e)})
-    
-    success_count = len([r for r in results if r.get('status') == 'success'])
-
-    return jsonify({
-        'success': True,
-        'data': {
-            'total': len(datasources),
-            'success': success_count,
-            'failed': len(datasources) - success_count,
-            'results': results
-        }
-    })
+            logger.error(f"Kafka Producer 初始化失败: {e}")
+    return _producer
 
 
-@data_sources_api_bp.route('/datasources/<int:ds_id>/ingest', methods=['POST'])
+@data_sources_api_bp.route('/datasources/<int:id>/test', methods=['POST'])
 @login_required
-def ingest_log(ds_id):
-    """
-    数据接入 — 接收日志数据并写入 Kafka raw-logs 主题
-    """
-    datasource = DataSource.query.get(ds_id)
-    if not datasource:
-        return jsonify({'success': False, 'error': '数据源不存在'}), 404
-
-    data = request.get_json()
-    if not data or 'message' not in data:
-        return jsonify({'success': False, 'error': '缺少 message 字段'}), 400
-
-    producer = _get_kafka_producer()
-    if not producer:
-        return jsonify({'success': False, 'error': 'Kafka 不可用'}), 503
-
-    record = {
-        'id': str(uuid.uuid4()),
-        'source_id': ds_id,
-        'source_name': datasource.name,
-        'timestamp': data.get('timestamp', datetime.utcnow().isoformat()),
-        'raw_message': data['message'],
-        'protocol': datasource.protocol or 'webhook',
-        'metadata': data.get('metadata', {}),
-    }
-
+def test_datasource(id):
+    """测试数据源连接"""
+    source = DataSource.query.get_or_404(id)
+    
     try:
-        future = producer.send('raw-logs', value=record)
-        future.get(timeout=10)
+        if source.protocol == 'kafka':
+            # 测试 Kafka 连接
+            from kafka import KafkaProducer
+            from kafka.errors import KafkaError
+            producer = KafkaProducer(
+                bootstrap_servers=f"{source.host}:{source.port}" if source.host else KAFKA_BOOTSTRAP_SERVERS,
+                timeout=5,
+            )
+            producer.close()
+            return jsonify({
+                'success': True,
+                'message': 'Kafka 连接测试成功'
+            })
+        elif source.protocol == 'http':
+            # 测试 HTTP 连接
+            resp = requests.get(f"http://{source.host}:{source.port}", timeout=5)
+            return jsonify({
+                'success': True,
+                'message': f'HTTP 连接成功 (状态码: {resp.status_code})'
+            })
+        else:
+            return jsonify({
+                'success': True,
+                'message': f'协议 {source.protocol} 连接测试通过'
+            })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f'连接测试失败: {str(e)}'
+        }), 400
+
+
+@data_sources_api_bp.route('/datasources/<int:id>/send-test', methods=['POST'])
+@login_required
+def send_test_message(id):
+    """发送测试消息到数据源"""
+    source = DataSource.query.get_or_404(id)
+    data = request.get_json() or {}
+    
+    try:
+        producer = get_kafka_producer()
+        if not producer:
+            return jsonify({
+                'success': False,
+                'error': 'Kafka Producer 未初始化'
+            }), 500
+        
+        # 构造测试消息
+        test_message = {
+            'source_id': source.id,
+            'source_name': source.name,
+            'protocol': source.protocol,
+            'timestamp': datetime.utcnow().isoformat(),
+            'test': True,
+            'data': data.get('data', {'message': 'test'})
+        }
+        
+        # 发送到 raw-logs topic
+        topic = data.get('topic', 'raw-logs')
+        future = producer.send(topic, value=test_message)
+        producer.flush()
+        
         return jsonify({
             'success': True,
-            'data': {'id': record['id'], 'written': True},
-            'message': '日志已接入'
+            'message': f'测试消息已发送到 topic: {topic}',
+            'data': {
+                'topic': topic,
+                'message': test_message
+            }
         })
     except Exception as e:
-        logger.error(f"写入 Kafka 失败: {e}")
-        return jsonify({'success': False, 'error': f'写入失败: {e}'}), 500
+        logger.error(f"发送测试消息失败: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 
-@data_sources_api_bp.route('/flink/jobs', methods=['GET'])
+@data_sources_api_bp.route('/datasources/<int:id>/mapping', methods=['POST'])
 @login_required
-def list_flink_jobs():
-    """查询 Flink 集群中的所有作业"""
+def save_datasource_mapping(id):
+    """保存数据源的关联配置（日志类型、解析管道、存储表等）"""
+    data_source = DataSource.query.get_or_404(id)
+    data = request.get_json()
+    
     try:
-        resp = requests.get(f"{FLINK_REST_API}/jobs", timeout=5)
-        if resp.status_code != 200:
-            return jsonify({'success': False, 'error': f'Flink API 返回 {resp.status_code}'}), 502
-        return jsonify({'success': True, 'data': resp.json()})
+        # 更新日志类型关联
+        if 'logTypeId' in data:
+            data_source.log_type_id = data['logTypeId']
+        if 'logTypeName' in data:
+            data_source.log_type_name = data['logTypeName']
+        
+        # 更新解析管道关联
+        if 'pipelineIds' in data:
+            data_source.pipeline_ids = data['pipelineIds']
+        if 'pipelineNames' in data:
+            data_source.pipeline_names = data['pipelineNames']
+        
+        # 更新格式模板关联
+        if 'formatTemplateId' in data:
+            data_source.format_template_id = data['formatTemplateId']
+        if 'formatTemplateName' in data:
+            data_source.format_template_name = data['formatTemplateName']
+        
+        # 更新存储配置
+        if 'storageTableName' in data:
+            data_source.storage_table_name = data['storageTableName']
+        if 'storageRetentionDays' in data:
+            data_source.storage_retention_days = data['storageRetentionDays']
+        if 'storagePartition' in data:
+            data_source.storage_partition = data['storagePartition']
+        if 'storageCompression' in data:
+            data_source.storage_compression = data['storageCompression']
+        if 'storageIndexes' in data:
+            data_source.storage_indexes = data['storageIndexes']
+        
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'message': '关联配置保存成功',
+            'data': {
+                'id': data_source.id,
+                'log_type_id': data_source.log_type_id,
+                'pipeline_ids': data_source.pipeline_ids,
+                'storage_table_name': data_source.storage_table_name,
+            }
+        })
     except Exception as e:
-        return jsonify({'success': False, 'error': f'连接 Flink 失败: {e}'}), 502
+        db.session.rollback()
+        logger.error(f"保存关联配置失败: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500

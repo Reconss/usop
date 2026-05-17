@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Plus, CheckCircle, XCircle, Sparkles, Braces, FileCode, Table,
   ScrollText, Terminal, AlertTriangle, Code, Wand2, X, Trash2, Edit3, Eye,
-  ArrowUp, ArrowDown, Save, AlertCircle, Settings2, Play, Pause,
+  ArrowUp, ArrowDown, Save, AlertCircle, Settings2,
   Database, Layers, FileJson, Link2, Cpu, Zap, Beaker, Fingerprint,
   GitMerge, Workflow, Search, Copy, ChevronRight,
   RefreshCw, Shield, Activity, Brain, Siren, ShieldCheck,
@@ -639,8 +639,17 @@ export default function SmartParser() {
             if (fieldMappings && !Array.isArray(fieldMappings)) {
               fieldMappings = Object.entries(fieldMappings).map(([targetField, sourceField]) => ({
                 targetField,
-                sourceField: sourceField as string,
-                type: 'string'
+                sourceField: String(sourceField),
+                type: 'string',
+                defaultValue: null
+              }));
+            } else if (Array.isArray(fieldMappings)) {
+              // 已经是数组格式，确保每个元素都有完整字段
+              fieldMappings = fieldMappings.map((fm: any) => ({
+                targetField: fm.targetField || fm.target_field || '',
+                sourceField: fm.sourceField || fm.source_field || null,
+                type: fm.type || 'string',
+                defaultValue: fm.defaultValue || fm.default_value || null
               }));
             }
             return {
@@ -652,11 +661,11 @@ export default function SmartParser() {
               storageTarget: item.output_target || 'timescaledb',
               status: item.status === 'active' ? 'active' : item.status === 'paused' ? 'paused' : 'stopped',
               priority: item.priority || 1,
-              isActive: item.status === 'active',
+              isActive: true,
               description: item.description,
               logTypeId: item.log_type_id,
               logTypeName: item.log_type_name,
-              storageTableId: item.output_table_id,
+              storageTableId: String(item.output_table_id || item.output_table_id || ''),
               storageTableName: item.output_table_name,
               formatTemplateId: item.format_id,
               formatTemplateName: item.format_name,
@@ -1721,7 +1730,7 @@ export default function SmartParser() {
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-medium text-text-primary">解析管道 ({filteredPipelines.length})</h3>
           <div className="flex items-center gap-2">
-            <span className="text-xs text-text-secondary">启用的管道: {pipelines.filter(p => p.isActive).length}</span>
+            
           </div>
         </div>
 
@@ -1753,15 +1762,7 @@ export default function SmartParser() {
                         <Sparkles className="w-3 h-3" /> 智能
                       </span>
                     )}
-                    {pipeline.isActive ? (
-                      <span className="flex items-center gap-1 px-2 py-0.5 text-xs bg-emerald-50 text-emerald-600 rounded font-medium border border-emerald-200">
-                        <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> 运行中
-                      </span>
-                    ) : (
-                      <span className="flex items-center gap-1 px-2 py-0.5 text-xs bg-page-bg text-text-secondary rounded font-medium border border-border-color">
-                        <div className="w-1.5 h-1.5 rounded-full bg-text-muted" /> 已暂停
-                      </span>
-                    )}
+                    // 状态显示已简化
                   </div>
                   <div className="flex items-center gap-3 mt-1">
                     {pipeline.logTypeName && (
@@ -3006,8 +3007,7 @@ export default function SmartParser() {
                       : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100'
                   }`}
                 >
-                  {selectedPipeline.isActive ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
-                  {selectedPipeline.isActive ? '暂停' : '启用'}
+                  
                 </button>
                 <button
                   onClick={() => { setShowDetailModal(false); setShowDeleteConfirm(selectedPipeline); }}
@@ -3029,9 +3029,7 @@ export default function SmartParser() {
                   </div>
                   <div className="p-4 bg-page-bg rounded-lg">
                     <div className="text-text-secondary text-xs mb-1">状态</div>
-                    <div className={selectedPipeline.isActive ? 'text-emerald-600 font-semibold' : 'text-text-secondary'}>
-                      {selectedPipeline.isActive ? '运行中' : '已暂停'}
-                    </div>
+                    
                   </div>
                   <div className="p-4 bg-page-bg rounded-lg">
                     <div className="text-text-secondary text-xs mb-1">解析模式</div>
