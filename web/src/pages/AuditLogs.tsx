@@ -29,7 +29,16 @@ export default function AuditLogs() {
       const res = await auditApi.getLogs({ page_size: 100 });
       if (res.success && res.data) {
         const items = Array.isArray(res.data) ? res.data : res.data.items || [];
-        setLogs(items);
+        // Map API response fields to expected AuditLog interface
+        const mappedItems = items.map((item: any) => ({
+          id: item.id,
+          timestamp: item.timestamp,
+          user: item.username || item.user || item.user_id,
+          action: item.action,
+          details: item.details || {},
+          ip: item.ip
+        }));
+        setLogs(mappedItems);
       } else {
         setLogs([]);
       }

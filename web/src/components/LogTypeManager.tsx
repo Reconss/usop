@@ -502,13 +502,13 @@ export default function LogTypeManager() {
                   <h3 className="text-sm font-medium text-text-primary mb-2 flex items-center gap-2">
                     <Database size={16} /> 关联数据源 ({selectedType.sourceCount})
                   </h3>
-                  <p className="text-sm text-text-muted">暂无关联数据源</p>
+                  <p className="text-sm text-text-muted">{selectedType.sourceCount > 0 ? `${selectedType.sourceCount} 个数据源` : '暂无关联数据源'}</p>
                 </div>
                 <div>
                   <h3 className="text-sm font-medium text-text-primary mb-2 flex items-center gap-2">
-                    <GitBranch size={16} /> 关联解析管道 ({selectedType.pipelineCount})
+                    <HardDrive size={16} /> 关联存储表
                   </h3>
-                  <p className="text-sm text-text-muted">暂无关联解析管道</p>
+                  <p className="text-sm text-text-muted">{selectedType.storageTableName || '暂无关联存储表'}</p>
                 </div>
               </div>
             </motion.div>

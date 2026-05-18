@@ -56,7 +56,6 @@ module.exports = (env, argv) => {
           type: 'asset/resource'
         },
         {
-          // 兜底规则：PDF、文档、音视频等所有其他文件一律输出为独立资源文件
           exclude: /\.(js|jsx|ts|tsx|mjs|css|json|html)$/i,
           type: 'asset/resource'
         }
@@ -66,6 +65,10 @@ module.exports = (env, argv) => {
       extensions: ['.mjs', '.ts', '.tsx', '.js', '.jsx']
     },
     devServer: {
+      client: {
+        overlay: false,
+        logging: 'none'
+      },
       host: "0.0.0.0",
       port: 3266,
       allowedHosts: 'all',
@@ -188,6 +191,16 @@ module.exports = (env, argv) => {
           changeOrigin: true,
           secure: false,
           pathRewrite: { '^/products-api': '/api/products-api' }
+        },
+        '/pipelines': {
+          target: 'http://localhost:5001',
+          changeOrigin: true,
+          secure: false
+        },
+        '/storage-tables': {
+          target: 'http://localhost:5001',
+          changeOrigin: true,
+          secure: false
         }
       }
     },

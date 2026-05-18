@@ -1,5 +1,5 @@
 0
-51
+58
 __consumer_offsets 29 0
 __consumer_offsets 43 0
 __consumer_offsets 0 0
@@ -9,9 +9,11 @@ __consumer_offsets 30 0
 __consumer_offsets 13 0
 __consumer_offsets 26 0
 __consumer_offsets 21 0
+alerts 0 0
 __consumer_offsets 19 0
 __consumer_offsets 25 0
 __consumer_offsets 33 0
+parsed-logs 0 0
 __consumer_offsets 41 0
 __consumer_offsets 37 0
 __consumer_offsets 8 0
@@ -22,27 +24,32 @@ __consumer_offsets 40 0
 __consumer_offsets 27 0
 __consumer_offsets 17 0
 __consumer_offsets 32 0
-__consumer_offsets 39 8
+__consumer_offsets 39 15369
 __consumer_offsets 2 0
+test-dlq 0 3
 __consumer_offsets 44 0
 __consumer_offsets 12 0
+alerts 1 0
 __consumer_offsets 36 0
 __consumer_offsets 45 0
 __consumer_offsets 16 0
 __consumer_offsets 10 0
-__consumer_offsets 11 0
+__consumer_offsets 11 6
+parsed-logs 1 0
+raw-logs 0 0
 __consumer_offsets 20 0
 __consumer_offsets 47 0
 __consumer_offsets 18 0
 __consumer_offsets 7 0
 __consumer_offsets 48 0
-waf-alert 0 0
+waf-alert 0 381
 __consumer_offsets 22 0
 __consumer_offsets 46 0
 __consumer_offsets 23 0
 __consumer_offsets 42 0
 __consumer_offsets 28 0
 __consumer_offsets 4 0
+raw-logs 1 0
 __consumer_offsets 31 0
 __consumer_offsets 5 0
 __consumer_offsets 1 0

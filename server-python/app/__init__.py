@@ -102,51 +102,51 @@ def create_app():
             
             # 安全告警表字段定义
             SECURITY_ALERT_COLUMNS = [
-                # 自动生成的字段
+                # 自动生成的字段（系统管理，用户不可配置）
                 {'name': 'id', 'label': 'ID', 'type': 'number', 'category': '系统-自动生成', 'required': True, 'auto_generated': True},
                 {'name': 'alert_code', 'label': '告警编号', 'type': 'string', 'category': '系统-自动生成', 'required': True, 'auto_generated': True},
                 {'name': 'first_seen', 'label': '首次发现时间', 'type': 'datetime', 'category': '系统-自动生成', 'required': True, 'auto_generated': True},
                 {'name': 'last_seen', 'label': '最近发现时间', 'type': 'datetime', 'category': '系统-自动生成', 'required': True, 'auto_generated': True},
                 {'name': 'created_at', 'label': '创建时间', 'type': 'datetime', 'category': '系统-自动生成', 'required': True, 'auto_generated': True},
                 {'name': 'updated_at', 'label': '更新时间', 'type': 'datetime', 'category': '系统-自动生成', 'required': False, 'auto_generated': True},
-                # 被动接收的字段
-                {'name': 'title', 'label': '告警标题', 'type': 'string', 'category': '告警属性-被动接收', 'required': True, 'auto_generated': False},
-                {'name': 'description', 'label': '告警描述', 'type': 'string', 'category': '告警属性-被动接收', 'required': False, 'auto_generated': False},
-                {'name': 'severity', 'label': '严重程度', 'type': 'string', 'category': '告警属性-被动接收', 'required': True, 'auto_generated': False},
-                {'name': 'status', 'label': '状态', 'type': 'string', 'category': '告警属性-被动接收', 'required': True, 'auto_generated': False},
-                {'name': 'source', 'label': '数据源', 'type': 'string', 'category': '数据源-被动接收', 'required': True, 'auto_generated': False},
-                {'name': 'source_product', 'label': '产品类型', 'type': 'string', 'category': '数据源-被动接收', 'required': False, 'auto_generated': False},
-                {'name': 'src_ip', 'label': '源地址', 'type': 'string', 'category': '网络-被动接收', 'required': False, 'auto_generated': False},
-                {'name': 'src_port', 'label': '源端口', 'type': 'number', 'category': '网络-被动接收', 'required': False, 'auto_generated': False},
-                {'name': 'dst_ip', 'label': '目标地址', 'type': 'string', 'category': '网络-被动接收', 'required': False, 'auto_generated': False},
-                {'name': 'dst_port', 'label': '目标端口', 'type': 'number', 'category': '网络-被动接收', 'required': False, 'auto_generated': False},
-                {'name': 'protocol', 'label': '协议', 'type': 'string', 'category': '网络-被动接收', 'required': False, 'auto_generated': False},
-                {'name': 'hostname', 'label': '主机名', 'type': 'string', 'category': '资产-被动接收', 'required': False, 'auto_generated': False},
-                {'name': 'raw_log', 'label': '原始日志', 'type': 'string', 'category': '原始数据-被动接收', 'required': False, 'auto_generated': False},
-                {'name': 'parsed_data', 'label': '解析数据', 'type': 'json', 'category': '原始数据-被动接收', 'required': False, 'auto_generated': False},
+                # 主动存储的字段（用户可配置写入）
+                {'name': 'title', 'label': '告警标题', 'type': 'string', 'category': '告警属性-主动存储', 'required': True, 'auto_generated': False},
+                {'name': 'description', 'label': '告警描述', 'type': 'string', 'category': '告警属性-主动存储', 'required': False, 'auto_generated': False},
+                {'name': 'severity', 'label': '严重程度', 'type': 'string', 'category': '告警属性-主动存储', 'required': True, 'auto_generated': False},
+                {'name': 'status', 'label': '状态', 'type': 'string', 'category': '告警属性-主动存储', 'required': True, 'auto_generated': False},
+                {'name': 'source', 'label': '数据源', 'type': 'string', 'category': '数据源-主动存储', 'required': True, 'auto_generated': False},
+                {'name': 'source_product', 'label': '产品类型', 'type': 'string', 'category': '数据源-主动存储', 'required': False, 'auto_generated': False},
+                {'name': 'src_ip', 'label': '源地址', 'type': 'string', 'category': '网络-主动存储', 'required': False, 'auto_generated': False},
+                {'name': 'src_port', 'label': '源端口', 'type': 'number', 'category': '网络-主动存储', 'required': False, 'auto_generated': False},
+                {'name': 'dst_ip', 'label': '目标地址', 'type': 'string', 'category': '网络-主动存储', 'required': False, 'auto_generated': False},
+                {'name': 'dst_port', 'label': '目标端口', 'type': 'number', 'category': '网络-主动存储', 'required': False, 'auto_generated': False},
+                {'name': 'protocol', 'label': '协议', 'type': 'string', 'category': '网络-主动存储', 'required': False, 'auto_generated': False},
+                {'name': 'hostname', 'label': '主机名', 'type': 'string', 'category': '资产-主动存储', 'required': False, 'auto_generated': False},
+                {'name': 'raw_log', 'label': '原始日志', 'type': 'string', 'category': '原始数据-主动存储', 'required': False, 'auto_generated': False},
+                {'name': 'parsed_data', 'label': '解析数据', 'type': 'json', 'category': '原始数据-主动存储', 'required': False, 'auto_generated': False},
             ]
-            
-            # 确保安全告警存储表存在
-            for table_name in ['alerts', 'security_alerts']:
+
+            # 确保系统预置表存在（alert_logs 和 security_events）
+            for table_name in ['alert_logs', 'security_events']:
                 if not StorageTable.query.filter_by(name=table_name).first():
                     table = StorageTable(
                         name=table_name,
-                        display_name='安全告警表' if table_name == 'security_alerts' else '告警表(别名)',
+                        display_name='安全告警表' if table_name == 'alert_logs' else '安全事件表',
                         data_source='系统',
-                        log_type='security_alert',
+                        log_type='timescaledb' if table_name == 'alert_logs' else 'postgresql',
                         retention_days=90,
                         partition_interval='1天',
-                        indexes=[{'field': 'alert_code', 'type': 'btree'}],
-                        columns=SECURITY_ALERT_COLUMNS,
+                        indexes=[{'field': 'alert_code', 'type': 'btree'}] if table_name == 'alert_logs' else [],
+                        columns=SECURITY_ALERT_COLUMNS if table_name == 'alert_logs' else [],
                         row_count=0,
                         size='0 MB',
                         compression=True,
-                        auto_created=True,
+                        auto_created=True,  # 标记为系统预置
                         created_by_pipeline='system'
                     )
                     db.session.add(table)
             db.session.commit()
-            print("✓ 安全告警存储表初始化完成")
+            print("✓ 系统预置存储表初始化完成")
         except Exception as e:
             print(f"安全告警存储表初始化: {e}")
 

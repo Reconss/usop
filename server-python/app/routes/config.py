@@ -61,19 +61,34 @@ def batch_update_config():
     data = request.get_json()
     items = data.get('items', [])
 
+    # 直接使用原生 SQL 插入
     for item in items:
         key = item.get('key')
         value = item.get('value')
         category = item.get('category', 'general')
 
-        config = SystemConfig.query.filter_by(key=key).first()
-        if config:
-            config.value = value
+        # 检查是否已存在
+        existing = db.session.execute(
+            db.text("SELECT id FROM system_config WHERE key = :key"),
+            {"key": key}
+        ).fetchone()
+
+        if existing:
+            db.session.execute(
+                db.text("UPDATE system_config SET value = :value, category = :category, updated_at = NOW() WHERE key = :key"),
+                {"key": key, "value": value, "category": category}
+            )
         else:
-            config = SystemConfig(key=key, value=value, category=category)
-            db.session.add(config)
+            db.session.execute(
+                db.text("INSERT INTO system_config (key, value, category, updated_at) VALUES (:key, :value, :category, NOW())"),
+                {"key": key, "value": value, "category": category}
+            )
 
     db.session.commit()
+
+    # 验证插入
+    count = db.session.execute(db.text("SELECT COUNT(*) FROM system_config")).fetchone()
+    print(f"DEBUG: 插入后 system_config 行数: {count[0]}")
 
     return jsonify({
         'success': True,

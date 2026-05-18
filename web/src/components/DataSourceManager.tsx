@@ -213,7 +213,7 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
   }, [props.dataSources]);
 
   // 获取关联配置所需的真实数据
-  const fetchMappingData = async () => {
+  const fetchMappingData = async (sourceInfo?: any) => {
     setIsLoadingMappingData(true);
     try {
       const [logTypesRes, pipelinesRes, storageRes] = await Promise.allSettled([
@@ -267,6 +267,33 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
       setIsLoadingMappingData(false);
     }
   };
+  
+  // 当加载的数据变化时，尝试恢复已保存的配置
+  useEffect(() => {
+    if (!showMappingModal || !selectedSource || pipelines.length === 0 || storageTables.length === 0) {
+      return;
+    }
+    const source = selectedSource as any;
+    // 恢复智能解析
+    const pipeIds = source.pipelineIds || source.pipeline_ids || [];
+    if (pipeIds.length > 0) {
+      const matched = pipeIds.map((id: string) => String(id));
+      const validPipelines = pipelines.filter((p: any) => matched.includes(String(p.id)));
+      if (validPipelines.length > 0 && selectedPipelines.length === 0) {
+        setSelectedPipelines(matched);
+      }
+    }
+    // 恢复存储配置 - 用table_name匹配
+    const tableName = source.storageTableName || source.storage_table_name || '';
+    if (tableName && !selectedStorageConfig) {
+      const matched = storageTables.find((s: any) => 
+        s.name === tableName || s.table_name === tableName || s.displayName === tableName
+      );
+      if (matched) {
+        setSelectedStorageConfig(String(matched.id));
+      }
+    }
+  }, [showMappingModal, pipelines, storageTables, selectedSource]);
 
   // 打开关联配置弹窗时获取数据并恢复已保存的配置
   useEffect(() => {
@@ -277,8 +304,8 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
       const pipeIds = source.parsePipelines?.filter((p: any) => p?.id).map((p: any) => p.id) 
         || source.pipelineIds || source.pipeline_ids || [];
       setSelectedPipelines(pipeIds);
-      setSelectedStorageConfig(source.storageTableName || source.storage_table_name || '');
-      fetchMappingData();
+      setSelectedStorageConfig(source.storageConfigId || source.storage_config_id || '');
+      fetchMappingData(source);
     }
   }, [showMappingModal, selectedSource]);
 
@@ -552,7 +579,7 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
                             setSelectedLogType((source as any).logTypeId || (source as any).log_type_id || '');
                             const pipeIds = (source.pipelineIds || source.pipeline_ids || []).map((id: any) => String(id));
                             setSelectedPipelines(pipeIds);
-                            setSelectedStorageConfig(source.storageTableName || source.storage_table_name || '');
+                            setSelectedStorageConfig(source.storageConfigId || source.storage_config_id || '');
                           }
                         } catch (e) {
                           // 失败时使用本地数据
@@ -560,7 +587,7 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
                           setSelectedLogType((source as any).logTypeId || (source as any).log_type_id || '');
                           const pipeIds = (source.pipelineIds || source.pipeline_ids || []).map((id: any) => String(id));
                           setSelectedPipelines(pipeIds);
-                          setSelectedStorageConfig(source.storageTableName || source.storage_table_name || '');
+                          setSelectedStorageConfig(source.storageConfigId || source.storage_config_id || '');
                         }
                         setShowMappingModal(true);
                       }}
@@ -983,7 +1010,6 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
                                 </span>
                               )}
                               <span className="px-1.5 py-0.5 text-xs bg-page-bg text-text-secondary rounded ml-auto">
-                                #{index + 1}
                               </span>
                             </div>
                             <p className="text-xs text-text-muted pl-6">

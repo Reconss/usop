@@ -9,7 +9,7 @@ import {
   RefreshCw, Shield, Activity, Brain, Siren, ShieldCheck,
   Clock, Calendar, FileSearch, BarChart3, Target,
   HardDrive, Upload, Download, ShieldAlert,
-  Globe, Lock, Server, Check, LayoutGrid, Filter, Loader2,
+  Globe, Lock, Server, Check, LayoutGrid, Filter, Loader2, Play, Pause,
   ArrowRight
 } from 'lucide-react';
 import { logTypesApi, dataSourcesApi, rulesApi, alertFieldsApi, pipelineMappingsApi, pipelinesApi, formatTemplatesApi, storageTablesApi } from '../services/api';
@@ -1307,14 +1307,27 @@ export default function SmartParser() {
       mode: pipeline.mode || 'single',
       smartDetect: pipeline.smartDetect || false,
       parserConfig: pipeline.parserConfig || {},
-      sample: pipeline.sample || '',
+      sample: pipeline.sample || pipeline.sample_log || pipeline.input_config?.sample_log || '',
       selectedRules: pipeline.selectedRules || [],
       linkedPipelines: pipeline.linkedPipelines || [],
       linkedTemplates: pipeline.linkedTemplates || []
     });
     
-    // 规范化 fieldMappings: 后端存为 dict，前端需要 array
-    const pipelineFMs = Array.isArray(pipeline.fieldMappings) ? pipeline.fieldMappings : [];
+    // 规范化 fieldMappings: 后端存为 dict 或 array，前端需要 array
+    // 支持两种格式：1) fieldMappings 数组 2) field_mapping 对象
+    let pipelineFMs: any[] = [];
+    if (Array.isArray(pipeline.fieldMappings)) {
+      pipelineFMs = pipeline.fieldMappings;
+    } else if (pipeline.field_mapping && typeof pipeline.field_mapping === 'object') {
+      // 从 field_mapping 对象转换: {"source": "target"} -> [{sourceField, targetField}]
+      pipelineFMs = Object.entries(pipeline.field_mapping).map(([source, target]: [string, any]) => ({
+        sourceField: source,
+        targetField: target,
+        type: 'string',
+        defaultValue: ''
+      }));
+    }
+    
     setConfigDetectedFields(pipelineFMs.map(fm => ({
       name: fm.sourceField,
       type: fm.type,
@@ -1359,8 +1372,19 @@ export default function SmartParser() {
     } else {
       setFieldMappings([]);
     }
+
+    // 如果有样本日志，自动解析并恢复解析后的字段
+    const sampleLog = pipeline.sample || pipeline.sample_log || pipeline.input_config?.sample_log || '';
+    const parserType = pipeline.parser;
+    const parserCfg = pipeline.parserConfig || {};
+    if (sampleLog?.trim()) {
+      setTimeout(() => {
+        runTestParse(sampleLog, parserType, parserCfg);
+      }, 100);
+    }
+
     setShowAddModal(true);
-  }, [storageTables]);
+  }, [storageTables, runTestParse]);
 
   const openDetail = useCallback((pipeline: ParsePipeline) => {
     setSelectedPipeline(pipeline);
@@ -1762,7 +1786,6 @@ export default function SmartParser() {
                         <Sparkles className="w-3 h-3" /> 智能
                       </span>
                     )}
-                    // 状态显示已简化
                   </div>
                   <div className="flex items-center gap-3 mt-1">
                     {pipeline.logTypeName && (
@@ -1810,19 +1833,6 @@ export default function SmartParser() {
                     title="编辑"
                   >
                     <Edit3 className="w-4 h-4" />
-                  </motion.button>
-                  <motion.button
-                    whileHover={{ scale: 1.1 }}
-                    whileTap={{ scale: 0.9 }}
-                    onClick={() => toggleActive(pipeline.id)}
-                    className={`p-1.5 rounded-lg transition-colors ${
-                      pipeline.isActive
-                        ? 'text-amber-500 hover:bg-amber-50'
-                        : 'text-emerald-500 hover:bg-emerald-50'
-                    }`}
-                    title={pipeline.isActive ? '暂停' : '启用'}
-                  >
-                    {pipeline.isActive ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
                   </motion.button>
                   <motion.button
                     whileHover={{ scale: 1.1 }}
@@ -2998,16 +3008,6 @@ export default function SmartParser() {
                   className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-primary/10 text-primary rounded-lg hover:bg-primary/20 transition-colors text-sm font-medium"
                 >
                   <Edit3 className="w-4 h-4" /> 编辑
-                </button>
-                <button
-                  onClick={() => { toggleActive(selectedPipeline.id!); setShowDetailModal(false); }}
-                  className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg transition-colors text-sm font-medium ${
-                    selectedPipeline.isActive 
-                      ? 'bg-amber-50 text-amber-600 hover:bg-amber-100' 
-                      : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100'
-                  }`}
-                >
-                  
                 </button>
                 <button
                   onClick={() => { setShowDetailModal(false); setShowDeleteConfirm(selectedPipeline); }}

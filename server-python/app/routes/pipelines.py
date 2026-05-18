@@ -85,7 +85,7 @@ def create_pipeline():
         product_id=product_id,
         log_type_id=data.get('log_type_id'),
         format_id=format_id,
-        output_table_id=data.get('output_table_id'),
+        output_table_id=str(data['output_table_id']) if data.get('output_table_id') else None,
         input_format=data.get('input_format', 'json'),
         input_config=data.get('input_config', {}),
         field_mapping=data.get('field_mapping', {}),
@@ -136,7 +136,8 @@ def update_pipeline(id):
                 return jsonify({'success': False, 'error': '格式模板不存在'}), 400
         pipeline.format_id = data['format_id']
     if 'output_table_id' in data:
-        pipeline.output_table_id = data['output_table_id']
+        # 转换为字符串，避免类型不匹配问题
+        pipeline.output_table_id = str(data['output_table_id']) if data['output_table_id'] else None
     if 'input_format' in data:
         pipeline.input_format = data['input_format']
     if 'input_config' in data:

@@ -578,7 +578,7 @@ class Pipeline(db.Model):
             'format_name': self.format_template.name if self.format_template else None,
             'format_type': self.format_template.type if self.format_template else None,
             'output_table_id': self.output_table_id,
-            'output_table_name': self.output_table.name if self.output_table else None,
+            'output_table_name': None,
             'input_format': self.input_format,
             'input_config': self.input_config or {},
             'field_mapping': self.field_mapping or {},

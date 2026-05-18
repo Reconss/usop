@@ -1,165 +1,170 @@
+networks:
+  log-platform:
+    driver: bridge
 services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: usop_postgres
-    environment:
-      POSTGRES_USER: usop
-      POSTGRES_PASSWORD: usop_password
-      POSTGRES_DB: usop_security
-    ports:
-      - "5432:5432"
-    volumes:
-      - ./data/postgres:/var/lib/postgresql/data
-    restart: unless-stopped
-    networks:
-      - log-platform
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U usop -d usop_security"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  timescale:
-    image: timescale/timescaledb:latest-pg16
-    container_name: timescale
-    environment:
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_USER: postgres
-      POSTGRES_DB: postgres
-    ports:
-      - "5433:5432"
-    volumes:
-      - ./data/timescale:/var/lib/postgresql/data
-    restart: unless-stopped
-    networks:
-      - log-platform
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:7-alpine
-    container_name: redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - ./data/redis:/data
-    command: redis-server --appendonly yes
-    networks:
-      - log-platform
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  kafka:
-    image: confluentinc/cp-kafka:7.5.0
-    container_name: kafka
-    ports:
-      - "9092:9092"
-      - "29092:29092"
-    environment:
-      KAFKA_NODE_ID: 1
-      CLUSTER_ID: TUMghNssTfuY70MTwaCWkQ
-      KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT_INTERNAL://0.0.0.0:29092
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:29092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
-      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-    volumes:
-      - ./data/kafka:/var/lib/kafka/data
-    networks:
-      - log-platform
-    healthcheck:
-      test: ["CMD", "kafka-broker-id", "--verify", "--bootstrap-server", "localhost:9092"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-
-  # Flink 集群
   flink-jobmanager:
-    image: flink:1.18.1-scala_2.12-java11
-    container_name: flink-jobmanager
-    ports:
-      - "8081:8081"
     command: jobmanager
+    container_name: flink-jobmanager
     environment:
-      - FLINK_PROPERTIES=
-      - jobmanager.rpc.address=flink-jobmanager
-      - state.backend.filesystem
-      - state.checkpoints.dir=file:///opt/flink/checkpoints
-    volumes:
-      - ./flink-jobs:/opt/flink/jobs
-      - ./data/flink:/opt/flink/checkpoints
-    networks:
-      - log-platform
+    - FLINK_PROPERTIES=jobmanager.rpc.address=flink-jobmanager
+    - FLINK_PROPERTIES=state.backend=filesystem
+    - FLINK_PROPERTIES=state.checkpoints.dir=file:///opt/flink/checkpoints
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8081/overview || exit 1"]
       interval: 30s
-      timeout: 10s
       retries: 5
-
-  flink-taskmanager:
+      test:
+      - CMD-SHELL
+      - curl -f http://localhost:8081/overview || exit 1
+      timeout: 10s
     image: flink:1.18.1-scala_2.12-java11
+    networks:
+    - log-platform
+    ports:
+    - 8081:8081
+    volumes:
+    - ./flink-jobs:/opt/flink/jobs
+    - ./data/flink:/opt/flink/checkpoints
+    - ./flink-conf/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml
+  flink-taskmanager:
     command: taskmanager
     depends_on:
-      - flink-jobmanager
-    environment:
-      - FLINK_PROPERTIES=
-      - jobmanager.rpc.address=flink-jobmanager
-      - taskmanager.numberOfTaskSlots=4
-    volumes:
-      - ./flink-jobs:/opt/flink/jobs
-      - ./data/flink:/opt/flink/checkpoints
-    networks:
-      - log-platform
+    - flink-jobmanager
     deploy:
       replicas: 2
-
-  # 统一后端服务（包含后端API + 前端）
+    environment:
+    - FLINK_PROPERTIES=jobmanager.rpc.address=flink-jobmanager
+    - FLINK_PROPERTIES=taskmanager.numberOfTaskSlots=4
+    image: flink:1.18.1-scala_2.12-java11
+    networks:
+    - log-platform
+    volumes:
+    - ./flink-jobs:/opt/flink/jobs
+    - ./data/flink:/opt/flink/checkpoints
+    - ./flink-conf/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml
+  kafka:
+    container_name: kafka
+    environment:
+      CLUSTER_ID: TUMghNssTfuY70MTwaCWkQ
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:29092
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT_INTERNAL://0.0.0.0:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_NODE_ID: 1
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+    healthcheck:
+      interval: 30s
+      retries: 5
+      test:
+      - CMD
+      - kafka-broker-id
+      - --verify
+      - --bootstrap-server
+      - localhost:9092
+      timeout: 10s
+    image: confluentinc/cp-kafka:7.5.0
+    networks:
+    - log-platform
+    ports:
+    - 9092:9092
+    - 29092:29092
+    volumes:
+    - ./data/kafka:/var/lib/kafka/data
+  postgres:
+    container_name: usop_postgres
+    environment:
+      POSTGRES_DB: usop_security
+      POSTGRES_PASSWORD: usop_password
+      POSTGRES_USER: usop
+    healthcheck:
+      interval: 10s
+      retries: 5
+      test:
+      - CMD-SHELL
+      - pg_isready -U usop -d usop_security
+      timeout: 5s
+    image: postgres:16-alpine
+    networks:
+    - log-platform
+    ports:
+    - 5432:5432
+    restart: unless-stopped
+    volumes:
+    - ./data/postgres:/var/lib/postgresql/data
+  redis:
+    command: redis-server --appendonly yes
+    container_name: redis
+    healthcheck:
+      interval: 10s
+      retries: 5
+      test:
+      - CMD
+      - redis-cli
+      - ping
+      timeout: 5s
+    image: redis:7-alpine
+    networks:
+    - log-platform
+    ports:
+    - 6379:6379
+    volumes:
+    - ./data/redis:/data
+  timescale:
+    container_name: timescale
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: postgres
+    healthcheck:
+      interval: 10s
+      retries: 5
+      test:
+      - CMD-SHELL
+      - pg_isready -U postgres
+      timeout: 5s
+    image: timescale/timescaledb:latest-pg16
+    networks:
+    - log-platform
+    ports:
+    - 5433:5432
+    restart: unless-stopped
+    volumes:
+    - ./data/timescale:/var/lib/postgresql/data
   usop:
     build:
       context: .
       dockerfile: Dockerfile.all
     container_name: usop_all
-    ports:
-      - "3266:3266"
-      - "5001:5001"
-    environment:
-      - SKIP_BIGDATA_CHECK=1
-      - DATABASE_URL=postgresql://usop:usop_password@postgres:5432/usop_security
-      - TSDB_HOST=timescale
-      - TSDB_PORT=5432
-      - TSDB_USER=postgres
-      - TSDB_PASSWORD=postgres
-      - TSDB_NAME=postgres
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
-      - FLINK_REST_API=http://flink-jobmanager:8081
-    volumes:
-      - ./server-python/app:/app/app
-      - ./web/src:/app/web/src
     depends_on:
       postgres:
         condition: service_healthy
-      timescale:
-        condition: service_healthy
       redis:
         condition: service_healthy
+      timescale:
+        condition: service_healthy
+    environment:
+    - SKIP_BIGDATA_CHECK=1
+    - DATABASE_URL=postgresql://usop:usop_password@postgres:5432/usop_security
+    - TSDB_HOST=timescale
+    - TSDB_PORT=5432
+    - TSDB_USER=postgres
+    - TSDB_PASSWORD=postgres
+    - TSDB_NAME=postgres
+    - REDIS_HOST=redis
+    - REDIS_PORT=6379
+    - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+    - FLINK_REST_API=http://flink-jobmanager:8081
     networks:
-      - log-platform
+    - log-platform
+    ports:
+    - 3266:3266
+    - 5001:5001
     restart: unless-stopped
-
-networks:
-  log-platform:
-    driver: bridge
+    volumes:
+    - ./server-python/app:/app/app
+    - ./web/src:/app/web/src

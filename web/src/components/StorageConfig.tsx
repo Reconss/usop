@@ -258,7 +258,7 @@ export default function StorageConfig() {
     setFormRetention(item.retentionDays || 90);
     setFormPartition(item.partitionInterval || '1 day');
     setFormCompression(item.compression ?? true);
-    setFormColumns(item.columns?.length ? item.columns.map(c => ({ ...c })) : []);
+    setFormColumns(item.columns ? item.columns.map(c => ({ ...c })) : []);
     // 尝试从 indexes 恢复 db 特定配置
     const dbType = item.logType || 'timescaledb';
     const extra = defaultExtra(dbType);
@@ -341,13 +341,8 @@ export default function StorageConfig() {
           <h1 className="text-xl font-semibold text-text-primary">存储配置</h1>
           <p className="text-sm text-text-secondary mt-1">管理系统存储表，查看表结构与字段定义</p>
         </div>
-        <button
-          onClick={openCreateModal}
-          className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary-hover transition-colors"
-        >
-          <Plus className="w-4 h-4" />
-          新建存储表
-        </button>
+        {/* 新建存储表按钮已禁用 */}
+        {/* <button onClick={openCreateModal} ...>新建存储表</button> */}
       </div>
 
       {/* ===== 系统预置表 ===== */}
@@ -425,9 +420,18 @@ export default function StorageConfig() {
                                 {cols.map(col => (
                                   <div
                                     key={col.name}
-                                    className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm ${col.required ? 'bg-rose-50/30 border-rose-200' : 'bg-page-bg border-border-color'}`}
+                                    className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm ${
+                                      col.auto_generated 
+                                        ? 'bg-slate-100 border-slate-200 opacity-75'  // 系统自动生成字段
+                                        : col.required 
+                                          ? 'bg-rose-50/30 border-rose-200'  // 必填字段
+                                          : 'bg-page-bg border-border-color'  // 可选字段
+                                    }`}
                                   >
                                     <code className="text-xs font-mono text-text-primary flex-1 truncate">{col.name}</code>
+                                    {col.auto_generated && (
+                                      <span className="text-xs px-1.5 py-0.5 bg-slate-200 text-slate-600 rounded">系统</span>
+                                    )}
                                     <span className="text-xs text-text-secondary">{col.label}</span>
                                     <span className={`text-[10px] px-1.5 py-0.5 rounded-full border ${TYPE_COLORS[col.type] || 'bg-page-bg text-text-secondary border-border-color'}`}>{col.type}</span>
                                     {col.required && <span className="text-rose-500 text-xs font-bold">*</span>}
@@ -457,7 +461,8 @@ export default function StorageConfig() {
       </div>
 
       {/* ===== 自定义存储表 ===== */}
-      {customConfigs.length > 0 && (
+      {/* 自定义表功能已禁用，系统预置表已满足需求 */}
+      {false && (
         <div>
           <div className="flex items-center gap-2 mb-4">
             <Database className="w-5 h-5 text-text-secondary" />
@@ -500,12 +505,16 @@ export default function StorageConfig() {
                     )}
                   </div>
                   <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-                    <button onClick={() => openEditModal(item)} className="p-1.5 text-text-muted hover:text-primary rounded-lg hover:bg-primary/10 transition-colors">
-                      <Edit3 className="w-4 h-4" />
-                    </button>
-                    <button onClick={() => setShowDelete(item)} className="p-1.5 text-text-muted hover:text-rose-600 rounded-lg hover:bg-rose-50 transition-colors">
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    {(item.autoCreated || item.is_preset) ? null : (
+                      <>
+                        <button onClick={() => openEditModal(item)} className="p-1.5 text-text-muted hover:text-primary rounded-lg hover:bg-primary/10 transition-colors">
+                          <Edit3 className="w-4 h-4" />
+                        </button>
+                        <button onClick={() => setShowDelete(item)} className="p-1.5 text-text-muted hover:text-rose-600 rounded-lg hover:bg-rose-50 transition-colors">
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
               );
