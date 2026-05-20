@@ -102,7 +102,7 @@ def main():
     
     # 获取端口
     port = int(os.getenv('FLASK_PORT', '5001'))
-    debug = os.getenv('FLASK_DEBUG', 'True').lower() in ('true', '1', 'yes')
+    debug = os.getenv('FLASK_DEBUG', 'False').lower() in ('true', '1', 'yes')
     
     app.run(host='0.0.0.0', port=port, debug=debug)
 

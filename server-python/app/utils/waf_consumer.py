@@ -48,7 +48,7 @@ class WAFLogConsumer:
             return
         
         # 从环境变量获取 Kafka 配置
-        self.bootstrap_servers = bootstrap_servers or os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'kafka:29092')
+        self.bootstrap_servers = bootstrap_servers or os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092')
         self.topic = "waf-alert"
         self.group_id = "waf-consumer-group"
         self._consumer: Optional[KafkaConsumer] = None
@@ -99,7 +99,8 @@ class WAFLogConsumer:
         # 生成告警编号
         alert_id = raw_log.get('alert_id', '')
         if not alert_id:
-            alert_id = f"WAF-{int(time.time() * 1000)}"
+            # 使用时间戳后6位，确保不超出 VARCHAR(20)
+            alert_id = f"WAF-{int(time.time() * 1000) % 1000000}"
         
         # 解析时间戳
         timestamp = raw_log.get('timestamp', '')
@@ -276,6 +277,10 @@ class WAFLogConsumer:
             
         except KafkaError as e:
             logger.error(f"WAF Consumer 启动失败: {e}")
+            # 不影响主服务运行
+            self._running = False
+        except Exception as e:
+            logger.error(f"WAF Consumer 异常: {e}")
             self._running = False
         except Exception as e:
             logger.error(f"WAF Consumer 启动异常: {e}")

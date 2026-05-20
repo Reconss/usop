@@ -295,6 +295,13 @@ def create_app():
             'timestamp': datetime.now().isoformat()
         }
 
+    # 初始化 WAF 日志消费者
+    try:
+        from app.utils.waf_consumer import init_waf_consumer
+        init_waf_consumer(app)
+    except Exception as e:
+        print(f"⚠ WAF 消费者初始化失败: {e}")
+
     # 404 handler
     @app.errorhandler(404)
     def not_found(e):

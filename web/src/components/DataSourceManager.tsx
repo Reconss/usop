@@ -174,6 +174,7 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
   const [loading, setLoading] = useState(true);
   const [filterType, setFilterType] = useState<'all' | 'pull' | 'push'>('all');
   const [showAddModal, setShowAddModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [showPipelineModal, setShowPipelineModal] = useState(false);
@@ -185,6 +186,7 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
   const [testSuccess, setTestSuccess] = useState(false);
   const [selectedPipelines, setSelectedPipelines] = useState<string[]>([]);
   const [formData, setFormData] = useState<Record<string, string>>({});
+  const [editFormData, setEditFormData] = useState<Record<string, any>>({});
   
   // 关联配置状态
   const [showMappingModal, setShowMappingModal] = useState(false);
@@ -644,7 +646,17 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
                   <button onClick={() => handleViewClick(source)} className="p-1.5 text-text-muted hover:text-primary rounded-lg hover:bg-primary/10 transition-colors">
                     <Eye className="w-4 h-4" />
                   </button>
-                  <button onClick={() => props.onEditSource && props.onEditSource(source)} className="p-1.5 text-text-muted hover:text-primary rounded-lg hover:bg-primary/10 transition-colors">
+                  <button onClick={() => {
+                      setSelectedSource(source);
+                      setEditFormData({
+                        name: source.name || '',
+                        host: source.host || '',
+                        port: source.port || '',
+                        protocol: source.protocol || source.source_type || '',
+                        description: source.description || '',
+                      });
+                      setShowEditModal(true);
+                    }} className="p-1.5 text-text-muted hover:text-primary rounded-lg hover:bg-primary/10 transition-colors">
                     <Edit3 className="w-4 h-4" />
                   </button>
                   <button onClick={() => handleDeleteClick(source)} className="p-1.5 text-text-muted hover:text-red-600 rounded-lg hover:bg-red-50 transition-colors">
@@ -1348,6 +1360,117 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
               <div className="flex justify-end gap-3 pt-4 border-t border-border-color">
                 <button onClick={() => setShowDeleteModal(false)} className="px-4 py-2 text-text-secondary hover:text-text-primary text-sm">取消</button>
                 <button onClick={confirmDelete} className="px-4 py-2 bg-rose-600 text-white rounded-lg hover:bg-rose-700 text-sm font-medium">确认删除</button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      {/* 编辑数据源弹窗 */}
+      <AnimatePresence>
+        {showEditModal && selectedSource && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+            onClick={() => setShowEditModal(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-card-bg border border-border-color rounded-xl p-6 w-full max-w-2xl max-h-[85vh] overflow-auto shadow-2xl"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between border-b border-border-color pb-6 mb-6">
+                <h2 className="text-lg font-semibold text-text-primary">编辑数据源</h2>
+                <button onClick={() => setShowEditModal(false)} className="p-2 text-text-muted hover:text-text-secondary rounded-lg hover:bg-page-bg transition-colors">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-text-secondary text-sm font-medium mb-2">数据源名称</label>
+                  <input 
+                    type="text" 
+                    value={editFormData.name || ''}
+                    onChange={e => setEditFormData({ ...editFormData, name: e.target.value })}
+                    placeholder="输入数据源名称"
+                    className="w-full px-3 py-2 bg-card-bg border border-border-color rounded-lg text-text-primary focus:ring-2 focus:ring-primary/20 focus:border-transparent" 
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-text-secondary text-sm font-medium mb-2">协议类型</label>
+                  <select
+                    value={editFormData.protocol || ''}
+                    onChange={e => setEditFormData({ ...editFormData, protocol: e.target.value })}
+                    className="w-full px-3 py-2 bg-card-bg border border-border-color rounded-lg text-text-primary focus:ring-2 focus:ring-primary/20 focus:border-transparent"
+                  >
+                    <option value="">选择协议</option>
+                    {Object.keys(protocolIcons).map(key => (
+                      <option key={key} value={key}>{key.toUpperCase()}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-text-secondary text-sm font-medium mb-2">主机地址</label>
+                    <input 
+                      type="text" 
+                      value={editFormData.host || ''}
+                      onChange={e => setEditFormData({ ...editFormData, host: e.target.value })}
+                      placeholder="localhost 或 IP"
+                      className="w-full px-3 py-2 bg-card-bg border border-border-color rounded-lg text-text-primary focus:ring-2 focus:ring-primary/20 focus:border-transparent" 
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-text-secondary text-sm font-medium mb-2">端口</label>
+                    <input 
+                      type="text" 
+                      value={editFormData.port || ''}
+                      onChange={e => setEditFormData({ ...editFormData, port: e.target.value })}
+                      placeholder="端口号"
+                      className="w-full px-3 py-2 bg-card-bg border border-border-color rounded-lg text-text-primary focus:ring-2 focus:ring-primary/20 focus:border-transparent" 
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-text-secondary text-sm font-medium mb-2">描述</label>
+                  <textarea 
+                    value={editFormData.description || ''}
+                    onChange={e => setEditFormData({ ...editFormData, description: e.target.value })}
+                    placeholder="输入数据源描述（可选）"
+                    className="w-full px-3 py-2 bg-card-bg border border-border-color rounded-lg text-text-primary h-20 resize-none focus:ring-2 focus:ring-primary/20 focus:border-transparent" 
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-3 pt-6 mt-6 border-t border-border-color">
+                <button onClick={() => setShowEditModal(false)} className="px-4 py-2 text-text-secondary hover:text-text-primary text-sm">取消</button>
+                <button onClick={async () => {
+                  try {
+                    const res = await dataSourcesApi.updateDataSource(Number(selectedSource.id), {
+                      name: editFormData.name,
+                      host: editFormData.host,
+                      port: editFormData.port,
+                      protocol: editFormData.protocol,
+                      description: editFormData.description,
+                    });
+                    if (res.success !== false) {
+                      setDataSources(prev => prev.map(ds => 
+                        String(ds.id) === String(selectedSource.id) 
+                          ? { ...ds, ...editFormData, source_type: editFormData.protocol }
+                          : ds
+                      ));
+                      setShowEditModal(false);
+                    }
+                  } catch (error) {
+                    console.error('更新数据源失败:', error);
+                  }
+                }} className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover text-sm font-medium">保存</button>
               </div>
             </motion.div>
           </motion.div>

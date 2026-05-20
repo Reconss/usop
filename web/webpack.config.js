@@ -70,7 +70,7 @@ module.exports = (env, argv) => {
         logging: 'none'
       },
       host: "0.0.0.0",
-      port: 3266,
+      port: 9000,
       allowedHosts: 'all',
       historyApiFallback: {
         index: '/index.html',
