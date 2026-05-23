@@ -187,23 +187,26 @@ const AICenter: React.FC = () => {
   const deleteSession = useCallback(async(id:string)=>{try{await aiApi.deleteSession(id);setSessions(p=>p.filter(s=>s.id!==id));if(activeSessionId===id){setActiveSessionId(null);setMessages([]);}addToast('success','已删除');}catch{addToast('error','删除失败');}},[activeSessionId,addToast]);
 
   const handleSend = useCallback(async()=>{
-    if(!inputMsg.trim()||!selectedProvider){if(!selectedProvider)addToast('info','请选择模型');return;}
-    // 检测 @Agent名称 模式，自动切换到对应 Agent
-    let providerId=selectedProvider;
+    if(!inputMsg.trim()){addToast('info','请输入消息');return;}
     const mentionMatch=inputMsg.match(/@([\w\u4e00-\u9fa5-]+)/);
-    if(mentionMatch){
-      const agentName=mentionMatch[1];
-      const matchedAgent=agentProviders.find(a=>a.enabled!==false&&a.name.includes(agentName));
-      if(matchedAgent)providerId='agent:'+matchedAgent.id;
-    }
     let sid=activeSessionId;
     if(!sid){try{const r=await aiApi.createSession({title:inputMsg.slice(0,30)});if(r.success){sid=r.data.id;setActiveSessionId(sid);setSessions(p=>[r.data,...p]);}}catch{addToast('error','创建会话失败');return;}}
     const userMsg={role:'user' as const,content:inputMsg};
     setMessages(p=>[...p,userMsg]);setInputMsg('');setChatLoading(true);setStreamingContent('');
     try{
-      const r=await aiApi.invokeAI({provider_id:providerId.split(':')[1],provider_type:providerId.split(':')[0],messages:[...messages,userMsg]});
-      if(r.success){const reply=r.data?.choices?.[0]?.message?.content||'无响应';let idx=0;const iv=setInterval(()=>{idx+=3;if(idx>=reply.length){clearInterval(iv);setStreamingContent('');setMessages(p=>[...p,{role:'assistant',content:reply}]);setChatLoading(false);}else setStreamingContent(reply.slice(0,idx));},20);}
-      else{setChatLoading(false);addToast('error','AI 响应失败');}
+      // @mention → 直接调用 Agent；否则 → LangGraph 编排
+      if(mentionMatch && selectedProvider){
+        const agentName=mentionMatch[1];
+        const matchedAgent=agentProviders.find(a=>a.enabled!==false&&a.name.includes(agentName));
+        const providerId=matchedAgent?'agent:'+matchedAgent.id:selectedProvider;
+        const r=await aiApi.invokeAI({provider_id:providerId.split(':')[1],provider_type:providerId.split(':')[0],messages:[...messages,userMsg]});
+        if(r.success){const reply=r.data?.choices?.[0]?.message?.content||'无响应';let idx=0;const iv=setInterval(()=>{idx+=3;if(idx>=reply.length){clearInterval(iv);setStreamingContent('');setMessages(p=>[...p,{role:'assistant',content:reply}]);setChatLoading(false);}else setStreamingContent(reply.slice(0,idx));},20);}
+        else{setChatLoading(false);addToast('error','AI 响应失败');}
+      }else{
+        // LangGraph 编排
+        const r=await aiApi.orchestrate({query:inputMsg,session_id:sid});
+        if(r.success){const reply=r.data?.response||'无响应';let idx=0;const iv=setInterval(()=>{idx+=3;if(idx>=reply.length){clearInterval(iv);setStreamingContent('');setMessages(p=>[...p,{role:'assistant',content:reply}]);setChatLoading(false);}else setStreamingContent(reply.slice(0,idx));},20);}
+        else{setChatLoading(false);addToast('error','编排失败');}}
     }catch(e:any){setChatLoading(false);setMessages(p=>[...p,{role:'assistant',content:`请求失败: ${e.message}`}]);addToast('error',e.message);}
   },[inputMsg,selectedProvider,activeSessionId,messages,addToast]);
 
@@ -231,10 +234,13 @@ const AICenter: React.FC = () => {
   const handleBatchAnalysis = async()=>{setDepthLoading(true);setDepthInsights(null);try{const r=await aiApi.alertsAnalyzeBatch();setDepthInsights(r.data||r);if(r.success)addToast('success','批量分析完成');}catch(e:any){setDepthInsights({error:e.message});addToast('error',e.message);}setDepthLoading(false);};
 
   const quickActions = [
-    {id:'event',label:'分析事件',icon:Shield,color:'#60a5fa',action:()=>{setInputMsg('请帮我分析事件 ');}},
+    {id:'analyze',label:'告警分析',icon:AlertTriangle,color:'#ef4444',action:()=>{setInputMsg('分析最近的高危告警');}},
+    {id:'event',label:'事件协查',icon:Shield,color:'#60a5fa',action:()=>{setInputMsg('请协查事件 ');}},
+    {id:'triage',label:'告警分诊',icon:Target,color:'#fbbf24',action:()=>{setInputMsg('请分析以下告警的误报概率和优先级：');}},
     {id:'nl',label:'NL查询',icon:MessageCircle,color:'#34d399',action:()=>setShowNlInput(!showNlInput)},
-    {id:'triage',label:'告警评估',icon:Target,color:'#fbbf24',action:()=>{setInputMsg('请评估以下告警的误报概率和优先级：');}},
-    {id:'attack',label:'攻击链',icon:GitBranch,color:'#f472b6',action:()=>{setInputMsg('请追踪事件编号 ');}},
+    {id:'attack',label:'攻击链',icon:GitBranch,color:'#f472b6',action:()=>{setInputMsg('请追踪事件编号的攻击链');}},
+    {id:'respond',label:'智能响应',icon:Zap,color:'#10b981',action:()=>{setInputMsg('请评估事件编号 的风险并建议处置');}},
+    {id:'intel',label:'威胁情报',icon:Search,color:'#8b5cf6',action:()=>{setInputMsg('查询IP 的威胁情报');}},
   ];
 
   // ==================== 主渲染 ====================
@@ -263,7 +269,7 @@ const AICenter: React.FC = () => {
           </div>
           <div className="w-px h-6 bg-border-color" />
           <div className="flex-1 min-w-0">
-            {mainTab==='analysis' && <SubTabBar tabs={[{id:'chat',label:'智能对话',icon:MessageSquare},{id:'deep',label:'深度分析',icon:Combine},{id:'auto',label:'自动化',icon:Zap}]} active={analysisSub} onChange={setAnalysisSub} color="#60a5fa" />}
+            {mainTab==='analysis' && <SubTabBar tabs={[{id:'chat',label:'智能对话',icon:MessageSquare}]} active={analysisSub} onChange={setAnalysisSub} color="#60a5fa" />}
             {mainTab==='config' && <SubTabBar tabs={[{id:'models',label:'模型管理',icon:Brain},{id:'agents',label:'Agent管理',icon:Bot},{id:'feedback',label:'反馈学习',icon:BookOpen}]} active={configSub} onChange={setConfigSub} color="#38bdf8" />}
           </div>
         </div>
@@ -273,8 +279,7 @@ const AICenter: React.FC = () => {
           <AnimatePresence mode="wait">
             <motion.div key={mainTab+'-'+analysisSub+'-'+configSub} initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:0.12}}>
               {mainTab==='analysis' && analysisSub==='chat' && renderChat()}
-              {mainTab==='analysis' && analysisSub==='deep' && renderDeepAnalysis()}
-              {mainTab==='analysis' && analysisSub==='auto' && renderAutomation()}
+
               {mainTab==='config' && configSub==='models' && renderModels()}
               {mainTab==='config' && configSub==='agents' && renderAgents()}
               {mainTab==='config' && configSub==='feedback' && renderFeedback()}
@@ -482,120 +487,6 @@ const AICenter: React.FC = () => {
   }
 
   // ==================== 深度分析 ====================
-  function renderDeepAnalysis() {
-    const tabs = [{id:'insights',label:'AI洞察',icon:Sparkles},{id:'triage',label:'告警分诊',icon:Filter},{id:'investigate',label:'攻击链',icon:Search}];
-    return (
-      <div className="space-y-4">
-        <SubTabBar tabs={tabs} active={depthActiveSubTab} onChange={setDepthActiveSubTab} color="#60a5fa" />
-        {depthActiveSubTab==='insights' && (
-          <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-            <div className="lg:col-span-2 space-y-4">
-              <div className="bg-card-bg border border-border-color rounded-xl p-4">
-                <h3 className="text-sm font-semibold text-text-primary mb-2"><Upload className="w-4 h-4 text-amber-400 inline mr-1.5" />上传分析规则</h3>
-                <p className="text-xs text-text-muted mb-3">粘贴从 AI 对话中提炼的规则或上传 Agent 训练好的规则</p>
-                <textarea value={rulesText} onChange={e=>setRulesText(e.target.value)} placeholder={'例如:\n- 如果源IP在过去1小时内触发>=5次不同告警类型，标记为高风险\n- 如果目标端口为445/3389且来源为外网，标记为横向移动'} rows={5} className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-xs font-mono text-text-primary mb-3" />
-                <button className="w-full px-4 py-2 bg-amber-600 text-white rounded-lg text-xs font-medium hover:bg-amber-500 transition-all active:scale-95 flex items-center justify-center gap-1.5"><Upload className="w-3.5 h-3.5" />应用规则</button>
-              </div>
-              <button onClick={handleBatchAnalysis} disabled={depthLoading}
-                className="w-full px-4 py-3 bg-blue-600 text-white rounded-xl text-sm font-medium disabled:opacity-40 hover:bg-blue-500 transition-all active:scale-95 flex items-center justify-center gap-2">
-                {depthLoading?<Loader2 className="w-4 h-4 animate-spin"/>:<Play className="w-4 h-4"/>}开始批量分析告警
-              </button>
-            </div>
-            <div className="lg:col-span-3">
-              {depthLoading&&<Skeleton lines={5}/>}
-              {depthInsights&&!depthInsights?.error&&(
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between mb-2"><h3 className="text-sm font-semibold text-text-primary"><Sparkles className="w-4 h-4 text-amber-400 inline mr-1"/>分析结果</h3></div>
-                  {(depthInsights.insights||[]).map((insight:any,i:number)=>(
-                    <div key={i} className="bg-card-bg border border-border-color rounded-xl p-4 hover:bg-card-bg-hover transition-colors">
-                      <div className="flex items-center gap-2 mb-1.5">
-                        <AlertTriangle className={'w-4 h-4 '+(insight.severity==='high'?'text-red-400':'text-amber-400')}/>
-                        <span className="font-medium text-sm text-text-primary">{insight.title}</span>
-                        {insight.severity&&<span className={'badge '+(insight.severity==='high'?'badge-critical':'badge-medium')}>{insight.severity}</span>}
-                      </div>
-                      <p className="text-sm text-text-secondary">{insight.description}</p>
-                    </div>
-                  ))}
-                  {depthInsights.analyzed!==undefined&&(
-                    <div className="grid grid-cols-3 gap-3 mt-3">
-                      <div className="p-3 bg-card-bg border border-border-color rounded-lg text-center"><div className="text-lg font-bold text-text-primary">{depthInsights.analyzed}</div><div className="text-[10px] text-text-muted">已分析</div></div>
-                      <div className="p-3 bg-card-bg border border-border-color rounded-lg text-center"><div className="text-lg font-bold text-emerald-400">{depthInsights.events_created||0}</div><div className="text-[10px] text-text-muted">已生成事件</div></div>
-                      <div className="p-3 bg-card-bg border border-border-color rounded-lg text-center"><div className="text-lg font-bold text-amber-400">{depthInsights.high_risk||0}</div><div className="text-[10px] text-text-muted">高风险</div></div>
-                    </div>
-                  )}
-                </div>
-              )}
-              {!depthLoading&&!depthInsights&&<div className="flex flex-col items-center justify-center py-16 text-text-muted"><Sparkles className="w-8 h-8 mb-2 opacity-30"/><div className="text-xs">上传规则或直接点击「开始批量分析」</div></div>}
-            </div>
-          </div>
-        )}
-        {depthActiveSubTab==='triage' && (
-          <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-            <div className="lg:col-span-2 space-y-4">
-              <div className="bg-card-bg border border-amber-500/20 rounded-xl p-4">
-                <div className="flex items-start gap-2 mb-3">
-                  <FileJson className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
-                  <div><h3 className="text-sm font-semibold text-text-primary">告警分诊</h3><p className="text-xs text-text-muted mt-0.5">系统将根据以下固定提示词对告警进行研判分析：</p></div>
-                </div>
-                <div className="p-2.5 bg-page-bg rounded-lg border border-border-color text-[11px] text-text-muted leading-relaxed mb-3">
-                  <span className="text-amber-400 font-medium">系统提示词：</span>你是一个安全告警分诊专家。请分析以下告警的误报概率、优先级等级，并给出处置建议。考虑攻击类型、影响范围、历史关联等因素。
-                </div>
-                <label className="block text-xs text-text-secondary mb-1 font-medium">输入告警 JSON</label>
-                <textarea value={depthTriageInput} onChange={e=>setDepthTriageInput(e.target.value)} placeholder={'[\n  {"id":"ALT-001","title":"端口扫描","severity":"high"}\n]'} rows={5} className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-xs font-mono text-text-primary mb-3" />
-                <button onClick={handleDepthTriage} disabled={depthLoading||!depthTriageInput}
-                  className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-medium disabled:opacity-40 hover:bg-blue-500 transition-all active:scale-95 flex items-center justify-center gap-1.5">
-                  {depthLoading?<Loader2 className="w-3.5 h-3.5 animate-spin"/>:<Target className="w-3.5 h-3.5"/>}开始分诊</button>
-              </div>
-            </div>
-            <div className="lg:col-span-3">
-              {(depthTriageResult?.triage_results||[]).map((r:any,i:number)=>(
-                <div key={i} className="flex items-center gap-3 p-3 bg-card-bg border border-border-color rounded-lg mb-2 hover:bg-card-bg-hover transition-colors">
-                  <div className={'w-2 h-2 rounded-full flex-shrink-0 '+(r.is_false_positive?'bg-gray-500':r.priority==='high'?'bg-red-500':'bg-amber-500')}/>
-                  <span className={'px-2 py-0.5 rounded text-xs font-medium whitespace-nowrap '+(r.is_false_positive?'bg-gray-500/10 text-gray-400 border border-gray-500/20':r.priority==='high'?'bg-red-500/10 text-red-400 border border-red-500/20':'bg-amber-500/10 text-amber-400 border border-amber-500/20')}>{r.is_false_positive?'误报':r.priority}</span>
-                  <span className="text-text-primary text-sm flex-1 min-w-0 truncate">{r.suggested_action||r.alert_id||'告警 #'+(i+1)}</span>
-                  <span className="text-text-muted text-xs truncate max-w-[160px] hidden md:block">{r.reason}</span>
-                </div>
-              ))}
-              {depthTriageResult?.error&&<div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-xs text-red-300"><AlertTriangle className="w-3.5 h-3.5 inline mr-1"/>{depthTriageResult.error}</div>}
-              {!depthLoading&&!depthTriageResult&&<div className="flex flex-col items-center justify-center py-16 text-text-muted"><Filter className="w-8 h-8 mb-2 opacity-30"/><div className="text-xs">左侧输入告警 JSON 后点击开始分诊</div></div>}
-            </div>
-          </div>
-        )}
-        {depthActiveSubTab==='investigate' && (
-          <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-            <div className="lg:col-span-2">
-              <div className="bg-card-bg border border-blue-500/20 rounded-xl p-4">
-                <div className="flex items-start gap-2 mb-3">
-                  <GitBranch className="w-4 h-4 text-blue-400 flex-shrink-0 mt-0.5"/>
-                  <div><h3 className="text-sm font-semibold text-text-primary">攻击链分析</h3><p className="text-xs text-text-muted mt-0.5">系统将根据以下固定提示词进行攻击溯源：</p></div>
-                </div>
-                <div className="p-2.5 bg-page-bg rounded-lg border border-border-color text-[11px] text-text-muted leading-relaxed mb-3">
-                  <span className="text-blue-400 font-medium">系统提示词：</span>你是一个攻击溯源专家。根据输入的事件 ID，关联相关告警、资产信息、攻击源与受害目标，分析攻击手法相似性，生成完整攻击链时间线及 MITRE ATT&CK 映射。
-                </div>
-                <label className="block text-xs text-text-secondary mb-1 font-medium">事件编号</label>
-                <div className="flex gap-2">
-                  <input value={depthInvestigateCode} onChange={e=>setDepthInvestigateCode(e.target.value)} placeholder="输入事件 ID" className="flex-1 px-3 py-2 bg-page-bg border border-border-color rounded-lg text-xs font-mono text-text-primary" />
-                  <button onClick={handleDepthInvestigate} disabled={depthLoading||!depthInvestigateCode} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-medium disabled:opacity-40 hover:bg-blue-500 transition-all active:scale-95 flex items-center gap-1">{depthLoading?<Loader2 className="w-3 h-3 animate-spin"/>:<Search className="w-3 h-3"/>}调查</button>
-                </div>
-              </div>
-            </div>
-            <div className="lg:col-span-3">
-              {(depthInvestigateResult?.timeline||[]).map((s:any,i:number)=>(
-                <div key={i} className="flex items-start gap-3 p-3 bg-card-bg border border-border-color rounded-lg mb-2 hover:bg-card-bg-hover transition-colors">
-                  <div className="w-7 h-7 rounded-full bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-xs font-bold text-blue-400 flex-shrink-0">{s.step}</div>
-                  <div className="min-w-0"><div className="text-sm text-text-primary font-medium">{s.action}</div><div className="text-xs text-text-muted mt-0.5"><GitBranch className="w-3 h-3 inline mr-1"/>{s.mitre_technique||s.detail||'-'}</div></div>
-                </div>
-              ))}
-              {depthInvestigateResult?.error&&<div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-xs text-red-300"><AlertTriangle className="w-3.5 h-3.5 inline mr-1"/>{depthInvestigateResult.error}</div>}
-              {!depthLoading&&!depthInvestigateResult&&<div className="flex flex-col items-center justify-center py-16 text-text-muted"><Search className="w-8 h-8 mb-2 opacity-30"/><div className="text-xs">左侧输入事件编号查看攻击链</div></div>}
-            </div>
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  // ==================== 自动化 ====================
   function renderAutomation() {
     const tabs = [{id:'respond',label:'智能响应',icon:ShieldCheck},{id:'skills',label:'技能中心',icon:Terminal}];
     return (

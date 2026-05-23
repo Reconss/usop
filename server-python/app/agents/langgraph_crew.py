@@ -1,22 +1,21 @@
 """
-LangGraph + CrewAI 编排引擎
+LangGraph + CrewAI 编排引擎 — 覆盖所有 AI 分析能力
 
-架构:
-  用户输入 → LangGraph (意图识别/任务拆分/审批门/执行) → CrewAI Agent 团队
-                                                              ├── alert_collector: 告警采集
-                                                              ├── threat_intel: 威胁情报
-                                                              ├── alert_analyzer: 告警研判
-                                                              └── ip_blocker: IP封禁
+架构: 1 个编排入口 → 意图识别 → CrewAI 多Agent团队 → 结果汇总
+       @mention 可直连 Agent
 
-流程:
-  1. intent_parser — 解析用户意图
-  2. task_splitter — 拆解为子任务列表
-  3. crew_executor — CrewAI 多 Agent 协作执行
-  4. human_approval — 高风险操作等待人工审批
-  5. result_aggregator — 汇总结果为结构化输出
+Agent 团队 (覆盖 8 大能力):
+  1. alert_analyzer   → 告警分析 + 批量分析 + 事件生成
+  2. event_copilot    → 事件协查 (告警关联/攻击链/处置建议)
+  3. triage_expert    → 告警分诊 (误报判断/优先级/建议)
+  4. threat_intel     → 威胁情报查询
+  5. incident_respond → 智能响应 (风险决策/处置动作)
+  6. skill_operator   → 技能中心 (NL指令→技能匹配→执行)
+  7. nl_analyst       → 自然语言查询 (NL→SQL)
+  8. investigator     → 自动调查 (事件ID→攻击时间线+MITRE)
 """
 import json, os, logging, re
-from typing import TypedDict, Annotated, List, Dict, Any, Optional, Literal
+from typing import Tuple, Literal, Optional
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -25,310 +24,210 @@ logger = logging.getLogger(__name__)
 try:
     from langgraph.graph import StateGraph, START, END
     from langgraph.checkpoint.memory import MemorySaver
-    from langgraph.types import Command
     HAS_LANGGRAPH = True
 except ImportError:
     HAS_LANGGRAPH = False
-    logger.warning("langgraph not installed, fallback to direct execution")
 
 # ========== CrewAI ==========
 try:
-    from crewai import Agent, Task, Crew, Process
-    from crewai_tools import BaseTool
+    from crewai import Agent, Task, Crew
     HAS_CREWAI = True
 except ImportError:
     HAS_CREWAI = False
-    logger.warning("crewai not installed, fallback to LLM only")
 
-from .crewai_tools import TimescaleDBTool, QueryAlertsTool, CreateIncidentTool
+from .crewai_tools import (
+    TimescaleDBTool, QueryAlertsTool, CreateIncidentTool,
+    NLQueryTool, SkillExecuteTool, MITRETool
+)
 
 # ========== 状态定义 ==========
-class SecurityState(TypedDict):
-    user_id: str
-    session_id: str
-    query: str                          # 原始用户输入
-    intent: Optional[str]               # 识别后的意图
-    confidence: float                   # 意图置信度
-    alert_context: Optional[Dict]       # 上下文数据
-    task_list: List[Dict]               # 任务列表
-    task_index: int                     # 当前执行到第几个任务
-    results: List[Dict]                 # 已执行完成的结果
-    errors: List[str]                   # 错误信息
-    needs_approval: bool                # 是否需要审批
-    approved: Optional[bool]            # 是否审批通过
-    final_response: Optional[str]       # 最终输出
-    messages: List[Dict]                # 对话历史
+from typing import TypedDict, Annotated, List, Dict, Any
+import operator
 
-# ========== 意图识别 ==========
-INTENT_PATTERNS = {
-    "alert_query": [r"告警", r"alert", r"查看.*事件", r"查询.*告警"],
-    "alert_analyze": [r"分析.*告警", r"研判", r"评估.*风险"],
-    "threat_intel": [r"情报", r"威胁", r"查询.*ip", r"ioc", r"威胁情报"],
-    "ip_block": [r"封禁", r"block", r"拉黑", r"屏蔽.*ip"],
-    "incident_create": [r"创建.*事件", r"升级.*事件", r"生成.*事件"],
-    "general": []
+class SecurityState(TypedDict):
+    query: str
+    intent: str
+    confidence: float
+    task_results: Annotated[List[Dict], operator.add]
+    errors: List[str]
+    needs_approval: bool
+    approved: Optional[bool]
+    final_response: str
+    session_id: str
+
+# ========== 意图识别 (8 大能力) ==========
+INTENT_MAP = {
+    "alert_analyze":     [r"分析.*告警", r"批量.*分析", r"高危", r"异常", r"威胁.*模式"],
+    "event_copilot":     [r"事件协查", r"事件.*分析", r"协查.*事件", r"事件.*调查", r"事件编号"],
+    "triage":            [r"分诊", r"误报", r"优先级", r"降噪", r"研判"],
+    "threat_intel":      [r"情报", r"威胁.*查询", r"查询.*ip", r"ioc", r"ip.*分析"],
+    "incident_respond":  [r"响应", r"封禁", r"隔离", r"处置", r"block", r"自动.*响应"],
+    "skill_execute":     [r"技能", r"执行.*操作", r"封禁", r"拉黑", r"查.*情报"],
+    "nl_query":          [r"查询.*告警", r"最近.*事件", r"过去.*小时", r"列出", r"搜索"],
+    "investigate":       [r"攻击链", r"att&ck", r"mitre", r"时间线", r"溯源"],
 }
 
-def detect_intent(query: str) -> tuple:
-    """基于规则+LLM的意图识别"""
-    query_lower = query.lower()
-    for intent, patterns in INTENT_PATTERNS.items():
-        for p in patterns:
-            if re.search(p, query_lower):
-                return intent, 0.85
-    return "general", 0.6
+def detect_intent(query: str) -> Tuple[str, float]:
+    q = query.lower()
+    for intent, patterns in INTENT_MAP.items():
+        if any(re.search(p, q) for p in patterns):
+            return intent, 0.85
+    return "general", 0.5
 
-# ========== LangGraph 节点 ==========
-def intent_parser_node(state: SecurityState) -> dict:
-    """节点1: 意图识别"""
-    intent, confidence = detect_intent(state["query"])
-    return {"intent": intent, "confidence": confidence,
-            "messages": [{"role": "system", "content": f"意图: {intent} (置信度: {confidence:.2f})"}]}
+# ========== 节点 ==========
+def intent_node(state: SecurityState) -> dict:
+    intent, conf = detect_intent(state["query"])
+    return {"intent": intent, "confidence": conf}
 
-def task_splitter_node(state: SecurityState) -> dict:
-    """节点2: 根据意图拆解任务"""
-    task_templates = {
-        "alert_query": [
-            {"agent": "alert_collector", "description": "查询最近的告警", "priority": 1},
-        ],
-        "alert_analyze": [
-            {"agent": "alert_collector", "description": "查询待分析的高危告警", "priority": 1},
-            {"agent": "threat_intel", "description": "关联告警的威胁情报", "priority": 2},
-            {"agent": "alert_analyzer", "description": "综合研判告警风险", "priority": 3},
-        ],
-        "threat_intel": [
-            {"agent": "threat_intel", "description": state["query"], "priority": 1},
-        ],
-        "ip_block": [
-            {"agent": "alert_collector", "description": "校验IP相关告警", "priority": 1},
-            {"agent": "ip_blocker", "description": state["query"], "priority": 2},
-        ],
-        "incident_create": [
-            {"agent": "alert_analyzer", "description": "综合分析告警", "priority": 1},
-        ],
-        "general": [
-            {"agent": "alert_analyzer", "description": state["query"], "priority": 1},
-        ],
-    }
-    tasks = task_templates.get(state["intent"], task_templates["general"])
-    return {"task_list": tasks, "task_index": 0, "results": []}
+def should_approve(state: SecurityState) -> str:
+    return "approve_required" if state.get("intent") in ("incident_respond",) else "direct"
 
-def should_approve(state: SecurityState) -> Literal["approve_required", "direct_execute"]:
-    """条件边: 判断是否需要人工审批"""
-    if state["intent"] == "ip_block":
-        return "approve_required"
-    return "direct_execute"
-
-def human_approval_node(state: SecurityState) -> dict:
-    """节点3(可选): 人工审批 — 实际中暂停等待API调用"""
+def approval_node(state: SecurityState) -> dict:
     return {"needs_approval": True, "approved": None}
 
-def after_approval(state: SecurityState) -> Literal["execute", "rejected_end"]:
-    """审批后分支"""
-    if state.get("approved"):
-        return "execute"
-    return "rejected_end"
+def after_approval(state: SecurityState) -> str:
+    return "execute" if state.get("approved") else "rejected"
 
-def crew_executor_node(state: SecurityState) -> dict:
-    """节点4: CrewAI Agent 团队执行"""
-    if not HAS_CREWAI:
-        return _llm_fallback(state)
+def execute_agents(state: SecurityState) -> dict:
+    """CrewAI 多 Agent 执行"""
+    query = state["query"]
+    intent = state["intent"]
+    results = []
+    errors = []
 
-    try:
-        results = []
-        for task_def in state["task_list"]:
-            agent_name = task_def["agent"]
-            description = task_def["description"]
-            crew_agent = _get_crew_agent(agent_name)
-            task = Task(description=description, agent=crew_agent,
-                        expected_output="JSON 格式结果，包含分析和建议")
-            crew = Crew(agents=[crew_agent], tasks=[task], verbose=False)
-            result = crew.kickoff()
-            result_str = str(result)
-            results.append({"agent": agent_name, "result": result_str})
-            logger.info(f"CrewAI {agent_name} 执行完成")
+    # 每个意图对应一个 CrewAI Agent
+    agent_map = {
+        "alert_analyze": _get_agent("alert_analyzer", "安全告警分析师",
+            "分析告警数据，识别威胁模式，生成风险事件",
+            [QueryAlertsTool(), CreateIncidentTool(), TimescaleDBTool()]),
+        "event_copilot": _get_agent("event_copilot", "事件协查专家",
+            "关联告警、资产、攻击源，输出事件评价和处置建议",
+            [TimescaleDBTool(), MITRETool()]),
+        "triage": _get_agent("triage_expert", "告警分诊专家",
+            "判断误报概率、评估优先级、给出处置建议",
+            [QueryAlertsTool(), TimescaleDBTool()]),
+        "threat_intel": _get_agent("threat_intel", "威胁情报分析师",
+            "查询IP/域名的威胁情报，关联告警上下文",
+            [TimescaleDBTool()]),
+        "incident_respond": _get_agent("incident_respond", "安全响应专家",
+            "根据事件风险决定处置动作：封禁IP、隔离主机、告警通知",
+            [TimescaleDBTool(), CreateIncidentTool()]),
+        "skill_execute": _get_agent("skill_operator", "安全操作工程师",
+            "根据NL指令匹配并执行已注册的安全技能",
+            [SkillExecuteTool(), TimescaleDBTool()]),
+        "nl_query": _get_agent("nl_analyst", "安全数据查询员",
+            "将自然语言查询转换为数据库查询，返回结果",
+            [NLQueryTool(), TimescaleDBTool()]),
+        "investigate": _get_agent("investigator", "攻击溯源专家",
+            "分析攻击链、MITRE ATT&CK映射、时间线",
+            [TimescaleDBTool(), MITRETool()]),
+    }
 
-        return {"results": results, "task_index": len(state["task_list"])}
-    except Exception as e:
-        logger.error(f"CrewAI execution failed: {e}")
-        return _llm_fallback(state)
+    if intent == "general" or intent not in agent_map:
+        # 通用对话交给 LLM
+        try:
+            from app.routes.ai_api import _deepseek_request
+            r = _deepseek_request(messages=[{"role": "user", "content": query}], temperature=0.5)
+            reply = r.get("choices",[{}])[0].get("message",{}).get("content","")
+            return {"task_results": [{"agent": "assistant", "result": reply}]}
+        except Exception as e:
+            return {"errors": [str(e)]}
 
-def _get_crew_agent(name: str) -> Agent:
-    """获取或创建 CrewAI Agent"""
+    if HAS_CREWAI:
+        try:
+            agent = agent_map[intent]
+            task_desc = f"用户需求: {query}\n请分析并输出JSON格式结果，包含分析结论、建议动作和相关依据。"
+            task = Task(description=task_desc, agent=agent, expected_output="JSON")
+            crew = Crew(agents=[agent], tasks=[task], verbose=False)
+            result = str(crew.kickoff())
+            results.append({"agent": intent, "result": result})
+        except Exception as e:
+            errors.append(f"CrewAI {intent}: {e}")
+            return _llm_fallback(query, intent)
+
+    if not results:
+        return _llm_fallback(query, intent)
+
+    return {"task_results": results, "errors": errors}
+
+def _get_agent(name, role, goal, tools):
     from langchain_openai import ChatOpenAI
     from app.core.config import settings
-
     llm = ChatOpenAI(
         model=settings.llm_model or "gpt-4o-mini",
-        api_key=settings.openai_api_key or os.getenv("OPENAI_API_KEY", ""),
+        api_key=settings.openai_api_key or os.getenv("OPENAI_API_KEY",""),
         temperature=0.3
     )
+    return Agent(role=role, goal=goal, backstory=f"负责{goal}", tools=tools, llm=llm, verbose=False)
 
-    agents = {
-        "alert_collector": Agent(
-            role="安全告警采集员",
-            goal="精确查询TimescaleDB中的告警数据",
-            backstory="负责从安全数据库中检索告警信息，擅长SQL查询",
-            tools=[TimescaleDBTool(), QueryAlertsTool()],
-            llm=llm, verbose=False
-        ),
-        "threat_intel": Agent(
-            role="威胁情报分析师",
-            goal="查询IP/域名的威胁情报",
-            backstory="资深威胁情报专家，熟悉各类威胁情报源",
-            tools=[TimescaleDBTool()],
-            llm=llm, verbose=False
-        ),
-        "alert_analyzer": Agent(
-            role="安全告警研判专家",
-            goal="综合分析告警，评估风险等级，给出处置建议",
-            backstory="15年安全运营经验，精通告警分析和事件响应",
-            tools=[TimescaleDBTool(), QueryAlertsTool(), CreateIncidentTool()],
-            llm=llm, verbose=False
-        ),
-        "ip_blocker": Agent(
-            role="安全处置工程师",
-            goal="执行IP封禁、主机隔离等处置动作",
-            backstory="负责安全设备的运维和策略下发",
-            tools=[TimescaleDBTool()],
-            llm=llm, verbose=False
-        ),
-    }
-    return agents.get(name, agents["alert_analyzer"])
-
-def _llm_fallback(state: SecurityState) -> dict:
-    """降级: 无 CrewAI 时直接用 LLM 分析"""
-    from app.routes.ai_api import _deepseek_request
+def _llm_fallback(query: str, intent: str = "general") -> dict:
     try:
-        prompt = f"""用户查询: {state['query']}
-意图: {state['intent']}
-
-请分析并给出回答。如果是告警分析，请说明风险等级和建议处置动作。"""
-        result = _deepseek_request(
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3
-        )
-        reply = result.get("choices", [{}])[0].get("message", {}).get("content", "")
-        return {"results": [{"agent": "llm_fallback", "result": reply}],
-                "task_index": len(state.get("task_list", []))}
+        from app.routes.ai_api import _deepseek_request
+        system = f"你是一个安全分析助手。用户意图: {intent}。请给出专业、简洁的分析回答。"
+        r = _deepseek_request(messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": query}
+        ], temperature=0.3)
+        reply = r.get("choices",[{}])[0].get("message",{}).get("content","")
+        return {"task_results": [{"agent": "llm_fallback", "result": reply}]}
     except Exception as e:
-        return {"errors": [f"LLM fallback failed: {e}"]}
+        return {"errors": [str(e)]}
 
-def result_aggregator_node(state: SecurityState) -> dict:
-    """节点5: 汇总结果为最终回复"""
-    parts = []
-    for r in state.get("results", []):
-        agent = r.get("agent", "unknown")
-        result = r.get("result", "")
-        parts.append(f"【{agent}】\n{result[:2000]}")
-    final = "\n\n---\n\n".join(parts) if parts else "处理完成，未产生分析结果。"
+def aggregate_node(state: SecurityState) -> dict:
+    parts = [r.get("result","") for r in state.get("task_results",[])]
+    final = "\n\n".join(parts) if parts else "处理完成。"
     if state.get("errors"):
         final += f"\n\n⚠️ 部分步骤异常: {'; '.join(state['errors'])}"
-    return {"final_response": final,
-            "messages": [{"role": "assistant", "content": final}]}
+    return {"final_response": final}
 
 # ========== 构建图 ==========
-def build_orchestrator():
-    """构建 LangGraph 编排图"""
-    if not HAS_LANGGRAPH:
-        return None
+def build():
+    if not HAS_LANGGRAPH: return None
+    b = StateGraph(SecurityState)
+    b.add_node("intent", intent_node)
+    b.add_node("approval", approval_node)
+    b.add_node("execute", execute_agents)
+    b.add_node("aggregate", aggregate_node)
+    b.add_edge(START, "intent")
+    b.add_conditional_edges("intent", should_approve, {"approve_required":"approval","direct":"execute"})
+    b.add_conditional_edges("approval", after_approval, {"execute":"execute","rejected":"aggregate"})
+    b.add_edge("execute", "aggregate")
+    b.add_edge("aggregate", END)
+    return b.compile(checkpointer=MemorySaver())
 
-    builder = StateGraph(SecurityState)
-    builder.add_node("intent_parser", intent_parser_node)
-    builder.add_node("task_splitter", task_splitter_node)
-    builder.add_node("human_approval", human_approval_node)
-    builder.add_node("crew_executor", crew_executor_node)
-    builder.add_node("result_aggregator", result_aggregator_node)
+orchestrator = build()
 
-    builder.add_edge(START, "intent_parser")
-    builder.add_edge("intent_parser", "task_splitter")
-    builder.add_conditional_edges(
-        "task_splitter",
-        should_approve,
-        {"approve_required": "human_approval", "direct_execute": "crew_executor"}
-    )
-    builder.add_conditional_edges(
-        "human_approval",
-        after_approval,
-        {"execute": "crew_executor", "rejected_end": "result_aggregator"}
-    )
-    builder.add_edge("crew_executor", "result_aggregator")
-    builder.add_edge("result_aggregator", END)
-
-    memory = MemorySaver()
-    return builder.compile(checkpointer=memory)
-
-orchestrator = build_orchestrator()
-
-# ========== 对外接口 ==========
-async def run_orchestration(query: str, user_id: str = "anonymous",
-                            session_id: Optional[str] = None) -> dict:
-    """运行 LangGraph 编排流程（异步接口）"""
+async def run(query: str, session_id: str = "") -> dict:
     import uuid
     sid = session_id or str(uuid.uuid4())
+    init = SecurityState(query=query, intent="", confidence=0.0, task_results=[],
+                         errors=[], needs_approval=False, approved=None,
+                         final_response="", session_id=sid)
 
     if orchestrator is None:
-        # 无 LangGraph 时直接执行 CrewAI 或 LLM 降级
-        state: SecurityState = {
-            "user_id": user_id, "session_id": sid, "query": query,
-            "intent": None, "confidence": 0, "alert_context": None,
-            "task_list": [], "task_index": 0, "results": [], "errors": [],
-            "needs_approval": False, "approved": None,
-            "final_response": None, "messages": []
-        }
-        state.update(intent_parser_node(state))
-        state.update(task_splitter_node(state))
-        state.update(crew_executor_node(state))
-        state.update(result_aggregator_node(state))
-        return {
-            "success": True, "response": state.get("final_response", ""),
-            "session_id": sid, "intent": state.get("intent", "general"),
-            "orchestrator": "direct"
-        }
+        init.update(intent_node(init))
+        init.update(execute_agents(init))
+        init.update(aggregate_node(init))
+        return {"success": True, "response": init["final_response"],
+                "session_id": sid, "intent": init["intent"], "orchestrator": "direct"}
 
-    # LangGraph 流程
     try:
-        initial_state: SecurityState = {
-            "user_id": user_id, "session_id": sid, "query": query,
-            "intent": None, "confidence": 0, "alert_context": None,
-            "task_list": [], "task_index": 0, "results": [], "errors": [],
-            "needs_approval": False, "approved": None,
-            "final_response": None, "messages": []
-        }
-        final_state = None
-        for event in orchestrator.stream(
-            initial_state,
-            config={"configurable": {"thread_id": sid}}
-        ):
-            final_state = event
-        if final_state and isinstance(final_state, dict):
-            # 取最后一个节点的输出
-            last_node = list(final_state.keys())[-1] if final_state else None
-            node_output = final_state.get(last_node, {}) if last_node else {}
-            return {
-                "success": True,
-                "response": node_output.get("final_response", ""),
-                "session_id": sid,
-                "intent": initial_state.get("intent", "general"),
-                "result": node_output.get("results", []),
-                "orchestrator": "langgraph"
-            }
-        return {"success": True, "response": "处理完成", "session_id": sid}
+        for event in orchestrator.stream(init, config={"configurable": {"thread_id": sid}}):
+            if isinstance(event, dict):
+                for node, data in event.items():
+                    if isinstance(data, dict):
+                        init.update(data)
+        return {"success": True, "response": init["final_response"],
+                "session_id": sid, "intent": init["intent"],
+                "orchestrator": "langgraph"}
     except Exception as e:
-        logger.error(f"LangGraph error: {e}")
         return {"success": False, "error": str(e)}
 
-# ========== 审批接口 ==========
-def approve_action(session_id: str, approved: bool) -> dict:
-    """人工审批: 外部调用(如前端审批弹窗)"""
-    if orchestrator is None:
-        return {"success": False, "error": "Orchestrator not available"}
+def approve(session_id: str, approved: bool) -> dict:
+    if not orchestrator: return {"success": False, "error": "Unavailable"}
     try:
-        # LangGraph 的异步更新机制
-        orchestrator.update_state(
-            {"configurable": {"thread_id": session_id}},
-            {"approved": approved, "needs_approval": False}
-        )
+        orchestrator.update_state({"configurable": {"thread_id": session_id}},
+                                   {"approved": approved, "needs_approval": False})
         return {"success": True, "approved": approved}
     except Exception as e:
         return {"success": False, "error": str(e)}

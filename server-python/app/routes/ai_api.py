@@ -1007,11 +1007,11 @@ def orchestrate():
         })
 
     try:
-        from app.agents.langgraph_crew import run_orchestration
+        from app.agents.langgraph_crew import run
         import asyncio
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(run_orchestration(query, session_id=session_id))
+        result = loop.run_until_complete(run(query, session_id=session_id))
         loop.close()
         if result.get('success'):
             return jsonify({
