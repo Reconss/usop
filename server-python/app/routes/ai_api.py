@@ -989,42 +989,93 @@ def cron_analyze_alerts():
 @ai_api_bp.route('/orchestrate', methods=['POST'])
 @login_required
 def orchestrate():
-    """LangGraph + CrewAI 编排入口"""
+    """AI 编排入口 — 意图识别 + LLM 分析"""
     data = request.get_json() or {}
     query = data.get('query', '')
     session_id = data.get('session_id', '')
     if not query:
         return jsonify({'success': False, 'error': '缺少 query'}), 400
 
-    # 简单问候直接回复
+    # 简单问候
     simple = ['你好', 'hi', 'hello', 'help', '帮助', '功能']
     if any(p in query.lower() for p in simple):
         return jsonify({
             'success': True, 'data': {
-                'response': '👋 你好！我可以帮你分析告警、查询威胁情报、封禁IP等。输入 @Agent名 可直接调用。',
+                'response': '👋 你好！我是安全分析助手，可以帮你分析告警、查询威胁情报、封禁IP等。直接在输入框描述你的需求。',
                 'session_id': session_id, 'orchestrator': 'direct'
             }
         })
 
+    # 意图识别
+    intent = 'general'
+    q = query.lower()
+    if any(k in q for k in ['告警','alert','分析','高危','异常']): intent = 'alert_analysis'
+    elif any(k in q for k in ['事件','协查','调查','编号']): intent = 'event_copilot'
+    elif any(k in q for k in ['分诊','误报','优先级']): intent = 'triage'
+    elif any(k in q for k in ['情报','ioc','ip','threat']): intent = 'threat_intel'
+    elif any(k in q for k in ['响应','封禁','隔离','block','处置']): intent = 'respond'
+    elif any(k in q for k in ['查询','最近','过去','列出','搜索']): intent = 'nl_query'
+    elif any(k in q for k in ['攻击链','att&ck','mitre','时间线','溯源']): intent = 'investigate'
+
+    # 构建系统提示词
+    system_prompts = {
+        'alert_analysis': '你是一个安全告警分析师。请分析用户提供的告警信息，评估风险等级(critical/high/medium/low)，判断是否为真实攻击，给出处置建议。输出格式：风险等级、分析结论、建议动作。',
+        'event_copilot': '你是一个安全事件响应专家。请分析安全事件，关联告警上下文，评估影响范围，给出处置建议和后续调查方向。',
+        'triage': '你是一个告警分诊专家。请分析告警的误报概率、优先级等级，给出研判依据和处置建议。',
+        'threat_intel': '你是一个威胁情报分析师。查询IP/域名的威胁情报信息，分析其关联的告警和风险。',
+        'respond': '你是一个安全响应专家。根据事件风险等级决定处置动作(封禁IP/隔离主机/告警通知)，评估威胁等级并给出建议。',
+        'nl_query': '你是一个安全数据查询专家。根据用户描述，查询相关的安全告警和事件数据。',
+        'investigate': '你是一个攻击溯源专家。分析攻击链、关联告警、资产信息，生成MITRE ATT&CK映射和时间线。',
+        'general': '你是一个安全分析助手。请专业、简洁地回答用户的安全相关问题。'
+    }
+    system_prompt = system_prompts.get(intent, system_prompts['general'])
+
+    # 优先使用用户配置的 LLM，否则使用默认 DeepSeek
+    llm_config = None
     try:
-        from app.agents.langgraph_crew import run
-        import asyncio
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(run(query, session_id=session_id))
-        loop.close()
-        if result.get('success'):
-            return jsonify({
-                'success': True, 'data': {
-                    'response': result['response'],
-                    'session_id': result.get('session_id', session_id),
-                    'intent': result.get('intent', 'general'),
-                    'orchestrator': result.get('orchestrator', 'langgraph')
-                }
-            })
-        return jsonify({'success': False, 'error': result.get('error', '编排失败')}), 500
+        from app.models import SystemConfig
+        configs = SystemConfig.query.filter(SystemConfig.key.like('ai_llm_%')).all()
+        for c in configs:
+            try: val = json.loads(c.value) if c.value else {}
+            except: val = {}
+            if val.get('enabled', True):
+                llm_config = val
+                break
+    except: pass
+
+    try:
+        if llm_config:
+            import requests as http_requests
+            resp = http_requests.post(
+                f'{llm_config.get("base_url", "")}/chat/completions',
+                headers={'Authorization': f'Bearer {llm_config.get("api_key", "")}', 'Content-Type': 'application/json'},
+                json={'model': llm_config.get('model', 'gpt-4o'), 'messages': [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": query}
+                ], 'temperature': 0.3},
+                timeout=60
+            )
+            resp.raise_for_status()
+            result = resp.json()
+        else:
+            result = _deepseek_request(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": query}
+                ],
+                temperature=0.3
+            )
+        reply = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+        return jsonify({
+            'success': True, 'data': {
+                'response': reply,
+                'session_id': session_id,
+                'intent': intent,
+                'orchestrator': 'llm'
+            }
+        })
     except Exception as e:
-        return jsonify({'success': False, 'error': f'编排失败: {str(e)}'}), 500
+        return jsonify({'success': False, 'error': f'分析服务调用失败: {str(e)}'}), 500
 
 
 @ai_api_bp.route('/orchestrate/approve', methods=['POST'])
