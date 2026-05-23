@@ -107,6 +107,9 @@ const AICenter: React.FC = () => {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const [showNlInput, setShowNlInput] = useState(false);
   const [analysisNlQuery, setAnalysisNlQuery] = useState('');
+  const [mentionOpen, setMentionOpen] = useState(false);
+  const [mentionFilter, setMentionFilter] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [nlReply, setNlReply] = useState('');
 
@@ -415,11 +418,58 @@ const AICenter: React.FC = () => {
               }
             </div>
             <div className="flex items-center gap-2">
-              <input value={selectedProvider?inputMsg:teamMsg} onChange={e=>{selectedProvider?setInputMsg(e.target.value):setTeamMsg(e.target.value)}}
-                onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();selectedProvider?handleSend():handleTeamSend();}}}
-                placeholder={selectedProvider?"输入安全事件信息，AI 将辅助分析...":"输入团队讨论内容..."}
+              <div className="relative flex-1">
+                <input ref={inputRef} value={selectedProvider?inputMsg:teamMsg} onChange={e=>{
+                  const val=e.target.value;
+                  selectedProvider?setInputMsg(val):setTeamMsg(val);
+                  // @mention 检测
+                  const pos=e.target.selectionStart||0;
+                  const before=val.slice(0,pos);
+                  const lastAt=before.lastIndexOf('@');
+                  if(lastAt>=0&&pos-lastAt<=20){
+                    setMentionFilter(before.slice(lastAt+1));
+                    setMentionOpen(true);
+                  }else{setMentionOpen(false);}
+                }}
+                onKeyDown={e=>{
+                  if(mentionOpen&&e.key==='Enter'){e.preventDefault();return;}
+                  if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();selectedProvider?handleSend():handleTeamSend();}
+                  if(e.key==='Escape')setMentionOpen(false);
+                }}
+                placeholder={selectedProvider?'输入安全事件信息，AI 将辅助分析...':'输入团队讨论内容...'}
                 disabled={chatLoading}
-                className="flex-1 px-4 py-2.5 bg-page-bg border border-border-color rounded-xl text-sm text-text-primary placeholder:text-text-muted/50 disabled:opacity-50 focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/20 transition-all" />
+                className="w-full px-4 py-2.5 bg-page-bg border border-border-color rounded-xl text-sm text-text-primary placeholder:text-text-muted/50 disabled:opacity-50 focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/20 transition-all" />
+                {/* @mention 弹出层 */}
+                {mentionOpen&&(
+                  <div className="absolute bottom-full left-0 right-0 mb-1 bg-card-bg border border-border-color rounded-xl shadow-xl overflow-hidden z-10">
+                    <div className="p-1.5 text-[10px] text-text-muted/50 border-b border-border-color px-3 py-1">选择 Agent 调用</div>
+                    <div className="max-h-36 overflow-y-auto">
+                      {agentProviders.filter(a=>a.enabled!==false&&(a.name.includes(mentionFilter)||mentionFilter==='')).map(a=>{
+                        const skills=a.skills||[];
+                        return (
+                          <div key={a.id} className="flex items-center gap-2.5 px-3 py-2 cursor-pointer hover:bg-card-bg-hover transition-colors border-b border-border-color/50 last:border-0"
+                            onClick={()=>{
+                              const curVal=selectedProvider?inputMsg:teamMsg;
+                              const pos=inputRef.current?.selectionStart||curVal.length;
+                              const beforeAt=curVal.lastIndexOf('@',pos);
+                              const after=curVal.slice(pos);
+                              const newVal=curVal.slice(0,beforeAt)+'@'+a.name+' '+after;
+                              selectedProvider?setInputMsg(newVal):setTeamMsg(newVal);
+                              setMentionOpen(false);
+                              inputRef.current?.focus();
+                            }}>
+                            <div className="w-6 h-6 rounded-lg bg-purple-500/20 flex items-center justify-center text-[10px] font-bold text-purple-400 flex-shrink-0">{a.name.charAt(0)}</div>
+                            <div className="min-w-0 flex-1">
+                              <div className="text-xs font-medium text-text-primary truncate">{a.name}</div>
+                              <div className="text-[10px] text-text-muted truncate">{skills.slice(0,2).map((s:any)=>s.name).join(' · ')||a.type}</div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
               <button onClick={selectedProvider?handleSend:handleTeamSend} disabled={(selectedProvider?!inputMsg.trim():!teamMsg.trim())||(selectedProvider&&chatLoading)}
                 className="px-5 py-2.5 bg-gradient-to-br from-blue-600 to-indigo-600 text-white rounded-xl text-sm font-medium disabled:opacity-40 hover:from-blue-500 hover:to-indigo-500 transition-all active:scale-95 flex items-center gap-1.5 shadow-sm">
                 {chatLoading?<Loader2 className="w-4 h-4 animate-spin"/>:<Send className="w-4 h-4"/>}发送
