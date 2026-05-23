@@ -975,3 +975,67 @@ def analyze():
             'success': False,
             'error': f'分析服务调用失败: {str(e)}'
         }), 503
+
+
+
+
+@ai_api_bp.route('/cron/analyze-alerts', methods=['GET'])
+def cron_analyze_alerts():
+    """无需认证的定时告警分析触发器（用于内部 cron 调用）"""
+    from app.ai_analysis.alert_analyzer import analyze_alert_batch
+    result = analyze_alert_batch(limit=50)
+    return jsonify(result)
+
+@ai_api_bp.route('/orchestrate', methods=['POST'])
+@login_required
+def orchestrate():
+    """LangGraph + CrewAI 编排入口"""
+    data = request.get_json() or {}
+    query = data.get('query', '')
+    session_id = data.get('session_id', '')
+    if not query:
+        return jsonify({'success': False, 'error': '缺少 query'}), 400
+
+    # 简单问候直接回复
+    simple = ['你好', 'hi', 'hello', 'help', '帮助', '功能']
+    if any(p in query.lower() for p in simple):
+        return jsonify({
+            'success': True, 'data': {
+                'response': '👋 你好！我可以帮你分析告警、查询威胁情报、封禁IP等。输入 @Agent名 可直接调用。',
+                'session_id': session_id, 'orchestrator': 'direct'
+            }
+        })
+
+    try:
+        from app.agents.langgraph_crew import run_orchestration
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(run_orchestration(query, session_id=session_id))
+        loop.close()
+        if result.get('success'):
+            return jsonify({
+                'success': True, 'data': {
+                    'response': result['response'],
+                    'session_id': result.get('session_id', session_id),
+                    'intent': result.get('intent', 'general'),
+                    'orchestrator': result.get('orchestrator', 'langgraph')
+                }
+            })
+        return jsonify({'success': False, 'error': result.get('error', '编排失败')}), 500
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'编排失败: {str(e)}'}), 500
+
+
+@ai_api_bp.route('/orchestrate/approve', methods=['POST'])
+@login_required
+def orchestrate_approve():
+    """人工审批"""
+    data = request.get_json() or {}
+    session_id = data.get('session_id', '')
+    approved = data.get('approved', False)
+    if not session_id:
+        return jsonify({'success': False, 'error': '缺少 session_id'}), 400
+    from app.agents.langgraph_crew import approve_action
+    result = approve_action(session_id, approved)
+    return jsonify(result)
