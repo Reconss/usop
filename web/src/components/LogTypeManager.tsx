@@ -260,23 +260,11 @@ export default function LogTypeManager() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <h3 className="font-semibold text-text-primary">{type.name}</h3>
-                    {type.pipelineName ? (
-                      <span className="px-2 py-0.5 text-xs rounded font-medium bg-primary/10 text-primary flex items-center gap-1">
-                        <GitBranch size={10} /> {type.pipelineName}
-                      </span>
-                    ) : (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); openPipelineModal(type, e); }}
-                        className="px-2 py-0.5 text-xs rounded font-medium text-text-muted hover:text-primary border border-dashed border-border-color hover:border-primary/30 transition-colors"
-                      >
-                        + 绑定管道
-                      </button>
-                    )}
                   </div>
                   <p className="text-xs text-text-secondary mt-0.5">{type.description}</p>
                   <div className="flex items-center gap-3 mt-1.5 text-xs text-text-muted">
                     <span className="flex items-center gap-1"><Database size={11} /> {type.sourceCount} 数据源</span>
-                    <span className="flex items-center gap-1"><GitBranch size={11} /> {type.pipelineCount} 管道</span>
+
                   </div>
                 </div>
                 <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
@@ -312,7 +300,7 @@ export default function LogTypeManager() {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-card-bg border border-border-color rounded-xl p-6 w-full max-w-lg shadow-2xl"
+              className="bg-card-bg border border-border-color rounded-xl p-6 w-full max-w-sm sm:max-w-lg shadow-2xl"
               onClick={e => e.stopPropagation()}
             >
               <div className="flex items-center justify-between border-b border-border-color pb-6 mb-6">
@@ -403,7 +391,7 @@ export default function LogTypeManager() {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-card-bg border border-border-color rounded-xl p-6 w-full max-w-md shadow-2xl"
+              className="bg-card-bg border border-border-color rounded-xl p-6 w-full max-w-xs sm:max-w-sm md:max-w-md shadow-2xl"
               onClick={e => e.stopPropagation()}
             >
               <div className="flex items-center justify-between border-b border-border-color pb-6 mb-6">
@@ -469,7 +457,7 @@ export default function LogTypeManager() {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-card-bg border border-border-color rounded-xl p-6 w-full max-w-lg shadow-2xl"
+              className="bg-card-bg border border-border-color rounded-xl p-6 w-full max-w-sm sm:max-w-lg shadow-2xl"
               onClick={e => e.stopPropagation()}
             >
               <div className="flex items-center justify-between border-b border-border-color pb-6 mb-6">
@@ -527,7 +515,7 @@ export default function LogTypeManager() {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-card-bg border border-border-color rounded-xl p-6 w-full max-w-md shadow-2xl"
+              className="bg-card-bg border border-border-color rounded-xl p-6 w-full max-w-xs sm:max-w-sm md:max-w-md shadow-2xl"
               onClick={e => e.stopPropagation()}
             >
               <div className="flex items-center gap-3 pb-6 mb-6 border-b border-border-color">

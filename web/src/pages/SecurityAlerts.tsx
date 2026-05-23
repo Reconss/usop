@@ -167,14 +167,30 @@ const productIcons: Record<string, { icon: React.ElementType; color: string }> =
 // ==================== 工具函数 ====================
 
 const formatTime = (time: string) => {
+  if (!time) return '-';
   const date = new Date(time);
+  if (isNaN(date.getTime())) return time;
+  
   const now = new Date();
   const diff = now.getTime() - date.getTime();
   
-  if (diff < 60000) return '刚刚';
+  // 如果是未来时间或刚刚，直接显示日期时间
+  if (diff < 0 || diff < 60000) {
+    return date.toLocaleString('zh-CN', { 
+      month: '2-digit', 
+      day: '2-digit', 
+      hour: '2-digit', 
+      minute: '2-digit' 
+    });
+  }
   if (diff < 3600000) return `${Math.floor(diff / 60000)}分钟前`;
   if (diff < 86400000) return `${Math.floor(diff / 3600000)}小时前`;
-  return date.toLocaleString('zh-CN');
+  return date.toLocaleString('zh-CN', { 
+    month: '2-digit', 
+    day: '2-digit', 
+    hour: '2-digit', 
+    minute: '2-digit' 
+  });
 };
 
 const formatDateTime = (time: string) => {
@@ -374,14 +390,35 @@ const AlertDetailDrawer = ({
               <h3 className="text-sm font-semibold text-text-primary">告警详情</h3>
             </div>
             <div className="flex flex-wrap gap-x-8 gap-y-2 text-sm">
+              <button
+                onClick={() => { fetchAlerts(); }}
+                className="p-2 bg-page-bg border border-border-color rounded-lg hover:bg-card-bg transition-colors"
+                title="刷新数据"
+              >
+                <RefreshCw className={`w-4 h-4 text-text-secondary ${isLoading ? 'animate-spin' : ''}`} />
+              </button>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-text-muted">分类:</span>
                 <span className="text-text-primary font-medium">{alert.category || '-'}</span>
               </div>
+              <button
+                onClick={() => { fetchAlerts(); }}
+                className="p-2 bg-page-bg border border-border-color rounded-lg hover:bg-card-bg transition-colors"
+                title="刷新数据"
+              >
+                <RefreshCw className={`w-4 h-4 text-text-secondary ${isLoading ? 'animate-spin' : ''}`} />
+              </button>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-text-muted">数据源:</span>
                 <span className="text-text-primary">{alert.source || '-'}</span>
               </div>
+              <button
+                onClick={() => { fetchAlerts(); }}
+                className="p-2 bg-page-bg border border-border-color rounded-lg hover:bg-card-bg transition-colors"
+                title="刷新数据"
+              >
+                <RefreshCw className={`w-4 h-4 text-text-secondary ${isLoading ? 'animate-spin' : ''}`} />
+              </button>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-text-muted">主机/资产:</span>
                 <span className="text-text-primary">{alert.hostname || '-'}</span>
@@ -504,17 +541,21 @@ export default function SecurityAlerts() {
   const [severityFilter, setSeverityFilter] = useState<Severity[]>([]);
   const [statusFilter, setStatusFilter] = useState<AlertStatus[]>(['new', 'investigating']);
   const [timeRange, setTimeRange] = useState<{ start: string; end: string }>(() => {
-    const end = new Date();
-    const start = new Date();
-    start.setDate(start.getDate() - 7);
+    const now = new Date();
     return {
-      start: start.toISOString().slice(0, 10),
-      end: end.toISOString().slice(0, 10)
+      start: now.toISOString().slice(0, 10),
+      end: now.toISOString().slice(0, 10)
     };
   });
   const [showDetail, setShowDetail] = useState<Alert | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [totalAlerts, setTotalAlerts] = useState(0);
+  const [totalPages, setTotalPages] = useState(0);
   const [aggregationKey, setAggregationKey] = useState<string>('none');
+  const [sortField, setSortField] = useState<'time' | 'severity' | 'source'>('time');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [activeTab, setActiveTab] = useState<'all' | 'pending' | 'critical' | 'investigating'>('all');
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
@@ -533,7 +574,10 @@ export default function SecurityAlerts() {
     setIsLoading(true);
     
     try {
-      const res = await alertsApi.getAlerts({ page_size: 100 });
+      const params: any = { page: currentPage, page_size: pageSize };
+      if (timeRange.start) params.start_time = timeRange.start;
+      if (timeRange.end) params.end_time = timeRange.end;
+      const res = await alertsApi.getAlerts(params);
       const items = (res.data?.items || res.alerts || []).map((a: any) => ({
         id: String(a.id),
         alertCode: a.alert_code || a.alertCode || '',
@@ -560,6 +604,8 @@ export default function SecurityAlerts() {
         extraData: a.extra_data || a.extraData || {},
       }));
       setAlerts(items);
+      setTotalAlerts(res.data?.total || 0);
+      setTotalPages(res.data?.pages || 0);
     } catch (error) {
       console.error('获取告警失败:', error);
       showToast('获取告警数据失败', 'error');
@@ -567,31 +613,36 @@ export default function SecurityAlerts() {
     } finally {
       setIsLoading(false);
     }
-  }, [showToast]);
+  }, [showToast, currentPage, pageSize, timeRange.start, timeRange.end]);
 
   useEffect(() => {
     fetchAlerts();
-  }, [fetchAlerts]);
+    // 每30秒自动刷新数据
+    const interval = setInterval(() => {
+      fetchAlerts();
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [fetchAlerts, currentPage, timeRange.start, timeRange.end]);
 
-  // 计算分诊统计 - 使用 filteredAlerts 以匹配当前过滤条件
+  // 当筛选条件变化时重置到第一页
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, severityFilter.join(','), statusFilter.join(','), timeRange.start, timeRange.end]);
+
+  // 分诊统计 - 直接使用 totalAlerts 显示总数
   const triageStats: TriageStats = useMemo(() => {
-    if (!filteredAlerts || !Array.isArray(filteredAlerts)) {
-      return { pending: 0, critical: 0, investigating: 0, falsePositive: 0, resolved: 0, total24h: 0 };
-    }
-    const now = Date.now();
-    const dayAgo = now - 86400000;
     return {
-      pending: filteredAlerts.filter(a => a.status === 'new').length,
-      critical: filteredAlerts.filter(a => a.severity === 'critical').length,
-      investigating: filteredAlerts.filter(a => a.status === 'investigating' || a.status === 'active').length,
-      falsePositive: filteredAlerts.filter(a => a.status === 'false_positive').length,
-      resolved: filteredAlerts.filter(a => a.status === 'closed' || a.status === 'resolved').length,
-      total24h: filteredAlerts.filter(a => {
-        const alertTime = new Date(a.createdAt).getTime();
-        return alertTime > dayAgo;
+      pending: totalAlerts || 0,
+      critical: alerts.filter(a => a.severity === 'critical').length,
+      investigating: alerts.filter(a => a.status === 'investigating' || a.status === 'active').length,
+      falsePositive: alerts.filter(a => a.status === 'false_positive').length,
+      resolved: alerts.filter(a => a.status === 'closed' || a.status === 'resolved').length,
+      total24h: alerts.filter(a => {
+        const alertTime = new Date(a.createdAt || a.firstSeen).getTime();
+        return alertTime > Date.now() - 86400000;
       }).length
     };
-  }, [filteredAlerts]);
+  }, [alerts, totalAlerts]);
 
   // 动态智能聚合：按多维度指纹 + 动态时间窗口
   const alertGroups: AlertGroup[] = useMemo(() => {
@@ -780,8 +831,27 @@ export default function SecurityAlerts() {
       return new Date(b.lastSeen).getTime() - new Date(a.lastSeen).getTime();
     });
 
+    // 排序
+    result.sort((a, b) => {
+      if (sortField === 'time') {
+        const ta = new Date(a.lastSeen || a.firstSeen).getTime();
+        const tb = new Date(b.lastSeen || b.firstSeen).getTime();
+        return sortOrder === 'desc' ? tb - ta : ta - tb;
+      } else if (sortField === 'severity') {
+        const order = { critical: 0, high: 1, medium: 2, low: 3 };
+        const sa = order[a.severity] ?? 2;
+        const sb = order[b.severity] ?? 2;
+        return sortOrder === 'desc' ? sa - sb : sb - sa;
+      } else if (sortField === 'source') {
+        return sortOrder === 'desc'
+          ? b.source.localeCompare(a.source)
+          : a.source.localeCompare(b.source);
+      }
+      return 0;
+    });
+
     return result;
-  }, [alerts, searchQuery, severityFilter, statusFilter, timeRange, activeTab, aggregationKey, alertGroups]);
+  }, [alerts, searchQuery, severityFilter, statusFilter, timeRange, activeTab, aggregationKey, alertGroups, sortField, sortOrder]);
 
   // 选中操作
   const toggleSelect = (id: string) => {
@@ -1090,7 +1160,7 @@ export default function SecurityAlerts() {
               selected={statusFilter}
               onChange={(vals) => setStatusFilter(vals.length ? vals as AlertStatus[] : ['new', 'investigating'])}
             />
-            <TimeRangePicker value={timeRange} onChange={setTimeRange} />
+            <TimeRangePicker value={timeRange} onChange={(v) => { setTimeRange(v); setCurrentPage(1); }} />
           </div>
         </div>
       </div>
@@ -1300,11 +1370,11 @@ export default function SecurityAlerts() {
       )}
 
       {/* 告警列表 */}
-        <div className="glass-card rounded-xl overflow-hidden">
-          <table className="w-full table-fixed">
-            <thead className="bg-page-bg/80 border-b border-border-color">
+        <div className="glass-card rounded-xl overflow-x-auto">
+          <table className="w-full min-w-[800px]">
+            <thead className="bg-page-bg/80 border-b border-border-color sticky top-0 z-10">
               <tr className="text-left text-xs text-text-muted uppercase tracking-wider">
-                <th className="p-4 w-10">
+                <th className="p-3 w-10 whitespace-nowrap">
                   <input
                     type="checkbox"
                     checked={selectedAlerts.size === filteredAlerts.length && filteredAlerts.length > 0}
@@ -1312,13 +1382,13 @@ export default function SecurityAlerts() {
                     className="w-4 h-4 rounded border-border-color"
                   />
                 </th>
-                <th className="p-4 font-medium w-28">告警日志ID</th>
-                <th className="p-2 font-medium w-24">告警信息</th>
-                <th className="p-4 font-medium w-20">严重度</th>
-                <th className="p-4 font-medium w-44">分类/资产</th>
-                <th className="p-4 font-medium w-20">状态</th>
-                <th className="p-4 font-medium w-24">告警时间</th>
-                <th className="p-4 font-medium w-20">操作</th>
+                <th className="p-3 font-medium min-w-[100px]">告警日志ID</th>
+                <th className="p-3 font-medium min-w-[200px]">告警信息</th>
+                <th className="p-3 font-medium min-w-[80px]">严重度</th>
+                <th className="p-3 font-medium min-w-[150px]">分类/资产</th>
+                <th className="p-3 font-medium min-w-[80px]">状态</th>
+                <th className="p-3 font-medium min-w-[120px]">告警时间</th>
+                <th className="p-3 font-medium min-w-[80px]">操作</th>
               </tr>
             </thead>
             <tbody>
@@ -1336,7 +1406,7 @@ export default function SecurityAlerts() {
                       selectedAlerts.has(alert.id) ? 'bg-primary/5' : ''
                     }`}
                   >
-                    <td className="p-4">
+                    <td className="p-3">
                       <input
                         type="checkbox"
                         checked={selectedAlerts.has(alert.id)}
@@ -1344,31 +1414,31 @@ export default function SecurityAlerts() {
                         className="w-4 h-4 rounded border-border-color"
                       />
                     </td>
-                    <td className="p-2">
+                    <td className="p-3">
                       <span className="text-xs font-mono text-text-muted">{alert.alertCode}</span>
                     </td>
                     <td className="p-2 w-24">
                       <p className="text-sm font-medium text-text-primary truncate">{alert.title}</p>
                     </td>
-                    <td className="p-2">
+                    <td className="p-3">
                       <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-lg ${severity.bg} ${severity.text}`}>
                         <span className={`w-1.5 h-1.5 rounded-full ${severity.color}`} />
                         {severity.label}
                       </span>
                     </td>
-                    <td className="p-4">
+                    <td className="p-3">
                       <TagsDisplay category={alert.category} tags={alert.tags} hostname={alert.hostname} />
                     </td>
-                    <td className="p-2">
+                    <td className="p-3">
                       <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-lg ${statusConfig[alert.status]?.bg || 'bg-gray-500/10'} ${statusConfig[alert.status]?.color || 'text-gray-400'}`}>
                         <StatusIcon className="w-3 h-3" />
                         {statusConfig[alert.status]?.label || alert.status}
                       </span>
                     </td>
-                    <td className="p-2 text-sm text-text-muted">
+                    <td className="p-3 text-sm text-text-muted whitespace-nowrap">
                       {formatTime(alert.lastSeen)}
                     </td>
-                    <td className="p-4">
+                    <td className="p-3">
                       <div className="flex items-center gap-1">
                         <button
                           onClick={() => setShowDetail(alert)}
@@ -1401,11 +1471,40 @@ export default function SecurityAlerts() {
         </div>
 
       {/* 分页 */}
-      {filteredAlerts.length > 0 && (
-        <div className="flex items-center justify-between">
+      {totalAlerts > 0 && (
+        <div className="flex items-center justify-between px-4 py-3 bg-card-bg border-t border-border-color">
           <span className="text-sm text-text-muted">
-            显示 {filteredAlerts.length} 条，共 {alerts.length} 条
+            共 {totalAlerts} 条，第 {currentPage}/{totalPages} 页
           </span>
+          <div className="flex items-center gap-2">
+            <select
+              value={pageSize}
+              onChange={(e) => { setPageSize(Number(e.target.value)); setCurrentPage(1); }}
+              className="px-2 py-1 bg-page-bg border border-border-color rounded text-sm text-text-primary"
+            >
+              <option value={10}>10条/页</option>
+              <option value={20}>20条/页</option>
+              <option value={50}>50条/页</option>
+              <option value={100}>100条/页</option>
+            </select>
+            <button
+              onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+              disabled={currentPage === 1}
+              className="px-3 py-1 bg-page-bg border border-border-color rounded text-sm text-text-primary disabled:opacity-50 disabled:cursor-not-allowed hover:bg-white/5"
+            >
+              上一页
+            </button>
+            <span className="text-sm text-text-secondary px-2">
+              {currentPage} / {totalPages}
+            </span>
+            <button
+              onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+              disabled={currentPage === totalPages}
+              className="px-3 py-1 bg-page-bg border border-border-color rounded text-sm text-text-primary disabled:opacity-50 disabled:cursor-not-allowed hover:bg-white/5"
+            >
+              下一页
+            </button>
+          </div>
         </div>
       )}
 

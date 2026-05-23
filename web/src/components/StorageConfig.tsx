@@ -341,8 +341,13 @@ export default function StorageConfig() {
           <h1 className="text-xl font-semibold text-text-primary">存储配置</h1>
           <p className="text-sm text-text-secondary mt-1">管理系统存储表，查看表结构与字段定义</p>
         </div>
-        {/* 新建存储表按钮已禁用 */}
-        {/* <button onClick={openCreateModal} ...>新建存储表</button> */}
+        <button 
+          onClick={openCreateModal}
+          className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors text-sm font-medium"
+        >
+          <Plus className="w-4 h-4" />
+          新建存储表
+        </button>
       </div>
 
       {/* ===== 系统预置表 ===== */}
@@ -532,7 +537,7 @@ export default function StorageConfig() {
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="relative z-10 bg-card-bg rounded-xl shadow-2xl w-full max-w-3xl mx-4 overflow-hidden"
+              className="relative z-10 bg-card-bg rounded-xl shadow-2xl w-full max-w-lg sm:max-w-xl md:max-w-2xl lg:max-w-3xl mx-4 overflow-hidden"
             >
               {/* Modal Header */}
               <div className="px-6 py-5 border-b border-border-color flex items-center justify-between">
@@ -549,7 +554,7 @@ export default function StorageConfig() {
                 {/* ---- 数据库类型 ---- */}
                 <div>
                   <label className="block text-sm font-semibold text-text-primary mb-3">数据库类型</label>
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3">
                     {DB_TYPES.map(db => (
                       <button
                         key={db.id}
@@ -573,15 +578,30 @@ export default function StorageConfig() {
                 </div>
 
                 {/* ---- 基本信息 ---- */}
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
                   <div>
                     <label className="block text-sm font-medium text-text-primary mb-2">
                       表名 (唯一标识) *
                     </label>
-                    <input type="text" value={formName} onChange={e => setFormName(e.target.value)}
-                      placeholder="如: custom_events"
-                      disabled={!!editingId}
-                      className="w-full px-3 py-2 bg-card-bg border border-border-color rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-transparent disabled:bg-page-bg" />
+                    {!editingId ? (
+                      <select value={formName} onChange={e => setFormName(e.target.value)}
+                        className="w-full px-3 py-2 bg-card-bg border border-border-color rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-transparent">
+                        <option value="">选择系统预置表或输入自定义表名</option>
+                        <option value="alert_logs">alert_logs (安全告警表)</option>
+                        <option value="security_events">security_events (安全事件表)</option>
+                        <option value="__custom__">+ 自定义表名</option>
+                      </select>
+                    ) : null}
+                    {(!editingId && formName === '__custom__') && (
+                      <input type="text" value={formName} onChange={e => setFormName(e.target.value)}
+                        placeholder="输入自定义表名"
+                        className="w-full px-3 py-2 bg-card-bg border border-border-color rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-transparent mt-2" />
+                    )}
+                    {editingId && (
+                      <input type="text" value={formName} onChange={e => setFormName(e.target.value)}
+                        disabled={!!editingId}
+                        className="w-full px-3 py-2 bg-card-bg border border-border-color rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-transparent disabled:bg-page-bg" />
+                    )}
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-text-primary mb-2">显示名称</label>
@@ -597,7 +617,7 @@ export default function StorageConfig() {
 
                   {/* TimescaleDB */}
                   {formDbType === 'timescaledb' && (
-                    <div className="grid grid-cols-3 gap-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
                       <div>
                         <label className="text-xs text-text-secondary mb-1 block">保留天数</label>
                         <input type="number" value={formRetention} onChange={e => setFormRetention(Number(e.target.value) || 90)}
@@ -624,7 +644,7 @@ export default function StorageConfig() {
 
                   {/* PostgreSQL */}
                   {formDbType === 'postgresql' && (
-                    <div className="grid grid-cols-3 gap-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
                       <div>
                         <label className="text-xs text-text-secondary mb-1 block">保留天数</label>
                         <input type="number" value={formRetention} onChange={e => setFormRetention(Number(e.target.value) || 90)}

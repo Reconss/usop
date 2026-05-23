@@ -68,6 +68,30 @@ const getStatusColor = (status: string) => {
   }
 };
 
+
+// Flink任务状态
+const getFlinkJobStatusText = (status: string) => {
+  switch (status) {
+    case 'running': return '运行中';
+    case 'stopped': return '已停止';
+    case 'failed': return '失败';
+    case 'starting': return '启动中';
+    case 'stopping': return '停止中';
+    default: return '未启动';
+  }
+};
+
+const getFlinkJobStatusColor = (status: string) => {
+  switch (status) {
+    case 'running': return 'text-emerald-600';
+    case 'stopped': return 'text-text-secondary';
+    case 'failed': return 'text-red-600';
+    case 'starting': return 'text-blue-600';
+    case 'stopping': return 'text-yellow-600';
+    default: return 'text-text-muted';
+  }
+};
+
 const protocolIcons: Record<string, React.ElementType> = {
   kafka: MessageSquare,
   rabbitmq: Cable,
@@ -311,9 +335,31 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
     }
   }, [showMappingModal, selectedSource]);
 
-  const fetchData = async () => {
+  // 根据 logTypeId 获取日志类型名称
+const getLogTypeName = (logTypeId: string) => {
+  const logType = logTypes.find(lt => String(lt.id) === String(logTypeId));
+  return logType?.name || '';
+};
+
+const fetchData = async () => {
     try {
       setLoading(true);
+      
+      // 确保 logTypes 已加载
+      if (logTypes.length === 0) {
+        try {
+          const logTypesRes = await logTypesApi.getLogTypes({ page_size: 100 });
+          if (logTypesRes?.success && logTypesRes?.data) {
+            const logTypesData = Array.isArray(logTypesRes.data) 
+              ? logTypesRes.data 
+              : (logTypesRes.data.items || []);
+            setLogTypes(logTypesData);
+          }
+        } catch (e) {
+          console.error('获取日志类型失败:', e);
+        }
+      }
+      
       const res = await dataSourcesApi.getDataSources({ page_size: 100 });
       if (res.success && res.data) {
         const items = Array.isArray(res.data) ? res.data : res.data.items || [];
@@ -334,7 +380,7 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
           totalEvents: item.message_count || 0,
           eventsPerSecond: item.events_per_second || 0,
           logTypeId: item.log_type_id || item.logTypeId || '',
-          logTypeName: item.log_type_name || item.logTypeName || '',
+          logTypeName: item.log_type_name || item.logTypeName || (item.log_type_id ? getLogTypeName(item.log_type_id) : ''),
           pipelineIds: item.pipeline_ids || item.pipelineIds || [],
           pipelineNames: item.pipeline_names || item.pipelineNames || [],
           formatTemplateId: item.format_template_id,
@@ -359,8 +405,24 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
     }
   };
 
-  const handleViewClick = (source: DataSource) => {
-    setSelectedSource(source);
+  const handleViewClick = async (source: DataSource) => {
+    try {
+      // 从API获取最新数据，确保状态是最新的
+      const res = await dataSourcesApi.getDataSource(Number(source.id));
+      if (res.success && res.data) {
+        const latestSource = {
+          ...source,
+          ...res.data,
+          id: String(res.data.id),
+        };
+        setSelectedSource(latestSource);
+      } else {
+        setSelectedSource(source);
+      }
+    } catch (error) {
+      console.error('获取数据源详情失败:', error);
+      setSelectedSource(source);
+    }
     setShowDetailModal(true);
     props.onViewDetail && props.onViewDetail(source);
   };
@@ -555,8 +617,8 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
                     }`}>
                       {source.type === 'pull' ? 'Pull' : 'Push'}
                     </span>
-                    <span className={`text-xs px-2 py-0.5 rounded font-medium border ${getStatusColor(source.status)}`}>
-                      {getStatusText(source.status)}
+                    <span className={`text-xs px-2 py-0.5 rounded font-medium border ${getStatusColor(source.flinkJobStatus === 'running' ? 'connected' : 'disconnected')}`}>
+                      {getFlinkJobStatusText(source.flinkJobStatus || 'stopped')}
                     </span>
                   </div>
                   <div className="flex items-center gap-3 mt-1 text-xs text-text-secondary">
@@ -646,14 +708,60 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
                   <button onClick={() => handleViewClick(source)} className="p-1.5 text-text-muted hover:text-primary rounded-lg hover:bg-primary/10 transition-colors">
                     <Eye className="w-4 h-4" />
                   </button>
-                  <button onClick={() => {
-                      setSelectedSource(source);
+                  <button onClick={async () => {
+                      // 先加载所有需要的数据（如果还没有加载）
+                      if (logTypes.length === 0 || pipelines.length === 0 || storageTables.length === 0) {
+                        try {
+                          const [logTypesRes, pipelinesRes, storageRes] = await Promise.all([
+                            logTypesApi.getLogTypes({ page_size: 100 }),
+                            pipelinesApi.getPipelines({ page_size: 100 }),
+                            storageTablesApi.getTables()
+                          ]);
+                          if (logTypesRes?.success && logTypesRes?.data) {
+                            setLogTypes(Array.isArray(logTypesRes.data) ? logTypesRes.data : logTypesRes.data.items || []);
+                          }
+                          if (pipelinesRes?.data) {
+                            const pipeItems = Array.isArray(pipelinesRes.data) ? pipelinesRes.data : (pipelinesRes.data.pipelines || pipelinesRes.data.items || []);
+                            setPipelines(pipeItems.map((item: any) => ({
+                              ...item,
+                              name: item.name || item.pipeline_name,
+                              parser: item.parser || item.input_format,
+                            })));
+                          }
+                          if (storageRes?.code === 200 || storageRes?.success) {
+                            setStorageTables(Array.isArray(storageRes.data) ? storageRes.data : storageRes.data.items || []);
+                          }
+                        } catch (e) {
+                          console.error('加载配置数据失败:', e);
+                        }
+                      }
+                      
+                      // 获取最新数据
+                      let latestSource = source;
+                      try {
+                        const res = await dataSourcesApi.getDataSource(Number(source.id));
+                        if (res.success && res.data) {
+                          latestSource = { ...source, ...res.data };
+                        }
+                      } catch (e) {
+                        console.error('获取数据源详情失败:', e);
+                      }
+                      
+                      setSelectedSource(latestSource);
                       setEditFormData({
-                        name: source.name || '',
-                        host: source.host || '',
-                        port: source.port || '',
-                        protocol: source.protocol || source.source_type || '',
-                        description: source.description || '',
+                        name: latestSource.name || latestSource.source_name || '',
+                        host: latestSource.host || '',
+                        port: latestSource.port || '',
+                        protocol: latestSource.protocol || latestSource.source_type || '',
+                        description: latestSource.description || '',
+                        logTypeId: latestSource.log_type_id || latestSource.logTypeId || '',
+                        logTypeName: latestSource.log_type_name || latestSource.logTypeName || (latestSource.log_type_id ? getLogTypeName(latestSource.log_type_id) : ''),
+                        pipelineIds: latestSource.pipeline_ids || latestSource.pipelineIds || latestSource.parsePipelines || [],
+                        pipelineNames: latestSource.pipeline_names || latestSource.pipelineNames || [],
+                        storageTableName: latestSource.storage_table_name || latestSource.storageTableName || '',
+                        formatTemplateId: latestSource.format_template_id || latestSource.formatTemplateId || '',
+                        formatTemplateName: latestSource.format_template_name || latestSource.formatTemplateName || '',
+                        storageRetentionDays: latestSource.storage_retention_days || latestSource.storageRetentionDays || 30,
                       });
                       setShowEditModal(true);
                     }} className="p-1.5 text-text-muted hover:text-primary rounded-lg hover:bg-primary/10 transition-colors">
@@ -690,7 +798,7 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-card-bg border border-border-color rounded-xl p-6 w-full max-w-3xl max-h-[85vh] overflow-auto shadow-2xl"
+              className="bg-card-bg border border-border-color rounded-xl p-6 w-full max-w-lg sm:max-w-xl md:max-w-sm sm:max-w-lg md:max-w-xl lg:max-w-2xl lg:max-w-3xl max-h-[85vh] overflow-auto shadow-2xl"
               onClick={e => e.stopPropagation()}
             >
               <div className="flex items-center justify-between border-b border-border-color pb-6 mb-6">
@@ -702,7 +810,7 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
 
               {addStep === 1 && (
                 <div className="space-y-6">
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
                     <button
                       onClick={() => setSourceType('pull')}
                       className={`p-6 rounded-xl border-2 transition-all text-left ${
@@ -734,7 +842,7 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
 
               {addStep === 2 && (
                 <div className="space-y-6">
-                  <div className="grid grid-cols-3 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 sm:gap-3">
                     {Object.entries(protocolIcons).slice(0, 6).map(([key, Icon]) => (
                       <button
                         key={key}
@@ -813,7 +921,29 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
 
                   <div className="flex justify-between pt-4 border-t border-border-color">
                     <button onClick={() => setAddStep(2)} className="px-4 py-2 text-text-secondary hover:text-text-primary transition-colors text-sm font-medium">上一步</button>
-                    <button onClick={() => setShowAddModal(false)} disabled={!testSuccess} className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors disabled:opacity-50 text-sm font-medium">完成</button>
+                    <button onClick={async () => {
+                      try {
+                        const res = await dataSourcesApi.createDataSource({
+                          name: formData['数据源名称'] || formData['name'] || '新数据源',
+                          protocol: protocol,
+                          source_type: sourceType,
+                          host: formData['主机地址'] || formData['host'] || '',
+                          port: formData['端口'] || formData['port'] || '',
+                          description: formData['描述'] || formData['description'] || '',
+                          status: 'active',
+                        });
+                        if (res.success) {
+                          showToast('添加成功', 'success');
+                          fetchData();
+                          setShowAddModal(false);
+                        } else {
+                          showToast(res.error || '添加失败', 'error');
+                        }
+                      } catch (error) {
+                        console.error('添加数据源失败:', error);
+                        showToast('添加失败', 'error');
+                      }
+                    }} disabled={!testSuccess} className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors disabled:opacity-50 text-sm font-medium">完成</button>
                   </div>
                 </div>
               )}
@@ -835,7 +965,7 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-card-bg border border-border-color rounded-xl p-6 w-full max-w-2xl max-h-[80vh] overflow-auto shadow-2xl"
+              className="bg-card-bg border border-border-color rounded-xl p-6 w-full max-w-sm sm:max-w-lg md:max-w-xl lg:max-w-2xl max-h-[80vh] overflow-auto shadow-2xl"
               onClick={e => e.stopPropagation()}
             >
               <div className="flex items-center justify-between border-b border-border-color pb-6 mb-6">
@@ -908,7 +1038,7 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-card-bg border border-border-color rounded-xl p-6 w-full max-w-5xl max-h-[90vh] overflow-auto shadow-2xl"
+              className="bg-card-bg border border-border-color rounded-xl p-6 w-full max-w-lg sm:max-w-xl md:max-w-2xl lg:max-w-4xl xl:max-w-5xl max-h-[90vh] overflow-auto shadow-2xl"
               onClick={e => e.stopPropagation()}
             >
               <div className="flex items-center justify-between border-b border-border-color pb-6 mb-6">
@@ -958,7 +1088,7 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
                       选择日志类型
                       <span className="text-xs text-text-muted font-normal ml-2">日志类型定义数据的结构和语义</span>
                     </h3>
-                    <div className="grid grid-cols-4 gap-3">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 sm:gap-3">
                       {logTypes.map(logType => (
                         <div
                           key={logType.id}
@@ -990,7 +1120,7 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
                       选择智能解析
                       <span className="text-xs text-text-muted font-normal ml-2">智能解析自动识别和处理多种日志格式</span>
                     </h3>
-                    <div className="grid grid-cols-3 gap-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 sm:gap-3">
                       {pipelines.map((pipeline, index) => {
                         const isSmart = pipeline.mode === 'multi' || pipeline.smartDetect || pipeline.parser === 'auto';
                         return (
@@ -1040,7 +1170,7 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
                       选择存储配置
                       <span className="text-xs text-text-muted font-normal ml-2">定义数据保留策略和存储位置（包含系统预置和自定义配置）</span>
                     </h3>
-                    <div className="grid grid-cols-3 gap-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 sm:gap-3">
                       {storageTables.map(storage => {
                         // 支持两种字段命名格式：camelCase 和 snake_case
                         const tableName = storage.table_name || storage.name;
@@ -1083,7 +1213,7 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
               {/* 配置摘要 */}
               <div className="mb-6 p-4 bg-page-bg/50 rounded-lg">
                 <h4 className="text-sm font-medium text-text-primary mb-3">配置摘要</h4>
-                <div className="grid grid-cols-4 gap-4">
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4">
                   <div className="text-center p-2 bg-card-bg rounded-lg">
                     <div className="text-xs text-text-muted mb-1">数据源</div>
                     <div className="text-sm font-medium text-text-primary truncate">{selectedSource.name}</div>
@@ -1197,7 +1327,7 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-card-bg border border-border-color rounded-xl p-6 w-full max-w-3xl max-h-[80vh] overflow-auto shadow-2xl"
+              className="bg-card-bg border border-border-color rounded-xl p-6 w-full max-w-lg sm:max-w-xl md:max-w-sm sm:max-w-lg md:max-w-xl lg:max-w-2xl lg:max-w-3xl max-h-[80vh] overflow-auto shadow-2xl"
               onClick={e => e.stopPropagation()}
             >
               <div className="flex items-center justify-between border-b border-border-color pb-6 mb-6">
@@ -1220,28 +1350,35 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
                   return null;
                 })()}
 
-                <div className="grid grid-cols-4 gap-4">
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4">
                   <div className="p-3 bg-page-bg/50 rounded-lg">
                     <div className="text-xs text-text-muted mb-1">总事件数</div>
                     <div className="text-lg font-semibold text-text-primary">
-                      {(selectedSource as any).totalEvents
-                        ? ((selectedSource as any).totalEvents > 1000000 ? `${(((selectedSource as any).totalEvents / 1000000)).toFixed(1)}M` : (selectedSource as any).totalEvents)
+                      {(selectedSource as any).totalEvents != null
+                        ? ((selectedSource as any).totalEvents > 1000000 ? `${(((selectedSource as any).totalEvents / 1000000)).toFixed(1)}M` : Number((selectedSource as any).totalEvents).toLocaleString())
                         : '-'}
                     </div>
                   </div>
                   <div className="p-3 bg-page-bg/50 rounded-lg">
                     <div className="text-xs text-text-muted mb-1">解析成功</div>
-                    <div className="text-lg font-semibold text-emerald-600">-</div>
+                    <div className="text-lg font-semibold text-emerald-600">
+                      {(selectedSource as any).stats?.parsedSuccess != null ? Number((selectedSource as any).stats.parsedSuccess).toLocaleString() : '-'}
+                    </div>
                   </div>
                   <div className="p-3 bg-page-bg/50 rounded-lg">
                     <div className="text-xs text-text-muted mb-1">解析失败</div>
-                    <div className="text-lg font-semibold text-red-600">-</div>
+                    <div className="text-lg font-semibold text-red-600">
+                      {(selectedSource as any).stats?.parsedFailed != null ? Number((selectedSource as any).stats.parsedFailed).toLocaleString() : '-'}
+                    </div>
                   </div>
                   <div className="p-3 bg-page-bg/50 rounded-lg">
-                    <div className="text-xs text-text-muted mb-1">状态</div>
-                    <div className={`text-lg font-semibold ${getStatusColor((selectedSource as any).status || '').includes('emerald') ? 'text-emerald-600' : 'text-primary'}`}>
-                      {getStatusText((selectedSource as any).status || '-')}
+                    <div className="text-xs text-text-muted mb-1">Flink任务</div>
+                    <div className={`text-lg font-semibold ${getFlinkJobStatusColor((selectedSource as any).flinkJobStatus || (selectedSource as any).flink_job_status || 'stopped')}`}>
+                      {getFlinkJobStatusText((selectedSource as any).flinkJobStatus || (selectedSource as any).flink_job_status || 'stopped')}
                     </div>
+                    {(selectedSource as any).flinkJobId || (selectedSource as any).flink_job_id ? (
+                      <div className="text-xs text-text-muted mt-1">ID: {((selectedSource as any).flinkJobId || (selectedSource as any).flink_job_id || '').substring(0, 20)}...</div>
+                    ) : null}
                   </div>
                 </div>
 
@@ -1345,7 +1482,7 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-card-bg border border-border-color rounded-xl p-6 w-full max-w-md shadow-2xl"
+              className="bg-card-bg border border-border-color rounded-xl p-6 w-full max-w-xs sm:max-w-sm md:max-w-md shadow-2xl"
               onClick={e => e.stopPropagation()}
             >
               <div className="flex items-center gap-3 pb-6 mb-6 border-b border-border-color">
@@ -1364,6 +1501,8 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
             </motion.div>
           </motion.div>
         )}
+      </AnimatePresence>
+
       {/* 编辑数据源弹窗 */}
       <AnimatePresence>
         {showEditModal && selectedSource && (
@@ -1378,7 +1517,7 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-card-bg border border-border-color rounded-xl p-6 w-full max-w-2xl max-h-[85vh] overflow-auto shadow-2xl"
+              className="bg-card-bg border border-border-color rounded-xl p-6 w-full max-w-sm sm:max-w-lg md:max-w-xl lg:max-w-2xl max-h-[85vh] overflow-auto shadow-2xl"
               onClick={e => e.stopPropagation()}
             >
               <div className="flex items-center justify-between border-b border-border-color pb-6 mb-6">
@@ -1414,7 +1553,7 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
                   </select>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
                   <div>
                     <label className="block text-text-secondary text-sm font-medium mb-2">主机地址</label>
                     <input 
@@ -1446,6 +1585,93 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
                     className="w-full px-3 py-2 bg-card-bg border border-border-color rounded-lg text-text-primary h-20 resize-none focus:ring-2 focus:ring-primary/20 focus:border-transparent" 
                   />
                 </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
+                  <div>
+                    <label className="block text-text-secondary text-sm font-medium mb-2">日志类型</label>
+                    <select
+                      value={editFormData.logTypeId || ''}
+                      onChange={e => {
+                        const selected = logTypes.find(lt => String(lt.id) === e.target.value);
+                        setEditFormData({ 
+                          ...editFormData, 
+                          logTypeId: e.target.value,
+                          logTypeName: selected?.name || ''
+                        });
+                      }}
+                      className="w-full px-3 py-2 bg-card-bg border border-border-color rounded-lg text-text-primary focus:ring-2 focus:ring-primary/20 focus:border-transparent"
+                    >
+                      <option value="">选择日志类型</option>
+                      {logTypes.map(lt => (
+                        <option key={lt.id} value={lt.id}>{lt.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-text-secondary text-sm font-medium mb-2">存储表</label>
+                    <select
+                      value={editFormData.storageTableName || ''}
+                      onChange={e => setEditFormData({ ...editFormData, storageTableName: e.target.value })}
+                      className="w-full px-3 py-2 bg-card-bg border border-border-color rounded-lg text-text-primary focus:ring-2 focus:ring-primary/20 focus:border-transparent"
+                    >
+                      <option value="">选择存储表</option>
+                      {storageTables.map(st => (
+                        <option key={st.hypertable || st.table_name} value={st.hypertable || st.table_name}>
+                          {st.hypertable || st.table_name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-text-secondary text-sm font-medium mb-2">格式模板</label>
+                  <select
+                    value={editFormData.formatTemplateId || ''}
+                    onChange={e => setEditFormData({ ...editFormData, formatTemplateId: e.target.value })}
+                    className="w-full px-3 py-2 bg-card-bg border border-border-color rounded-lg text-text-primary focus:ring-2 focus:ring-primary/20 focus:border-transparent"
+                  >
+                    <option value="">选择格式模板</option>
+                    <option value="json">JSON</option>
+                    <option value="syslog">Syslog</option>
+                    <option value="apache">Apache Log</option>
+                    <option value="nginx">Nginx Log</option>
+                    <option value="custom">自定义</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-text-secondary text-sm font-medium mb-2">解析管道</label>
+                  <div className="flex flex-wrap gap-2">
+                    {pipelines.filter(p => p.log_type_id === editFormData.logTypeId || !p.log_type_id).map(p => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        onClick={() => {
+                          const current = editFormData.pipelineIds || [];
+                          const newPipelines = current.includes(p.id)
+                            ? current.filter(id => id !== p.id)
+                            : [...current, p.id];
+                          setEditFormData({ 
+                            ...editFormData, 
+                            pipelineIds: newPipelines,
+                            pipelineNames: newPipelines.map(id => {
+                              const pl = pipelines.find(pl => pl.id === id);
+                              return pl?.name || '';
+                            }).filter(Boolean)
+                          });
+                        }}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                          (editFormData.pipelineIds || []).includes(p.id)
+                            ? 'bg-primary text-white'
+                            : 'bg-card-bg border border-border-color text-text-secondary hover:border-primary'
+                        }`}
+                      >
+                        {p.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
 
               <div className="flex justify-end gap-3 pt-6 mt-6 border-t border-border-color">
@@ -1458,11 +1684,29 @@ export default function DataSourceManager(props: DataSourceManagerProps) {
                       port: editFormData.port,
                       protocol: editFormData.protocol,
                       description: editFormData.description,
+                      log_type_id: editFormData.logTypeId,
+                      log_type_name: editFormData.logTypeName,
+                      pipeline_ids: editFormData.pipelineIds,
+                      pipeline_names: editFormData.pipelineNames,
+                      storage_table_name: editFormData.storageTableName,
+                      format_template_id: editFormData.formatTemplateId,
+                      storage_retention_days: editFormData.storageRetentionDays,
                     });
                     if (res.success !== false) {
                       setDataSources(prev => prev.map(ds => 
                         String(ds.id) === String(selectedSource.id) 
-                          ? { ...ds, ...editFormData, source_type: editFormData.protocol }
+                          ? { 
+                              ...ds, 
+                              ...editFormData, 
+                              source_type: editFormData.protocol,
+                              log_type_id: editFormData.logTypeId,
+                              log_type_name: editFormData.logTypeName,
+                              pipeline_ids: editFormData.pipelineIds,
+                              pipeline_names: editFormData.pipelineNames,
+                              storage_table_name: editFormData.storageTableName,
+                              format_template_id: editFormData.formatTemplateId,
+                              storage_retention_days: editFormData.storageRetentionDays,
+                            }
                           : ds
                       ));
                       setShowEditModal(false);

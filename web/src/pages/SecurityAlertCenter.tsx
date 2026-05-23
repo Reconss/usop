@@ -436,6 +436,11 @@ export default function SecurityAlertCenter() {
   // Toast
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   
+  // 分页状态
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [totalAlerts, setTotalAlerts] = useState(0);
+  
   const showToast = useCallback((message: string, type: 'success' | 'error' = 'success') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 3000);
@@ -445,10 +450,14 @@ export default function SecurityAlertCenter() {
   const fetchAlerts = useCallback(async () => {
     setIsLoading(true);
     try {
-      const res = await alertsApi.getAlerts({ page_size: 200 });
+      const res = await alertsApi.getAlerts({ 
+        page: currentPage, 
+        page_size: pageSize 
+      });
       if (res.success && res.data) {
         const items = Array.isArray(res.data) ? res.data : res.data.items || [];
         setAlerts(items.map(normalizeAlert));
+        setTotalAlerts(res.data.total || 0);
       }
     } catch (error) {
       console.error('获取告警失败:', error);
@@ -456,11 +465,11 @@ export default function SecurityAlertCenter() {
     } finally {
       setIsLoading(false);
     }
-  }, [showToast]);
+  }, [showToast, currentPage, pageSize]);
   
   useEffect(() => {
     fetchAlerts();
-  }, [fetchAlerts]);
+  }, [fetchAlerts, currentPage, pageSize]);
   
   // 筛选后的告警
   const filteredAlerts = useMemo(() => {
@@ -515,14 +524,14 @@ export default function SecurityAlertCenter() {
     return Array.from(categories);
   }, [alerts]);
   
-  // 统计信息
+  // 统计信息 (基于过滤后的数据)
   const stats = useMemo(() => ({
-    total: alerts.length,
-    critical: alerts.filter(a => a.severity === 'critical').length,
-    high: alerts.filter(a => a.severity === 'high').length,
-    new: alerts.filter(a => a.status === 'new').length,
-    investigating: alerts.filter(a => a.status === 'investigating').length
-  }), [alerts]);
+    total: totalAlerts,
+    critical: filteredAlerts.filter(a => a.severity === 'critical').length,
+    high: filteredAlerts.filter(a => a.severity === 'high').length,
+    new: filteredAlerts.filter(a => a.status === 'new').length,
+    investigating: filteredAlerts.filter(a => a.status === 'investigating').length
+  }), [filteredAlerts, totalAlerts]);
   
   // 切换聚合展开状态
   const toggleAggregation = (key: string) => {
@@ -1035,6 +1044,45 @@ export default function SecurityAlertCenter() {
           </div>
         )}
       </div>
+
+      {/* 分页组件 */}
+      {totalAlerts > 0 && (
+        <div className="flex items-center justify-between px-4 py-3 bg-card-bg border-t border-border-color">
+          <span className="text-sm text-text-muted">
+            共 {totalAlerts} 条
+          </span>
+          <div className="flex items-center gap-2">
+            <select
+              value={pageSize}
+              onChange={(e) => { 
+                setPageSize(Number(e.target.value)); 
+                setCurrentPage(1); 
+              }}
+              className="px-2 py-1 bg-page-bg border border-border-color rounded text-sm text-text-primary"
+            >
+              <option value={20}>20条/页</option>
+              <option value={50}>50条/页</option>
+            </select>
+            <button
+              onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+              disabled={currentPage === 1}
+              className="px-3 py-1 bg-page-bg border border-border-color rounded text-sm text-text-primary disabled:opacity-50 disabled:cursor-not-allowed hover:bg-white/5"
+            >
+              上一页
+            </button>
+            <span className="text-sm text-text-secondary px-2">
+              {currentPage} / {Math.ceil(totalAlerts / pageSize) || 1}
+            </span>
+            <button
+              onClick={() => setCurrentPage(p => Math.min(Math.ceil(totalAlerts / pageSize), p + 1))}
+              disabled={currentPage >= Math.ceil(totalAlerts / pageSize)}
+              className="px-3 py-1 bg-page-bg border border-border-color rounded text-sm text-text-primary disabled:opacity-50 disabled:cursor-not-allowed hover:bg-white/5"
+            >
+              下一页
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* 告警详情侧边栏 */}
       <AnimatePresence>

@@ -59,6 +59,8 @@ export interface SecurityEvent {
   eventType: string;
   description?: string;
   attachments?: Attachment[];
+  extraData?: Record<string, any>;
+  relatedAlerts?: Array<{id: number; alert_code: string; title: string; severity: string}>;
 }
 
 export interface AssetVulnInfo {
@@ -303,6 +305,10 @@ export interface DataSource {
   logTypeId?: string;
   logTypeName?: string;
   logTypeDescription?: string;
+  // Flink 任务状态
+  flinkJobId?: string;
+  flinkJobStatus?: 'running' | 'stopped' | 'failed' | 'finished' | null;
+  isLoading?: boolean;
 }
 
 // ==================== 格式模板类型 ====================

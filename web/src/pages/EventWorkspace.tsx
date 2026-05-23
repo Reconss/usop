@@ -48,7 +48,6 @@ const severityConfig = {
 const statusConfig = {
   new: { color: 'bg-blue-500', text: 'text-blue-400', bg: 'bg-blue-500/10', label: '新建', icon: AlertTriangle },
   investigating: { color: 'bg-orange-500', text: 'text-orange-400', bg: 'bg-orange-500/10', label: '调查中', icon: Clock },
-  active: { color: 'bg-red-500', text: 'text-red-400', bg: 'bg-red-500/10', label: '处理中', icon: AlertTriangle },
   resolved: { color: 'bg-green-500', text: 'text-green-400', bg: 'bg-green-500/10', label: '已解决', icon: CheckCircle },
   closed: { color: 'bg-emerald-500', text: 'text-emerald-400', bg: 'bg-emerald-500/10', label: '已关闭', icon: CheckCircle },
   false_positive: { color: 'bg-gray-500', text: 'text-gray-400', bg: 'bg-gray-500/10', label: '误报', icon: XCircle }
@@ -101,6 +100,7 @@ export default function EventWorkspace() {
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionRecords, setActionRecords] = useState<EventActionRecord[]>([]);
+  const [actionAttachments, setActionAttachments] = useState<Array<{name: string; size: number; type: string; data: string}>>([]);
   const [newComment, setNewComment] = useState('');
   
   // 剧本相关状态
@@ -262,13 +262,17 @@ export default function EventWorkspace() {
   const handleCreateEvent = async () => {
     if (!newEvent.title) return;
     try {
-      const res = await eventActionsApi.createEvent({
+      const params: any = {
         title: newEvent.title,
         description: newEvent.description,
         severity: newEvent.severity,
         event_type: newEvent.eventType,
         source_ip: newEvent.sourceIp
-      });
+      };
+      if (newEvent.attachments && newEvent.attachments.length > 0) {
+        params.attachments = newEvent.attachments;
+      }
+      const res = await eventActionsApi.createEvent(params);
       if (res.success && res.data) {
         showToast('事件创建成功');
         fetchEvents();
@@ -334,7 +338,10 @@ export default function EventWorkspace() {
           status: item.status || 'new',
           eventType: item.category || item.event_type || item.type || '其他',
           description: item.description || item.message || '',
-          attachments: item.attachments || []
+          attachments: item.attachments || [],
+          extraData: item.extra_data || item.extraData || {},
+          relatedAlerts: item.related_alerts || item.extra_data?.related_alerts || [],
+          attachments: item.attachments || item.extra_data?.attachments || []
         }));
         setEvents(mappedEvents);
         applyFilters(mappedEvents, filters);
@@ -578,6 +585,7 @@ export default function EventWorkspace() {
                   <option value="">全部</option>
                   <option value="new">新建</option>
                   <option value="investigating">调查中</option>
+                  <option value="resolved">已解决</option>
                   <option value="closed">已关闭</option>
                   <option value="false_positive">误报</option>
                 </select>
@@ -762,6 +770,7 @@ export default function EventWorkspace() {
                     >
                       <option value="new">新建</option>
                       <option value="investigating">调查中</option>
+                      <option value="resolved">已解决</option>
                       <option value="closed">已关闭</option>
                       <option value="false_positive">误报</option>
                     </select>
@@ -889,6 +898,56 @@ export default function EventWorkspace() {
                       placeholder="描述事件详情..."
                     />
                   </div>
+                  <div>
+                    <label className="block text-text-secondary text-sm mb-2">附件</label>
+                    <div className="flex flex-wrap gap-2 mb-2">
+                      {newEvent.attachments?.map((att, i) => (
+                        <div key={i} className="flex items-center gap-2 px-2 py-1 bg-page-bg border border-border-color rounded-lg text-xs">
+                          <File className="w-3.5 h-3.5 text-primary" />
+                          <span className="text-text-primary truncate max-w-[120px]">{att.name}</span>
+                          <span className="text-text-muted">({(att.size / 1024).toFixed(1)}KB)</span>
+                          <button
+                            onClick={() => setNewEvent({
+                              ...newEvent,
+                              attachments: newEvent.attachments?.filter((_, j) => j !== i)
+                            })}
+                            className="p-0.5 text-text-muted hover:text-red-400"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    <label className="inline-flex items-center gap-2 px-3 py-2 bg-page-bg border border-border-color rounded-lg cursor-pointer hover:bg-card-bg transition-colors text-sm text-text-secondary">
+                      <File className="w-4 h-4" />
+                      选择文件
+                      <input
+                        type="file"
+                        multiple
+                        className="hidden"
+                        onChange={(e) => {
+                          const files = Array.from(e.target.files || []);
+                          Promise.all(files.map(f => new Promise<{name: string; size: number; type: string; data: string}>((resolve) => {
+                            const reader = new FileReader();
+                            reader.onload = () => resolve({
+                              name: f.name,
+                              size: f.size,
+                              type: f.type,
+                              data: reader.result as string
+                            });
+                            reader.readAsDataURL(f);
+                          }))).then(results => {
+                            setNewEvent({
+                              ...newEvent,
+                              attachments: [...(newEvent.attachments || []), ...results]
+                            });
+                          });
+                          // Reset input so re-selecting same file works
+                          e.target.value = '';
+                        }}
+                      />
+                    </label>
+                  </div>
                   <div className="flex justify-end gap-3 pt-4 border-t border-border-color">
                     <button
                       onClick={() => setShowAddForm(false)}
@@ -962,9 +1021,15 @@ export default function EventWorkspace() {
                 {/* 事件属性 */}
                 <div className="space-y-3 text-sm">
                   <div className="flex justify-between">
-                    <span className="text-text-secondary">事件ID:</span>
-                    <span className="text-text-primary font-mono">{detailEvent.id}</span>
+                    <span className="text-text-secondary">事件编号:</span>
+                    <span className="text-text-primary font-mono">{detailEvent.eventCode || detailEvent.id}</span>
                   </div>
+                  {detailEvent.eventCode && detailEvent.eventCode !== detailEvent.id && (
+                    <div className="flex justify-between">
+                      <span className="text-text-secondary">数据库ID:</span>
+                      <span className="text-text-primary font-mono text-xs text-text-muted">{detailEvent.id}</span>
+                    </div>
+                  )}
                   <div className="flex justify-between">
                     <span className="text-text-secondary">事件类型:</span>
                     <span className="text-text-primary">{detailEvent.eventType}</span>
@@ -1001,18 +1066,77 @@ export default function EventWorkspace() {
                   </div>
                 </div>
 
-                {/* 状态切换（支持任意状态间切换） */}
+                {/* 附件列表 */}
+                {detailEvent.attachments && detailEvent.attachments.length > 0 && (
+                  <div>
+                    <h4 className="text-sm font-medium text-text-secondary mb-2">附件（{detailEvent.attachments.length}）</h4>
+                    <div className="space-y-2">
+                      {detailEvent.attachments.map((att: any, i: number) => (
+                        <div key={i} className="flex items-center gap-3 p-3 bg-page-bg/50 rounded-lg border border-border-color">
+                          <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
+                            <File className="w-4 h-4 text-primary" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm text-text-primary truncate">{att.name}</div>
+                            <div className="text-xs text-text-muted">{(att.size / 1024).toFixed(1)} KB</div>
+                          </div>
+                          {att.data && (
+                            <a
+                              href={att.data}
+                              download={att.name}
+                              className="px-3 py-1.5 bg-primary/10 text-primary text-xs rounded-lg hover:bg-primary/20 transition-colors"
+                            >
+                              下载
+                            </a>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* 关联告警 */}
+                {detailEvent.relatedAlerts && detailEvent.relatedAlerts.length > 0 && (
+                  <div>
+                    <h4 className="text-sm font-medium text-text-secondary mb-2">关联告警（{detailEvent.relatedAlerts.length}）</h4>
+                    <div className="space-y-2">
+                      {detailEvent.relatedAlerts.map((alert: any, i: number) => (
+                        <div key={i} className="flex items-center gap-2 p-2 bg-page-bg/50 rounded-lg border border-border-color">
+                          <span className="text-xs font-mono text-text-muted">{alert.alert_code || alert.id}</span>
+                          <span className="text-xs text-text-primary flex-1 truncate">{alert.title || '未知告警'}</span>
+                          <span className={`text-xs px-1.5 py-0.5 rounded ${
+                            alert.severity === 'critical' ? 'bg-red-100 text-red-600' :
+                            alert.severity === 'high' ? 'bg-orange-100 text-orange-600' :
+                            alert.severity === 'medium' ? 'bg-amber-100 text-amber-600' :
+                            'bg-blue-100 text-blue-600'
+                          }`}>{alert.severity}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* 状态切换 + 处置记录（合并） */}
                 <div className="pt-4 border-t border-border-color">
-                  <label className="block text-sm font-medium text-text-secondary mb-2">事件状态</label>
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="flex items-center justify-between mb-3">
+                    <label className="block text-sm font-medium text-text-secondary flex items-center gap-2">
+                      <History className="w-4 h-4" />状态 & 处置
+                    </label>
+                    <span className="text-xs text-text-muted">{actionRecords.length} 条记录</span>
+                  </div>
+
+                  {/* 状态切换：新建为系统行为不可手动修改 */}
+                  <div className="flex flex-wrap gap-2 mb-4">
                     {Object.entries(statusConfig).map(([key, config]) => (
                       <button
                         key={key}
-                        onClick={() => handleUpdateStatus(detailEvent.eventCode || detailEvent.id, key)}
-                        disabled={detailEvent.status === key}
-                        className={`py-2 px-3 rounded-lg text-xs font-medium transition-all flex items-center justify-center gap-1.5 ${
+                        onClick={() => key !== 'new' && handleUpdateStatus(detailEvent.eventCode || detailEvent.id, key)}
+                        disabled={detailEvent.status === key || key === 'new'}
+                        className={`py-1.5 px-3 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5 ${
                           detailEvent.status === key
-                            ? `${config.bg} ${config.text} ring-1 ring-current/30 cursor-default opacity-70`
+                            ? `${config.bg} ${config.text} ring-1 ring-current/30 cursor-default`
+                            : key === 'new'
+                            ? `${config.bg} ${config.text} ring-1 ring-current/30 cursor-not-allowed opacity-60`
                             : `bg-page-bg border border-border-color hover:${config.bg} hover:${config.text} text-text-secondary`
                         }`}
                       >
@@ -1021,7 +1145,6 @@ export default function EventWorkspace() {
                       </button>
                     ))}
                   </div>
-                </div>
 
                 {/* 剧本执行下拉框 */}
                 <div className="pt-4 border-t border-border-color">
@@ -1122,15 +1245,6 @@ export default function EventWorkspace() {
                   )}
                 </div>
 
-                {/* 处置记录区域 */}
-                <div className="pt-6 border-t border-border-color">
-                  <div className="flex items-center justify-between mb-4">
-                    <h4 className="text-sm font-medium text-text-secondary flex items-center gap-2">
-                      <History className="w-4 h-4" />处置记录
-                    </h4>
-                    <span className="text-xs text-text-muted">{actionRecords.length} 条记录</span>
-                  </div>
-
                   {/* 添加评论输入框 */}
                   <div className="mb-4">
                     <textarea
@@ -1145,10 +1259,46 @@ export default function EventWorkspace() {
                       rows={2}
                       className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-sm text-text-primary placeholder-text-muted resize-none focus:outline-none focus:border-primary"
                     />
-                    <div className="flex justify-end mt-2">
+                    <div className="flex items-center justify-between mt-2">
+                      <label className="inline-flex items-center gap-1.5 px-2 py-1.5 bg-page-bg border border-border-color rounded-lg cursor-pointer hover:bg-card-bg transition-colors text-xs text-text-secondary">
+                        <File className="w-3.5 h-3.5" />
+                        附件
+                        <input
+                          type="file"
+                          multiple
+                          className="hidden"
+                          onChange={(e) => {
+                            const files = Array.from(e.target.files || []);
+                            Promise.all(files.map(f => new Promise<any>((resolve) => {
+                              const reader = new FileReader();
+                              reader.onload = () => resolve({ name: f.name, size: f.size, type: f.type, data: reader.result as string });
+                              reader.readAsDataURL(f);
+                            }))).then(results => {
+                              setActionAttachments(prev => [...prev, ...results]);
+                            });
+                            e.target.value = '';
+                          }}
+                        />
+                      </label>
+                      {actionAttachments.length > 0 && (
+                        <div className="flex flex-wrap gap-1 max-w-[200px]">
+                          {actionAttachments.map((att, i) => (
+                            <span key={i} className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-page-bg border border-border-color rounded text-xs text-text-muted">
+                              <File className="w-3 h-3" />
+                              {att.name.length > 10 ? att.name.substring(0, 10) + '..' : att.name}
+                              <button onClick={() => setActionAttachments(prev => prev.filter((_, j) => j !== i))} className="p-0.5 hover:text-red-400">
+                                <X className="w-2.5 h-2.5" />
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      <span className="text-xs text-text-muted">
+                        {actionAttachments.length > 0 ? `${actionAttachments.length} 个文件` : ''}
+                      </span>
                       <button
                         onClick={handleAddComment}
-                        disabled={!newComment.trim()}
+                        disabled={!newComment.trim() && actionAttachments.length === 0}
                         className="px-3 py-1.5 bg-primary text-white text-xs rounded-lg hover:bg-primary-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
                       >
                         <Send className="w-3 h-3" />

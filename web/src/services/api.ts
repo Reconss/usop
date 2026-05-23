@@ -397,12 +397,12 @@ export const dataSourcesApi = {
   }),
   
   // 启动 Flink 任务
-  startFlinkJob: (dataSourceId: number) => request(`/datasources-api/datasources/${dataSourceId}/start`, { 
+  startFlinkJob: (dataSourceId: number) => request(`/datasources-api/datasources/${dataSourceId}/start-flink`, { 
     method: 'POST' 
   }),
   
   // 停止 Flink 任务
-  stopFlinkJob: (dataSourceId: number) => request(`/datasources-api/datasources/${dataSourceId}/stop`, { 
+  stopFlinkJob: (dataSourceId: number) => request(`/datasources-api/datasources/${dataSourceId}/stop-flink`, { 
     method: 'POST' 
   }),
   
@@ -486,6 +486,8 @@ export const aiApi = {
   updateModel: (id: number, data: any) => request(`/ai-api/models/${id}`, { method: 'PUT', body: data }),
   deleteModel: (id: number) => request(`/ai-api/models/${id}`, { method: 'DELETE' }),
   getInsights: () => request('/ai-api/insights'),
+  getAgents: () => request('/ai-api/agents'),
+  getProviders: () => request('/ai-api/providers'),
   getTasks: (params?: { page?: number; page_size?: number }) => {
     const searchParams = new URLSearchParams();
     if (params?.page) searchParams.append('page', String(params.page));
@@ -574,8 +576,39 @@ export const aiApi = {
   /** 实时安全分析 */
   analyze: (data: { type: string; data: any }) =>
     request('/ai-api/analyze', { method: 'POST', body: data }),
-};
 
+  // ===== LLM Provider Management =====
+  getLlmProviders: () => request('/ai-api/llm-providers'),
+  addLlmProvider: (data: any) => request('/ai-api/llm-providers', { method: 'POST', body: data }),
+  updateLlmProvider: (id: string, data: any) => request(`/ai-api/llm-providers/${id}`, { method: 'PUT', body: data }),
+  deleteLlmProvider: (id: string) => request(`/ai-api/llm-providers/${id}`, { method: 'DELETE' }),
+
+  // ===== Agent Provider Management =====
+  getAgentProviders: () => request('/ai-api/agent-providers'),
+  addAgentProvider: (data: any) => request('/ai-api/agent-providers', { method: 'POST', body: data }),
+  updateAgentProvider: (id: string, data: any) => request(`/ai-api/agent-providers/${id}`, { method: 'PUT', body: data }),
+  deleteAgentProvider: (id: string) => request(`/ai-api/agent-providers/${id}`, { method: 'DELETE' }),
+
+  // ===== Unified Invoke & Gateway =====
+  invokeAI: (data: any) => request('/ai-api/invoke', { method: 'POST', body: data }),
+  gatewayAnalyze: (data: any) => request('/ai-api/gateway/analyze', { method: 'POST', body: data }),
+  gatewayListTools: () => request('/ai-api/gateway/tools'),
+  gatewayExecuteTool: (toolName: string, data: any) => 
+    request(`/ai-api/gateway/tools/${toolName}/execute`, { method: 'POST', body: data }),
+
+  // ===== AI Capabilities =====
+  copilotAnalyzeEvent: (data: any) => request('/ai-api/copilot/analyze-event', { method: 'POST', body: data }),
+  alertsAnalyzeBatch: (data?: any) => request('/ai-api/alerts/analyze-batch', { method: 'POST', body: data || {} }),
+  listSkills: () => request('/ai-api/skills/list'),
+  executeSkill: (data: any) => request('/ai-api/skills/execute', { method: 'POST', body: data }),
+  agentSkillRoute: (data: any) => request('/ai-api/skills/agent-route', { method: 'POST', body: data }),
+  alertsTriage: (data: any) => request('/ai-api/alerts/triage', { method: 'POST', body: data }),
+  investigateEvent: (data: any) => request('/ai-api/investigate/event', { method: 'POST', body: data }),
+  autoRespond: (data: any) => request('/ai-api/respond/auto', { method: 'POST', body: data }),
+  nlQuery: (data: any) => request('/ai-api/nl/query', { method: 'POST', body: data }),
+  recordFeedback: (data: any) => request('/ai-api/feedback/record', { method: 'POST', body: data }),
+  getFeedbackStats: () => request('/ai-api/feedback/stats'),
+};
 // Products API
 export const productsApi = {
   getProducts: (params?: { page?: number; page_size?: number }) => {

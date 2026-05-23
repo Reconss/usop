@@ -138,8 +138,19 @@ interface TimeRangePickerProps {
 }
 
 export const TimeRangePicker: React.FC<TimeRangePickerProps> = ({ value, onChange }) => {
-  const [preset, setPreset] = useState('last7d');
+  const [preset, setPreset] = useState<string | null>(null);
   const [showCustom, setShowCustom] = useState(false);
+
+  // 每次渲染时根据 value 计算当前预设，preset 为 null 时（初始化）同步一次
+  const activePreset = preset ?? (() => {
+    const now = new Date();
+    const today = now.toISOString().slice(0, 10);
+    const start7d = new Date(now);
+    start7d.setDate(start7d.getDate() - 7);
+    if (value.start === today && value.end === today) return 'today';
+    if (value.start === start7d.toISOString().slice(0, 10) && value.end === today) return 'last7d';
+    return 'custom';
+  })();
 
   const applyPreset = (presetValue: string) => {
     setPreset(presetValue);
@@ -178,7 +189,7 @@ export const TimeRangePicker: React.FC<TimeRangePickerProps> = ({ value, onChang
             onClick={() => applyPreset(p.value)}
             className={`
               px-3 py-1.5 text-xs font-medium rounded-md transition-all duration-200
-              ${preset === p.value 
+              ${activePreset === p.value 
                 ? 'bg-primary text-white shadow-sm' 
                 : 'text-text-secondary hover:text-text-primary hover:bg-card-bg-hover'
               }

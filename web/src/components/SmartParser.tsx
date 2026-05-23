@@ -834,9 +834,14 @@ export default function SmartParser() {
   const handleConfigTest = useCallback(async () => {
     if (!formData.sample.trim()) return;
     setIsTestingConfig(true);
-    await new Promise(r => setTimeout(r, 300));
-    runTestParse(formData.sample, formData.parser, formData.parserConfig);
-    setIsTestingConfig(false);
+    try {
+      await new Promise(r => setTimeout(r, 300));
+      runTestParse(formData.sample, formData.parser, formData.parserConfig);
+    } catch (e) {
+      console.warn('测试解析失败:', e);
+    } finally {
+      setIsTestingConfig(false);
+    }
   }, [formData.sample, formData.parser, formData.parserConfig, runTestParse]);
 
   const toggleConfigFieldSelected = useCallback((index: number) => {
@@ -1850,7 +1855,7 @@ export default function SmartParser() {
         </div>
       </div>
 
-      <AnimatePresence>
+      <>
         {showAddModal && (
           <motion.div
             initial={{ opacity: 0 }}
@@ -3125,7 +3130,7 @@ export default function SmartParser() {
             </motion.div>
           </motion.div>
         )}
-      </AnimatePresence>
+      </>
     </div>
   );
 }

@@ -1,1575 +1,864 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Brain, MessageSquare, Send, Sparkles, Wand2, FileText, Shield, AlertTriangle,
-  Search, Clock, Copy, ThumbsUp, ThumbsDown, RotateCcw, Settings, Zap,
-  TrendingUp, Target, ChevronRight, Bot, User, MoreHorizontal, Download,
-  Share2, Bookmark, Trash2, Plus, Filter, BarChart3, Cpu, Database,
-  Network, Lock, Eye, FileSearch, CheckCircle, XCircle, Loader2, X, Sliders,
-  Thermometer, Gauge, Server, Globe, Key, ChevronDown
+  Brain, MessageSquare, Zap, Shield, Sparkles, Bot, Cpu,
+  Search, Target, Activity, ThumbsUp, ThumbsDown, Server,
+  AlertTriangle, Loader2, X, Plus, Save, Play,
+  Clock, FileText, Trash2, Edit3, Copy, BarChart3, GitBranch,
+  Terminal, User, Users, Send, List, MessageCircle, Filter, Check,
+  AlertCircle, Settings, PanelLeftClose, PanelLeft,
+  RefreshCw, Layers, Lightbulb,
+  ShieldCheck, Blocks, BookOpen, Radar, Gauge, Combine,
+  Wrench, Upload, FileJson, Flag, Link2, Wifi
 } from 'lucide-react';
 import { aiApi } from '../services/api';
+import { useAuth } from '../contexts/AuthContext';
 
-interface ChatMessage {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  timestamp: string;
-  model?: string;
-  tokens?: number;
-  attachments?: string[];
-}
+interface LlmProvider { id: string; name: string; type: string; base_url: string; api_key: string; model: string; temperature?: number; max_tokens?: number; timeout?: number; enabled?: boolean; }
+interface AgentProvider { id: string; name: string; type: string; endpoint: string; api_key: string; description: string; skills: Skill[]; enabled?: boolean; }
+interface Skill { name: string; description: string; }
+interface ChatSession { id: string; title: string; created_at: string; message_count?: number; }
+interface ToastItem { id: string; type: 'success' | 'error' | 'info'; message: string; duration?: number; }
 
-interface AIInsight {
-  id: string;
-  title: string;
-  description: string;
-  severity: 'critical' | 'high' | 'medium' | 'low';
-  category: string;
-  confidence: number;
-  timestamp: string;
-  relatedEvents: string[];
-}
-
-interface AIAgent {
-  id: string;
-  name: string;
-  description: string;
-  icon: React.ElementType;
-  status: 'active' | 'idle' | 'busy';
-  capabilities: string[];
-  lastActive: string;
-}
-
-interface ChatSession {
-  id: string;
-  title: string;
-  time: string;
-  active: boolean;
-}
-
-interface ModelConfig {
-  id: string;
-  name: string;
-  provider: string;
-  modelId: string;
-  baseUrl: string;
-  apiKey: string;
-  temperature: number;
-  maxTokens: number;
-  topP: number;
-  enabled: boolean;
-}
-
-interface TokenUsage {
-  date: string;
-  model: string;
-  tokens: number;
-  cost: number;
-}
-
-const aiAgents: AIAgent[] = [
-  {
-    id: 'agent-1',
-    name: '威胁分析助手',
-    description: '自动分析安全事件，识别攻击模式和威胁情报',
-    icon: Shield,
-    status: 'active',
-    capabilities: ['事件分析', '威胁情报', '攻击链重建'],
-    lastActive: '2026-04-27T10:30:00Z'
-  },
-  {
-    id: 'agent-2',
-    name: '日志解析专家',
-    description: '解析复杂日志，提取关键安全指标和异常行为',
-    icon: FileText,
-    status: 'idle',
-    capabilities: ['日志解析', '异常检测', '模式识别'],
-    lastActive: '2026-04-27T09:15:00Z'
-  },
-  {
-    id: 'agent-3',
-    name: '调查协作者',
-    description: '协助安全调查，提供分析建议和关联信息',
-    icon: Search,
-    status: 'busy',
-    capabilities: ['关联分析', '证据收集', '报告生成'],
-    lastActive: '2026-04-27T08:45:00Z'
-  },
-  {
-    id: 'agent-4',
-    name: '合规检查员',
-    description: '检查安全策略合规性，识别配置风险',
-    icon: CheckCircle,
-    status: 'active',
-    capabilities: ['合规检查', '策略审计', '风险评估'],
-    lastActive: '2026-04-27T07:30:00Z'
-  }
-];
-
-const aiInsights: AIInsight[] = [
-  {
-    id: 'INS-001',
-    title: '检测到APT攻击模式',
-    description: 'AI分析发现疑似APT组织使用的攻击手法，建议立即调查',
-    severity: 'critical',
-    category: '威胁情报',
-    confidence: 92,
-    timestamp: '2026-04-27T10:30:00Z',
-    relatedEvents: ['EVT-2026-001', 'EVT-2026-003']
-  },
-  {
-    id: 'INS-002',
-    title: '内部威胁风险预警',
-    description: '用户行为分析显示异常数据访问模式',
-    severity: 'high',
-    category: '用户行为',
-    confidence: 85,
-    timestamp: '2026-04-27T09:15:00Z',
-    relatedEvents: ['EVT-2026-002']
-  },
-  {
-    id: 'INS-003',
-    title: '配置漂移检测',
-    description: '关键安全设备配置发生未授权变更',
-    severity: 'medium',
-    category: '合规管理',
-    confidence: 78,
-    timestamp: '2026-04-27T08:45:00Z',
-    relatedEvents: []
-  },
-  {
-    id: 'INS-004',
-    title: '零日漏洞利用迹象',
-    description: '检测到疑似针对未公开漏洞的攻击行为',
-    severity: 'critical',
-    category: '漏洞利用',
-    confidence: 88,
-    timestamp: '2026-04-27T07:30:00Z',
-    relatedEvents: ['EVT-2026-004', 'EVT-2026-005']
-  }
-];
-
-const containerVariants = {
-  hidden: { opacity: 0 },
-  visible: { opacity: 1, transition: { staggerChildren: 0.05 } }
+// ==================== 子组件 ====================
+const MarkdownContent: React.FC<{ content: string }> = ({ content }) => {
+  const r = content
+    .replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => `<pre class="bg-page-bg border border-border-color rounded-lg p-3 my-2 overflow-x-auto text-xs font-mono"><code>${code.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</code></pre>`)
+    .replace(/`([^`]+)`/g, '<code class="bg-page-bg px-1 py-0.5 rounded text-[13px] font-mono text-blue-400">$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong class="font-semibold">$1</strong>').replace(/\*([^*]+)\*/g, '<em>$1</em>')
+    .replace(/^### (.+)$/gm, '<h3 class="text-base font-semibold mt-3 mb-1.5">$1</h3>').replace(/^## (.+)$/gm, '<h2 class="text-lg font-semibold mt-4 mb-2">$1</h2>')
+    .replace(/^# (.+)$/gm, '<h1 class="text-xl font-bold mt-4 mb-2">$1</h1>')
+    .replace(/^- (.+)$/gm, '<li class="flex items-start gap-1.5 ml-4"><span class="text-blue-400 mt-1">•</span><span>$1</span></li>')
+    .replace(/\n\n/g, '</p><p class="my-1.5">').replace(/\n/g, '<br />');
+  return <div className="text-sm leading-relaxed" dangerouslySetInnerHTML={{ __html: `<p>${r}</p>` }} />;
 };
 
-const itemVariants = {
-  hidden: { opacity: 0, y: 20 },
-  visible: { opacity: 1, y: 0, transition: { duration: 0.3 } }
+const Skeleton: React.FC<{ lines?: number; className?: string }> = ({ lines = 3, className = '' }) => (
+  <div className={`space-y-2 ${className}`}>{Array.from({length:lines}).map((_,i)=><div key={i} className="h-4 bg-border-color rounded animate-pulse" style={{width:`${80-i*15}%`}} />)}</div>
+);
+
+const ToastContainer: React.FC<{toasts:ToastItem[];onDismiss:(id:string)=>void}> = ({toasts,onDismiss}) => (
+  <div className="fixed top-4 right-4 z-50 space-y-2 max-w-sm">
+    <AnimatePresence>{toasts.map(t=>(
+      <motion.div key={t.id} initial={{opacity:0,y:-20,scale:0.95}} animate={{opacity:1,y:0,scale:1}} exit={{opacity:0,y:-10,scale:0.95}}
+        className={`flex items-center gap-2.5 px-4 py-3 rounded-xl border shadow-lg backdrop-blur-sm ${t.type==='success'?'bg-emerald-900/80 border-emerald-700/50 text-emerald-200':t.type==='error'?'bg-red-900/80 border-red-700/50 text-red-200':'bg-blue-900/80 border-blue-700/50 text-blue-200'}`}>
+        {t.type==='success'?<CheckCircle className="w-4 h-4"/>:t.type==='error'?<AlertTriangle className="w-4 h-4"/>:<AlertCircle className="w-4 h-4"/>}
+        <span className="text-sm flex-1">{t.message}</span>
+        <button onClick={()=>onDismiss(t.id)} className="opacity-60 hover:opacity-100"><X className="w-3.5 h-3.5"/></button>
+      </motion.div>
+    ))}</AnimatePresence>
+  </div>
+);
+
+const ConfirmDialog: React.FC<{open:boolean;title:string;message:string;onConfirm:()=>void;onCancel:()=>void;confirmLabel?:string;variant?:'danger'|'primary'}> = ({open,title,message,onConfirm,onCancel,confirmLabel='确认',variant='danger'}) => {
+  if(!open)return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+      <motion.div initial={{opacity:0,scale:0.95}} animate={{opacity:1,scale:1}} className="bg-card-bg border border-border-color rounded-xl p-5 max-w-sm w-full mx-4 shadow-xl">
+        <h3 className="text-base font-semibold text-text-primary mb-2">{title}</h3>
+        <p className="text-sm text-text-secondary mb-5">{message}</p>
+        <div className="flex gap-2 justify-end">
+          <button onClick={onCancel} className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary transition-colors rounded-lg hover:bg-border-color">取消</button>
+          <button onClick={()=>{onConfirm();onCancel();}} className={`px-4 py-2 text-sm text-white rounded-lg transition-all ${variant==='danger'?'bg-red-600 hover:bg-red-500':'bg-blue-600 hover:bg-blue-500'}`}>{confirmLabel}</button>
+        </div>
+      </motion.div>
+    </div>
+  );
 };
 
+const SubTabBar: React.FC<{tabs:{id:string;label:string;icon:React.ElementType}[];active:string;onChange:(id:string)=>void;color?:string}> = ({tabs,active,onChange,color='#3b82f6'}) => (
+  <div className="flex gap-1 bg-page-bg p-0.5 rounded-lg border border-border-color">
+    {tabs.map(t=>(
+      <button key={t.id} onClick={()=>onChange(t.id)} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${active===t.id?'bg-card-bg text-text-primary shadow-sm border border-border-color':'text-text-muted hover:text-text-secondary'}`}>
+        <t.icon className="w-3.5 h-3.5" style={active===t.id?{color}:undefined} />
+        <span>{t.label}</span>
+      </button>
+    ))}
+  </div>
+);
+
+// ==================== 主组件 ====================
 const AICenter: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'chat' | 'insights' | 'agents' | 'models'>('chat');
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: '1',
-      role: 'assistant',
-      content: '您好！我是USOP AI安全助手。我可以帮助您分析安全事件、查询威胁情报、生成调查报告等。请问有什么可以帮助您的？',
-      timestamp: '2026-04-27T10:00:00Z',
-      model: 'GPT-4 Security',
-      tokens: 156
-    }
-  ]);
-  const [inputMessage, setInputMessage] = useState('');
-  const [isTyping, setIsTyping] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const [showNewSessionModal, setShowNewSessionModal] = useState(false);
-  const [showModelConfigModal, setShowModelConfigModal] = useState(false);
-  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const { user } = useAuth();
+  const [mainTab, setMainTab] = useState('analysis');
+  const [analysisSub, setAnalysisSub] = useState('chat');
+  const [configSub, setConfigSub] = useState('models');
+
+  const [llmProviders, setLlmProviders] = useState<LlmProvider[]>([]);
+  const [agentProviders, setAgentProviders] = useState<AgentProvider[]>([]);
+  const [skills, setSkills] = useState<Skill[]>([]);
+  const [feedbackStats, setFeedbackStats] = useState<any>(null);
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const [confirmDialog, setConfirmDialog] = useState<{open:boolean;title:string;message:string;onConfirm:()=>void;variant?:'danger'|'primary';confirmLabel?:string;}>({open:false,title:'',message:'',onConfirm:()=>{}});
+  const addToast = useCallback((type:ToastItem['type'],message:string,dur=4000)=>{const id=Date.now().toString();setToasts(p=>[...p,{id,type,message}]);setTimeout(()=>setToasts(p=>p.filter(t=>t.id!==id)),dur);},[]);
+
+  // ===== Chat states =====
+  const [teamMessages, setTeamMessages] = useState<{id:string;user:{name:string;role:string;avatar:string;color:string;isAI?:boolean};content:string;time:string}[]>([]);
+  const [teamMsg, setTeamMsg] = useState('');
+  const teamEndRef = useRef<HTMLDivElement>(null);
+  const [selectedProvider, setSelectedProvider] = useState('');
+  const [messages, setMessages] = useState<{role:string;content:string;feedback?:'up'|'down'}[]>([]);
+  const [inputMsg, setInputMsg] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
+  const [streamingContent, setStreamingContent] = useState('');
   const [sessions, setSessions] = useState<ChatSession[]>([]);
-  const [sessionsLoading, setSessionsLoading] = useState(false);
-  const [modelsLoading, setModelsLoading] = useState(false);
-  const [newSessionForm, setNewSessionForm] = useState({
-    title: '',
-    agent: 'agent-1',
-    template: ''
-  });
-  const [modelConfigs, setModelConfigs] = useState<ModelConfig[]>([
-    {
-      id: 'model-1',
-      name: 'GPT-4o',
-      provider: 'OpenAI',
-      modelId: 'gpt-4o',
-      baseUrl: 'https://api.openai.com/v1',
-      apiKey: 'sk-****',
-      temperature: 0.7,
-      maxTokens: 4096,
-      topP: 1,
-      enabled: true
-    },
-    {
-      id: 'model-2',
-      name: 'Claude Opus 4.7',
-      provider: 'Anthropic',
-      modelId: 'claude-opus-4-7',
-      baseUrl: 'https://api.anthropic.com/v1',
-      apiKey: 'sk-ant-****',
-      temperature: 0.5,
-      maxTokens: 4096,
-      topP: 0.9,
-      enabled: true
-    },
-    {
-      id: 'model-3',
-      name: 'DeepSeek V4',
-      provider: 'DeepSeek',
-      modelId: 'deepseek-chat',
-      baseUrl: 'https://api.deepseek.com/v1',
-      apiKey: 'sk-****',
-      temperature: 0.3,
-      maxTokens: 2048,
-      topP: 1,
-      enabled: false
-    }
-  ]);
-  const [editingModel, setEditingModel] = useState<ModelConfig | null>(null);
-  const [showAddModel, setShowAddModel] = useState(false);
-  const [newModel, setNewModel] = useState<Partial<ModelConfig>>({});
-  const [tokenUsage] = useState<TokenUsage[]>([
-    { date: '05/01', model: 'GPT-4o', tokens: 125000, cost: 0.87 },
-    { date: '05/01', model: 'Claude Opus 4.7', tokens: 98000, cost: 1.47 },
-    { date: '05/02', model: 'GPT-4o', tokens: 142000, cost: 0.99 },
-    { date: '05/02', model: 'Claude Opus 4.7', tokens: 76000, cost: 1.14 },
-    { date: '05/03', model: 'GPT-4o', tokens: 168000, cost: 1.18 },
-    { date: '05/03', model: 'Claude Opus 4.7', tokens: 112000, cost: 1.68 },
-    { date: '05/04', model: 'GPT-4o', tokens: 195000, cost: 1.37 },
-    { date: '05/04', model: 'Claude Opus 4.7', tokens: 134000, cost: 2.01 },
-    { date: '05/05', model: 'GPT-4o', tokens: 210000, cost: 1.47 },
-    { date: '05/05', model: 'DeepSeek V4', tokens: 45000, cost: 0.06 },
-    { date: '05/06', model: 'GPT-4o', tokens: 188000, cost: 1.32 },
-    { date: '05/06', model: 'Claude Opus 4.7', tokens: 156000, cost: 2.34 },
-    { date: '05/07', model: 'GPT-4o', tokens: 223000, cost: 1.56 },
-    { date: '05/07', model: 'Claude Opus 4.7', tokens: 178000, cost: 2.67 },
-    { date: '05/07', model: 'DeepSeek V4', tokens: 67000, cost: 0.09 },
-  ]);
+  const [activeSessionId, setActiveSessionId] = useState<string|null>(null);
+  const [showSessionPanel, setShowSessionPanel] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  const [showNlInput, setShowNlInput] = useState(false);
+  const [analysisNlQuery, setAnalysisNlQuery] = useState('');
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [nlReply, setNlReply] = useState('');
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
+  // ===== Deep analysis states =====
+  const [depthInsights, setDepthInsights] = useState<any>(null);
+  const [depthLoading, setDepthLoading] = useState(false);
+  const [depthTriageInput, setDepthTriageInput] = useState('');
+  const [depthTriageResult, setDepthTriageResult] = useState<any>(null);
+  const [depthInvestigateCode, setDepthInvestigateCode] = useState('');
+  const [depthInvestigateResult, setDepthInvestigateResult] = useState<any>(null);
+  const [depthActiveSubTab, setDepthActiveSubTab] = useState('insights');
+  const [rulesText, setRulesText] = useState('');
 
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
+  // ===== Automation states =====
+  const [autoEventCode, setAutoEventCode] = useState('');
+  const [autoResult, setAutoResult] = useState<any>(null);
+  const [autoLoading, setAutoLoading] = useState(false);
+  const [skillInstruction, setSkillInstruction] = useState('');
+  const [skillResult, setSkillResult] = useState<any>(null);
+  const [skillLoading, setSkillLoading] = useState(false);
+  const [autoActiveSubTab, setAutoActiveSubTab] = useState('respond');
 
-  // 从 API 加载会话列表
-  useEffect(() => {
-    let cancelled = false;
-    setSessionsLoading(true);
-    aiApi.getSessions().then((res: any) => {
-      if (cancelled) return;
-      if (res.success && Array.isArray(res.data)) {
-        const mapped = res.data.map((s: any) => ({
-          id: s.id,
-          title: s.title || '新对话',
-          time: s.updated_at ? new Date(s.updated_at).toLocaleString('zh-CN') : '',
-          active: false,
-        }));
-        setSessions(mapped);
-        if (mapped.length > 0 && !currentSessionId) {
-          setCurrentSessionId(mapped[0].id);
-          mapped[0].active = true;
-        }
-      }
-    }).catch(() => {/* ignore */})
-    .finally(() => { if (!cancelled) setSessionsLoading(false); });
-    return () => { cancelled = true; };
-  }, []);
+  // ===== Config states =====
+  const [editingLlm, setEditingLlm] = useState<any>(null);
+  const [showAddLlm, setShowAddLlm] = useState(false);
+  const [llmFormLoading, setLlmFormLoading] = useState(false);
+  const [editingAgent, setEditingAgent] = useState<any>(null);
+  const [showAddAgent, setShowAddAgent] = useState(false);
+  const [agentFormLoading, setAgentFormLoading] = useState(false);
 
-  // 从 API 加载模型配置
-  useEffect(() => {
-    let cancelled = false;
-    setModelsLoading(true);
-    aiApi.getModels().then((res: any) => {
-      if (cancelled) return;
-      if (res.success && Array.isArray(res.data) && res.data.length > 0) {
-        const apiModels = res.data.map((m: any) => ({
-          id: String(m.id),
-          name: m.name || 'Unknown',
-          provider: m.provider || 'unknown',
-          modelId: m.config?.model_id || m.name || 'deepseek-chat',
-          baseUrl: m.config?.base_url || 'https://api.deepseek.com/v1',
-          apiKey: m.config?.api_key || '',
-          temperature: m.config?.temperature ?? 0.7,
-          maxTokens: m.config?.max_tokens ?? 4096,
-          topP: m.config?.top_p ?? 1,
-          enabled: m.status === 'active',
-        }));
-        setModelConfigs((prev: any) => apiModels.length > 0 ? apiModels : prev);
-      }
-    }).catch(() => {/* keep defaults */})
-    .finally(() => { if (!cancelled) setModelsLoading(false); });
-    return () => { cancelled = true; };
-  }, []);
-
-  const handleSendMessage = () => {
-    if (!inputMessage.trim() || !currentSessionId) {
-      if (!currentSessionId) {
-        // 没有会话时自动创建一个
-        aiApi.createSession({ title: '新对话' }).then((res: any) => {
-          if (res.success && res.data?.id) {
-            const newId = res.data.id;
-            setCurrentSessionId(newId);
-            setSessions(prev => [{
-              id: newId,
-              title: '新对话',
-              time: new Date().toLocaleString('zh-CN'),
-              active: true,
-            }, ...prev.map(s => ({ ...s, active: false }))]);
-          }
-        });
-      }
-      return;
-    }
-
-    const userMessage: ChatMessage = {
-      id: `user_${Date.now()}`,
-      role: 'user',
-      content: inputMessage,
-      timestamp: new Date().toISOString(),
-    };
-
-    setMessages(prev => [...prev, userMessage]);
-    const sentContent = inputMessage;
-    setInputMessage('');
-    setIsTyping(true);
-
-    // SSE 流式请求
-    const assistantMsgId = `assistant_${Date.now()}`;
-    setMessages(prev => [...prev, {
-      id: assistantMsgId,
-      role: 'assistant',
-      content: '',
-      timestamp: new Date().toISOString(),
-    }]);
-
-    aiApi.sendMessageStream(currentSessionId, { content: sentContent }, {
-      onChunk: (content: string) => {
-        setMessages(prev => prev.map(m =>
-          m.id === assistantMsgId ? { ...m, content: m.content + content } : m
-        ));
-      },
-      onDone: (messageId?: string) => {
-        setIsTyping(false);
-        setMessages(prev => prev.map(m =>
-          m.id === assistantMsgId ? { ...m, id: messageId || m.id } : m
-        ));
-      },
-      onError: (error: string) => {
-        setIsTyping(false);
-        setMessages(prev => prev.map(m =>
-          m.id === assistantMsgId ? { ...m, content: `错误: ${error}` } : m
-        ));
-      },
-    });
-  };
-
-  const handleCreateSession = () => {
-    const title = newSessionForm.title || '新对话';
-    aiApi.createSession({ title }).then((res: any) => {
-      if (res.success && res.data?.id) {
-        const newId = res.data.id;
-        setCurrentSessionId(newId);
-        setSessions(prev => [{
-          id: newId,
-          title,
-          time: new Date().toLocaleString('zh-CN'),
-          active: true,
-        }, ...prev.map(s => ({ ...s, active: false }))]);
-        setMessages([{
-          id: Date.now().toString(),
-          role: 'assistant',
-          content: `您好！我是USOP AI安全助手。请问有什么可以帮助您的？`,
-          timestamp: new Date().toISOString(),
-        }]);
-      }
-    }).catch(() => {
-      // 降级：本地创建
-      const fakeId = `session_${Date.now().toString(36)}`;
-      setCurrentSessionId(fakeId);
-      setSessions(prev => [{
-        id: fakeId,
-        title,
-        time: new Date().toLocaleString('zh-CN'),
-        active: true,
-      }, ...prev.map(s => ({ ...s, active: false }))]);
-      setMessages([{
-        id: Date.now().toString(),
-        role: 'assistant',
-        content: `您好！我是USOP AI安全助手。请问有什么可以帮助您的？`,
-        timestamp: new Date().toISOString(),
-      }]);
-    });
-    setShowNewSessionModal(false);
-    setNewSessionForm({ title: '', agent: 'agent-1', template: '' });
-  };
-
-  const handleDeleteSession = (sessionId: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    aiApi.deleteSession(sessionId).then(() => {
-      setSessions(prev => prev.filter(s => s.id !== sessionId));
-      if (currentSessionId === sessionId) {
-        setCurrentSessionId(null);
-        setMessages([{
-          id: 'welcome',
-          role: 'assistant',
-          content: '您好！我是USOP AI安全助手。我可以帮助您分析安全事件、查询威胁情报、生成调查报告等。请问有什么可以帮助您的？',
-          timestamp: new Date().toISOString(),
-        }]);
-      }
-    }).catch(() => {
-      // 降级：本地删除
-      setSessions(prev => prev.filter(s => s.id !== sessionId));
-      if (currentSessionId === sessionId) {
-        setCurrentSessionId(null);
-      }
-    });
-  };
-
-  const handleSaveModelConfig = () => {
-    if (editingModel) {
-      setModelConfigs(prev => prev.map(m => m.id === editingModel.id ? editingModel : m));
-      setEditingModel(null);
-    }
-  };
-
-  const handleDeleteModel = (id: string) => {
-    setModelConfigs(prev => prev.filter(m => m.id !== id));
-  };
-
-  const handleAddModel = () => {
-    if (newModel.name && newModel.provider && newModel.modelId && newModel.baseUrl) {
-      const model: ModelConfig = {
-        id: `model-${Date.now()}`,
-        name: newModel.name,
-        provider: newModel.provider,
-        modelId: newModel.modelId,
-        baseUrl: newModel.baseUrl,
-        apiKey: newModel.apiKey || '',
-        temperature: newModel.temperature ?? 0.7,
-        maxTokens: newModel.maxTokens ?? 4096,
-        topP: newModel.topP ?? 1,
-        enabled: true
-      };
-      setModelConfigs(prev => [...prev, model]);
-      setShowAddModel(false);
-      setNewModel({});
-    }
-  };
-
-  const getSeverityColor = (severity: string) => {
-    switch (severity) {
-      case 'critical': return 'bg-red-500/20 text-red-400 border-red-500/30';
-      case 'high': return 'bg-orange-500/20 text-orange-400 border-orange-500/30';
-      case 'medium': return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30';
-      case 'low': return 'bg-blue-500/20 text-blue-400 border-blue-500/30';
-      default: return 'bg-gray-500/20 text-gray-400 border-gray-500/30';
-    }
-  };
-
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'active': return 'bg-green-500/20 text-green-400';
-      case 'idle': return 'bg-blue-500/20 text-blue-400';
-      case 'busy': return 'bg-yellow-500/20 text-yellow-400';
-      default: return 'bg-gray-500/20 text-gray-400';
-    }
-  };
-
-  const quickActions = [
-    { label: '分析最近事件', icon: FileSearch },
-    { label: '生成威胁报告', icon: FileText },
-    { label: '查询威胁情报', icon: Search },
-    { label: '检查合规状态', icon: CheckCircle }
+  // Online team users (current platform user + AI)
+  const teamUsers = [
+    { name: user?.username||'管理员', role: user?.role||'安全管理员', avatar: (user?.username||'管').charAt(0), color: 'bg-blue-500', isAI: false },
+    { name: 'AI 分析助手', role: '智能分析引擎', avatar: 'AI', color: 'bg-gradient-to-br from-indigo-500 to-purple-600', isAI: true },
   ];
 
-  return (
-    <motion.div variants={containerVariants} initial="hidden" animate="visible" className="space-y-6">
-      <motion.div variants={itemVariants} className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-text-primary flex items-center gap-3">
-            <Brain className="text-primary" size={28} />
-            AI中心
-          </h1>
-          <p className="text-text-secondary mt-1">智能安全分析与自动化响应</p>
-        </div>
-        <div className="flex items-center gap-3">
-          <motion.button
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
-            onClick={() => setShowModelConfigModal(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-card-bg border border-border-color rounded-lg text-text-secondary hover:text-text-primary hover:border-primary/50 transition-all"
-          >
-            <Settings size={18} />
-            模型配置
-          </motion.button>
-          <motion.button
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
-            onClick={() => setShowNewSessionModal(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary/90 transition-all"
-          >
-            <Sparkles size={18} />
-            新建会话
-          </motion.button>
-        </div>
-      </motion.div>
+  useEffect(()=>{
+    Promise.all([
+      aiApi.getLlmProviders().then(r=>r.success&&setLlmProviders(r.data)).catch(()=>{}),
+      aiApi.getAgentProviders().then(async r=>{
+        if(r.success){
+          const providers=r.data||[];
+          setAgentProviders(providers);
+          // 优先选择本地的 Hermes Agent
+          const hermesAgent = providers.find((p:any)=>p.name==='Hermes Agent');
+          if(hermesAgent && !selectedProvider){setSelectedProvider('agent:'+hermesAgent.id);}
+          // 如果没有 Hermes Agent，自动创建
+          if(!providers.find((p:any)=>p.name==='Hermes Agent'||(p.type==='hermes'&&p.endpoint?.includes('localhost:8080')))){
+            try{
+              const res=await aiApi.addAgentProvider({
+                name:'Hermes Agent',type:'hermes',endpoint:'http://localhost:8080',api_key:'',
+                description:'本地 Hermes AI Agent，基于 DeepSeek，提供安全分析与自动化能力',
+                skills:[{name:'威胁分析',description:'安全事件分析与威胁识别'},{name:'告警分诊',description:'告警优先级评估与误报判断'},{name:'攻击链溯源',description:'MITRE ATT&CK 攻击链映射'}],
+                enabled:true
+              });
+              if(res.success){
+                const updated=await aiApi.getAgentProviders();
+                if(updated.success)setAgentProviders(updated.data||[]);
+              }
+            }catch(e){/* Hermes auto-register failed */}
+          }
+        }
+      }).catch(()=>{}),
+      aiApi.listSkills().then(r=>r.success&&setSkills(r.data?.skills||[])).catch(()=>{}),
+      aiApi.getFeedbackStats().then(r=>r.success&&setFeedbackStats(r.data)).catch(()=>{}),
+      aiApi.getSessions().then(r=>r.success&&setSessions(r.data||[])).catch(()=>{}),
+    ]);
+  },[]);
 
-      <motion.div variants={itemVariants} className="grid grid-cols-4 gap-4">
-        {[
-          { label: 'AI分析事件', value: '1,234', icon: Brain, color: 'text-primary', bgColor: 'bg-primary/10' },
-          { label: '智能洞察', value: '89', icon: Sparkles, color: 'text-purple-400', bgColor: 'bg-purple-500/10' },
-          { label: '自动化响应', value: '156', icon: Zap, color: 'text-green-400', bgColor: 'bg-green-500/10' },
-          { label: '平均处理时间', value: '45s', icon: Clock, color: 'text-blue-400', bgColor: 'bg-blue-500/10' }
-        ].map((stat) => (
-          <motion.div key={stat.label} whileHover={{ y: -2 }} className="bg-card-bg border border-border-color rounded-xl p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-text-secondary text-sm">{stat.label}</p>
-                <p className="text-2xl font-bold text-text-primary mt-1">{stat.value}</p>
+  useEffect(()=>{chatEndRef.current?.scrollIntoView({behavior:'smooth'});},[messages,streamingContent]);
+  useEffect(()=>{teamEndRef.current?.scrollIntoView({behavior:'smooth'});},[teamMessages]);
+
+  const loadSession = useCallback(async(id:string)=>{setActiveSessionId(id);setChatLoading(true);try{const r=await aiApi.getSession(id);if(r.success)setMessages(r.data?.messages||[]);}catch{}setChatLoading(false);},[]);
+  const createSession = useCallback(async()=>{try{const r=await aiApi.createSession({title:`新会话 ${new Date().toLocaleTimeString()}`});if(r.success){setSessions(p=>[r.data,...p]);setActiveSessionId(r.data.id);setMessages([]);setShowSessionPanel(false);addToast('success','新会话已创建');}}catch{addToast('error','创建失败');}},[addToast]);
+  const deleteSession = useCallback(async(id:string)=>{try{await aiApi.deleteSession(id);setSessions(p=>p.filter(s=>s.id!==id));if(activeSessionId===id){setActiveSessionId(null);setMessages([]);}addToast('success','已删除');}catch{addToast('error','删除失败');}},[activeSessionId,addToast]);
+
+  const handleSend = useCallback(async()=>{
+    if(!inputMsg.trim()||!selectedProvider){if(!selectedProvider)addToast('info','请选择模型');return;}
+    // 检测 @Agent名称 模式，自动切换到对应 Agent
+    let providerId=selectedProvider;
+    const mentionMatch=inputMsg.match(/@([\w\u4e00-\u9fa5-]+)/);
+    if(mentionMatch){
+      const agentName=mentionMatch[1];
+      const matchedAgent=agentProviders.find(a=>a.enabled!==false&&a.name.includes(agentName));
+      if(matchedAgent)providerId='agent:'+matchedAgent.id;
+    }
+    let sid=activeSessionId;
+    if(!sid){try{const r=await aiApi.createSession({title:inputMsg.slice(0,30)});if(r.success){sid=r.data.id;setActiveSessionId(sid);setSessions(p=>[r.data,...p]);}}catch{addToast('error','创建会话失败');return;}}
+    const userMsg={role:'user' as const,content:inputMsg};
+    setMessages(p=>[...p,userMsg]);setInputMsg('');setChatLoading(true);setStreamingContent('');
+    try{
+      const r=await aiApi.invokeAI({provider_id:providerId.split(':')[1],provider_type:providerId.split(':')[0],messages:[...messages,userMsg]});
+      if(r.success){const reply=r.data?.choices?.[0]?.message?.content||'无响应';let idx=0;const iv=setInterval(()=>{idx+=3;if(idx>=reply.length){clearInterval(iv);setStreamingContent('');setMessages(p=>[...p,{role:'assistant',content:reply}]);setChatLoading(false);}else setStreamingContent(reply.slice(0,idx));},20);}
+      else{setChatLoading(false);addToast('error','AI 响应失败');}
+    }catch(e:any){setChatLoading(false);setMessages(p=>[...p,{role:'assistant',content:`请求失败: ${e.message}`}]);addToast('error',e.message);}
+  },[inputMsg,selectedProvider,activeSessionId,messages,addToast]);
+
+  const handleFeedback = useCallback(async(i:number,t:'up'|'down')=>{setMessages(p=>p.map((m,j)=>j===i?{...m,feedback:t}:m));try{await aiApi.recordFeedback({message_index:i,feedback:t});addToast('success',t==='up'?'感谢反馈':'已记录');}catch{}},[addToast]);
+
+  const handleTeamSend = () => {
+    if(!teamMsg.trim()) return;
+    const sender = teamUsers[0]; // current user
+    setTeamMessages(p=>[...p,{id:Date.now().toString(),user:sender,content:teamMsg,time:new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}]);
+    setTeamMsg('');
+    // If AI provider selected, also send to AI
+    if(selectedProvider){setInputMsg(teamMsg);setTimeout(()=>handleSend(),100);}
+  };
+
+  const handleCopilot = async()=>{setAnalysisLoading(true);setAnalysisResult(null);try{const r=await aiApi.copilotAnalyzeEvent({event_code:analysisEventCode});setAnalysisResult(r.data?.analysis);if(r.success)addToast('success','分析完成');}catch(e:any){setAnalysisResult({error:e.message});addToast('error',e.message);}setAnalysisLoading(false);};
+  const handleNlQuery = async()=>{if(!analysisNlQuery)return;setAnalysisLoading(true);setNlReply('');try{const r=await aiApi.nlQuery({query:analysisNlQuery});if(r.success){setNlReply(r.data?.reply||'无结果');if(r.data?.result?.alerts)setAnalysisResult(r.data.result);}}catch(e:any){setNlReply('查询失败');addToast('error','查询失败');}setAnalysisLoading(false);};
+  const [analysisEventCode, setAnalysisEventCode] = useState('');
+  const [analysisResult, setAnalysisResult] = useState<any>(null);
+
+  const handleDepthInsights = async()=>{setDepthLoading(true);setDepthInsights(null);try{const r=await aiApi.getInsights();setDepthInsights(r.data||r);if(r.success)addToast('success','洞察完成');}catch(e:any){setDepthInsights({error:e.message});addToast('error',e.message);}setDepthLoading(false);};
+  const handleDepthTriage = async()=>{setDepthLoading(true);setDepthTriageResult(null);try{const parsed=JSON.parse(depthTriageInput);const r=await aiApi.alertsTriage({alerts:parsed});setDepthTriageResult(r.data);if(r.success)addToast('success',`分诊完成: ${r.data?.triage_results?.length||0} 条`);}catch(e:any){setDepthTriageResult({error:e.message});if(e instanceof SyntaxError)addToast('error','JSON 格式错误');else addToast('error',e.message);}setDepthLoading(false);};
+  const handleDepthInvestigate = async()=>{setDepthLoading(true);setDepthInvestigateResult(null);try{const r=await aiApi.investigateEvent({event_code:depthInvestigateCode});setDepthInvestigateResult(r.data);if(r.success)addToast('success','调查完成');}catch(e:any){setDepthInvestigateResult({error:e.message});addToast('error',e.message);}setDepthLoading(false);};
+  const handleAutoRespond = async()=>{setAutoLoading(true);setAutoResult(null);try{const r=await aiApi.autoRespond({event_code:autoEventCode});setAutoResult(r.data);if(r.success)addToast('success','分析完成');}catch(e:any){setAutoResult({error:e.message});addToast('error',e.message);}setAutoLoading(false);};
+  const handleSkillRoute = async()=>{setSkillLoading(true);setSkillResult(null);try{const r=await aiApi.agentSkillRoute({instruction:skillInstruction});setSkillResult(r.data);if(r.success)addToast('success','技能执行完成');}catch(e:any){setSkillResult({error:e.message});addToast('error',e.message);}setSkillLoading(false);};
+  const handleBatchAnalysis = async()=>{setDepthLoading(true);setDepthInsights(null);try{const r=await aiApi.alertsAnalyzeBatch();setDepthInsights(r.data||r);if(r.success)addToast('success','批量分析完成');}catch(e:any){setDepthInsights({error:e.message});addToast('error',e.message);}setDepthLoading(false);};
+
+  const quickActions = [
+    {id:'event',label:'分析事件',icon:Shield,color:'#60a5fa',action:()=>{setInputMsg('请帮我分析事件 ');}},
+    {id:'nl',label:'NL查询',icon:MessageCircle,color:'#34d399',action:()=>setShowNlInput(!showNlInput)},
+    {id:'triage',label:'告警评估',icon:Target,color:'#fbbf24',action:()=>{setInputMsg('请评估以下告警的误报概率和优先级：');}},
+    {id:'attack',label:'攻击链',icon:GitBranch,color:'#f472b6',action:()=>{setInputMsg('请追踪事件编号 ');}},
+  ];
+
+  // ==================== 主渲染 ====================
+  return (
+    <div className="flex h-full bg-card-bg rounded-2xl border border-border-color overflow-hidden">
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+        {/* 统一顶部导航栏 */}
+        <div className="flex-shrink-0 flex items-center px-5 py-2.5 border-b border-border-color gap-4">
+          <div className="flex items-center gap-3 min-w-fit">
+            <div className="flex items-center gap-2">
+              <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center"><Brain className="w-3.5 h-3.5 text-white" /></div>
+              <span className="text-sm font-semibold text-text-primary hidden sm:inline">AI 中心</span>
+            </div>
+            <div className="flex bg-page-bg p-0.5 rounded-lg border border-border-color">
+              <button onClick={()=>setMainTab('analysis')}
+                className={'flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all '+(mainTab==='analysis'?'text-white shadow-sm':'text-text-muted hover:text-text-secondary')}
+                style={mainTab==='analysis'?{background:'linear-gradient(135deg, #3b82f6, #6366f1)'}:{}}>
+                <Radar className="w-3 h-3" />分析中心
+              </button>
+              <button onClick={()=>setMainTab('config')}
+                className={'flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all '+(mainTab==='config'?'text-white shadow-sm':'text-text-muted hover:text-text-secondary')}
+                style={mainTab==='config'?{background:'linear-gradient(135deg, #0ea5e9, #06b6d4)'}:{}}>
+                <Wrench className="w-3 h-3" />AI 配置
+              </button>
+            </div>
+          </div>
+          <div className="w-px h-6 bg-border-color" />
+          <div className="flex-1 min-w-0">
+            {mainTab==='analysis' && <SubTabBar tabs={[{id:'chat',label:'智能对话',icon:MessageSquare},{id:'deep',label:'深度分析',icon:Combine},{id:'auto',label:'自动化',icon:Zap}]} active={analysisSub} onChange={setAnalysisSub} color="#60a5fa" />}
+            {mainTab==='config' && <SubTabBar tabs={[{id:'models',label:'模型管理',icon:Brain},{id:'agents',label:'Agent管理',icon:Bot},{id:'feedback',label:'反馈学习',icon:BookOpen}]} active={configSub} onChange={setConfigSub} color="#38bdf8" />}
+          </div>
+        </div>
+
+        {/* 内容区 */}
+        <div className="flex-1 overflow-y-auto p-5 scrollbar-thin">
+          <AnimatePresence mode="wait">
+            <motion.div key={mainTab+'-'+analysisSub+'-'+configSub} initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:0.12}}>
+              {mainTab==='analysis' && analysisSub==='chat' && renderChat()}
+              {mainTab==='analysis' && analysisSub==='deep' && renderDeepAnalysis()}
+              {mainTab==='analysis' && analysisSub==='auto' && renderAutomation()}
+              {mainTab==='config' && configSub==='models' && renderModels()}
+              {mainTab==='config' && configSub==='agents' && renderAgents()}
+              {mainTab==='config' && configSub==='feedback' && renderFeedback()}
+            </motion.div>
+          </AnimatePresence>
+        </div>
+      </div>
+    </div>
+  );
+
+  // ==================== 智能对话（团队协作 + AI 分析） ====================
+  function renderChat() {
+    return (
+      <div className="flex h-full min-h-[calc(100vh-280px)] border border-border-color rounded-xl overflow-hidden">
+        {/* 团队区 */}
+        <div className="w-56 flex-shrink-0 border-r border-border-color bg-page-bg/30 p-3 overflow-y-auto hidden md:block">
+          <div className="text-[10px] text-text-muted uppercase tracking-wider font-medium mb-2">在线成员</div>
+          {teamUsers.map((u,i) => (
+            <div key={i} className="flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs text-text-secondary hover:bg-card-bg-hover transition-colors mb-0.5">
+              <div className={'w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold text-white '+u.color}>
+                {u.avatar}
+                <span className={'absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-card-bg '+(u.isAI?'bg-purple-500':'bg-emerald-500')} />
               </div>
-              <div className={`w-10 h-10 rounded-lg ${stat.bgColor} flex items-center justify-center`}>
-                <stat.icon size={20} className={stat.color} />
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-xs font-medium">{u.name}</div>
+                <div className="text-[9px] opacity-60 truncate">{u.role}</div>
               </div>
             </div>
-          </motion.div>
-        ))}
-      </motion.div>
+          ))}
 
-      <motion.div variants={itemVariants} className="bg-card-bg border border-border-color rounded-xl overflow-hidden">
-        <div className="flex items-center gap-6 px-6 border-b border-border-color">
-          {[
-            { id: 'chat', label: '智能对话', icon: MessageSquare },
-            { id: 'insights', label: 'AI洞察', icon: Sparkles },
-            { id: 'agents', label: 'AI代理', icon: Bot },
-            { id: 'models', label: '模型管理', icon: Cpu }
-          ].map(tab => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id as typeof activeTab)}
-              className={`flex items-center gap-2 py-4 text-sm font-medium transition-colors relative ${
-                activeTab === tab.id ? 'text-primary' : 'text-text-secondary hover:text-text-primary'
-              }`}
-            >
-              <tab.icon size={16} />
-              {tab.label}
-              {activeTab === tab.id && (
-                <motion.div layoutId="activeTab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
+        </div>
+
+        {/* 对话区 */}
+        <div className="flex-1 flex flex-col min-w-0">
+          {/* 会话栏 */}
+          <div className="flex items-center justify-between px-4 py-2 border-b border-border-color bg-card-bg/20">
+            <div className="flex items-center gap-2">
+              <button onClick={()=>setShowSessionPanel(!showSessionPanel)} className="p-1.5 text-text-muted hover:text-text-primary rounded-lg hover:bg-card-bg-hover transition-colors relative">
+                <List className="w-4 h-4" />
+                {sessions.length>0 && <span className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 bg-blue-500 text-[8px] text-white rounded-full flex items-center justify-center">{sessions.length>9?'9+':sessions.length}</span>}
+              </button>
+              <button onClick={createSession} className="p-1.5 text-text-muted hover:text-blue-400 rounded-lg hover:bg-card-bg-hover transition-colors"><Plus className="w-4 h-4" /></button>
+              {activeSessionId&&<span className="text-[11px] text-text-muted"><Wifi className="w-3 h-3 inline mr-1 text-emerald-500" />会话已连接</span>}
+            </div>
+            <div className="flex items-center gap-1.5">
+              <select value={selectedProvider} onChange={e=>setSelectedProvider(e.target.value)}
+                className="px-2 py-1 bg-page-bg border border-border-color rounded-lg text-[11px] text-text-muted font-mono max-w-[160px] cursor-pointer hover:border-border-color-hover transition-colors">
+                <option value="">AI 离线</option>
+                {agentProviders.filter(a=>a.enabled!==false).map(a=><option key={a.id} value={'agent:'+a.id}>🤖 {a.name}</option>)}
+                {llmProviders.filter(p=>p.enabled!==false).map(p=><option key={p.id} value={'llm:'+p.id}>🧠 {p.name}</option>)}
+              </select>
+              {selectedProvider&&<span className="w-1.5 h-1.5 rounded-full bg-emerald-500" title="已连接"/>}
+            </div>
+          </div>
+
+          <AnimatePresence>{showSessionPanel&&(
+            <motion.div initial={{height:0,opacity:0}} animate={{height:'auto',opacity:1}} exit={{height:0,opacity:0}} className="overflow-hidden border-b border-border-color">
+              <div className="bg-page-bg/30 p-2 space-y-0.5 max-h-36 overflow-y-auto">
+                {sessions.length===0?<div className="text-xs text-text-muted text-center py-3">暂无历史会话</div>
+                :sessions.map(s=>(
+                  <div key={s.id} className={'flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer text-xs transition-colors '+(activeSessionId===s.id?'bg-blue-500/10 text-blue-400':'hover:bg-card-bg-hover text-text-secondary')}
+                    onClick={()=>{loadSession(s.id);setShowSessionPanel(false);}}>
+                    <div className="flex items-center gap-2 min-w-0"><MessageCircle className="w-3 h-3 flex-shrink-0" /><span className="truncate">{s.title}</span></div>
+                    <button onClick={e=>{e.stopPropagation();setConfirmDialog({open:true,title:'删除会话',message:'确定删除「'+s.title+'」？',onConfirm:()=>deleteSession(s.id)});}} className="p-1 opacity-0 hover:opacity-100 hover:text-red-400 transition-all"><Trash2 className="w-3 h-3" /></button>
+                  </div>
+                ))}
+              </div>
+            </motion.div>
+          )}</AnimatePresence>
+
+          {/* 消息区 */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin bg-page-bg/20">
+            {messages.length===0&&teamMessages.length===0&&(
+              <div className="flex flex-col items-center justify-center h-full text-text-muted">
+                <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500/20 to-indigo-500/20 flex items-center justify-center mb-4"><Brain className="w-7 h-7 text-blue-400" /></div>
+                <div className="text-sm font-medium text-text-secondary">AI 安全分析工作台</div>
+                <div className="text-xs text-text-muted mt-1.5 max-w-xs text-center">左侧选择模型后输入安全事件，AI 将辅助分析告警、追溯攻击链</div>
+              </div>
+            )}
+            {teamMessages.map(m=>(
+              <div key={m.id} className={'flex items-end gap-2.5 '+(m.user.isAI?'':'flex-row-reverse')}>
+                <div className={'w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0 '+(m.user.isAI?'bg-gradient-to-br from-indigo-500 to-purple-600':'bg-blue-500')}>{m.user.avatar}</div>
+                <div className={'flex flex-col max-w-[65%] '+(m.user.isAI?'items-start':'items-end')}>
+                  <div className={'flex items-center gap-2 mb-1 '+(m.user.isAI?'':'flex-row-reverse')}>
+                    <span className="text-[11px] font-medium text-text-muted">{m.user.name}</span>
+                    <span className="text-[10px] text-text-muted/50">{m.time}</span>
+                  </div>
+                  <div className={'px-3.5 py-2.5 text-sm leading-relaxed '+(m.user.isAI?'bg-card-bg border border-border-color rounded-2xl rounded-bl-md shadow-sm text-text-primary':'bg-gradient-to-br from-blue-600 to-indigo-600 text-white rounded-2xl rounded-br-md shadow-sm')}>{m.content}</div>
+                </div>
+              </div>
+            ))}
+            {messages.map((m,i)=>(
+              <div key={'ai-'+i} className={'flex items-end gap-2.5 '+(m.role==='user'?'flex-row-reverse':'')}>
+                <div className={'w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 '+(m.role==='user'?'bg-blue-500/20 text-blue-400':'bg-gradient-to-br from-indigo-500 to-purple-600 text-white')}>
+                  {m.role==='user'?<User className="w-4 h-4"/>:'AI'}
+                </div>
+                <div className={'flex flex-col max-w-[70%] '+(m.role==='user'?'items-end':'items-start')}>
+                  <div className={'flex items-center gap-2 mb-1 '+(m.role==='user'?'flex-row-reverse':'')}>
+                    <span className="text-[11px] font-medium text-text-muted">{m.role==='user'?teamUsers[0].name:'AI 助手'}</span>
+                    <span className="text-[10px] text-text-muted/50">{new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>
+                  </div>
+                  <div className={'relative px-3.5 py-2.5 text-sm leading-relaxed '+(m.role==='user'?'bg-gradient-to-br from-blue-600 to-indigo-600 text-white rounded-2xl rounded-br-md shadow-sm':'bg-card-bg border border-border-color text-text-primary rounded-2xl rounded-bl-md shadow-sm')}>
+                    {m.role==='assistant'?<MarkdownContent content={m.content}/>:m.content}
+                  </div>
+                  {m.role==='assistant'&&(
+                    <div className="flex items-center gap-1 mt-1.5">
+                      <button onClick={()=>handleFeedback(i,'up')} className={'p-1 rounded transition-colors '+(m.feedback==='up'?'text-emerald-400 bg-emerald-500/10':'text-text-muted/40 hover:text-emerald-400')}><ThumbsUp className="w-3 h-3"/></button>
+                      <button onClick={()=>handleFeedback(i,'down')} className={'p-1 rounded transition-colors '+(m.feedback==='down'?'text-red-400 bg-red-500/10':'text-text-muted/40 hover:text-red-400')}><ThumbsDown className="w-3 h-3"/></button>
+                      <button onClick={()=>{navigator.clipboard.writeText(m.content);addToast('success','已复制');}} className="p-1 rounded text-text-muted/40 hover:text-text-secondary"><Copy className="w-3 h-3"/></button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+            {streamingContent&&(
+              <div className="flex items-end gap-2.5">
+                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-xs font-bold text-white flex-shrink-0">AI</div>
+                <div className="flex flex-col items-start max-w-[70%]">
+                  <div className="flex items-center gap-2 mb-1"><span className="text-[11px] font-medium text-text-muted">AI 助手</span></div>
+                  <div className="px-3.5 py-2.5 text-sm bg-card-bg border border-border-color rounded-2xl rounded-bl-md shadow-sm"><MarkdownContent content={streamingContent}/><span className="inline-block w-2 h-4 bg-blue-400/60 ml-0.5 animate-pulse"/></div>
+                </div>
+              </div>
+            )}
+            {chatLoading&&!streamingContent&&(
+              <div className="flex items-end gap-2.5">
+                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-xs font-bold text-white flex-shrink-0">AI</div>
+                <div className="flex flex-col items-start"><div className="flex items-center gap-2 mb-1"><span className="text-[11px] font-medium text-text-muted">AI 助手</span></div><div className="px-3.5 py-3 bg-card-bg border border-border-color rounded-2xl rounded-bl-md shadow-sm"><div className="flex gap-1.5"><div className="w-2 h-2 bg-blue-400/40 rounded-full animate-bounce" style={{animationDelay:'0ms'}}/><div className="w-2 h-2 bg-blue-400/40 rounded-full animate-bounce" style={{animationDelay:'150ms'}}/><div className="w-2 h-2 bg-blue-400/40 rounded-full animate-bounce" style={{animationDelay:'300ms'}}/></div></div></div>
+              </div>
+            )}
+            <div ref={teamEndRef} />
+          </div>
+
+          {/* 输入区 */}
+          <div className="flex-shrink-0 p-3 border-t border-border-color bg-card-bg/50">
+            <div className="flex items-center gap-2 mb-2">{(quickActions||[]).map(qa=>(
+              <button key={qa.id} onClick={qa.action} className="flex items-center gap-1 px-2 py-1 text-[10px] text-text-muted hover:text-text-primary bg-page-bg border border-border-color rounded-lg hover:border-border-color-hover transition-all"><qa.icon className="w-3 h-3" style={{color:qa.color}}/>{qa.label}</button>
+            ))}
+              <div className="flex-1" />
+              {agentProviders.filter(a=>a.enabled!==false).length>0&&
+                <span className="text-[10px] text-text-muted/50">在输入框中输入 <span className="font-mono text-purple-400/60">@Agent名</span> 可调用 Agent 技能</span>
+              }
+            </div>
+            <div className="flex items-center gap-2">
+              <input value={selectedProvider?inputMsg:teamMsg} onChange={e=>{selectedProvider?setInputMsg(e.target.value):setTeamMsg(e.target.value)}}
+                onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();selectedProvider?handleSend():handleTeamSend();}}}
+                placeholder={selectedProvider?"输入安全事件信息，AI 将辅助分析...":"输入团队讨论内容..."}
+                disabled={chatLoading}
+                className="flex-1 px-4 py-2.5 bg-page-bg border border-border-color rounded-xl text-sm text-text-primary placeholder:text-text-muted/50 disabled:opacity-50 focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/20 transition-all" />
+              <button onClick={selectedProvider?handleSend:handleTeamSend} disabled={(selectedProvider?!inputMsg.trim():!teamMsg.trim())||(selectedProvider&&chatLoading)}
+                className="px-5 py-2.5 bg-gradient-to-br from-blue-600 to-indigo-600 text-white rounded-xl text-sm font-medium disabled:opacity-40 hover:from-blue-500 hover:to-indigo-500 transition-all active:scale-95 flex items-center gap-1.5 shadow-sm">
+                {chatLoading?<Loader2 className="w-4 h-4 animate-spin"/>:<Send className="w-4 h-4"/>}发送
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ==================== 深度分析 ====================
+  function renderDeepAnalysis() {
+    const tabs = [{id:'insights',label:'AI洞察',icon:Sparkles},{id:'triage',label:'告警分诊',icon:Filter},{id:'investigate',label:'攻击链',icon:Search}];
+    return (
+      <div className="space-y-4">
+        <SubTabBar tabs={tabs} active={depthActiveSubTab} onChange={setDepthActiveSubTab} color="#60a5fa" />
+        {depthActiveSubTab==='insights' && (
+          <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+            <div className="lg:col-span-2 space-y-4">
+              <div className="bg-card-bg border border-border-color rounded-xl p-4">
+                <h3 className="text-sm font-semibold text-text-primary mb-2"><Upload className="w-4 h-4 text-amber-400 inline mr-1.5" />上传分析规则</h3>
+                <p className="text-xs text-text-muted mb-3">粘贴从 AI 对话中提炼的规则或上传 Agent 训练好的规则</p>
+                <textarea value={rulesText} onChange={e=>setRulesText(e.target.value)} placeholder={'例如:\n- 如果源IP在过去1小时内触发>=5次不同告警类型，标记为高风险\n- 如果目标端口为445/3389且来源为外网，标记为横向移动'} rows={5} className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-xs font-mono text-text-primary mb-3" />
+                <button className="w-full px-4 py-2 bg-amber-600 text-white rounded-lg text-xs font-medium hover:bg-amber-500 transition-all active:scale-95 flex items-center justify-center gap-1.5"><Upload className="w-3.5 h-3.5" />应用规则</button>
+              </div>
+              <button onClick={handleBatchAnalysis} disabled={depthLoading}
+                className="w-full px-4 py-3 bg-blue-600 text-white rounded-xl text-sm font-medium disabled:opacity-40 hover:bg-blue-500 transition-all active:scale-95 flex items-center justify-center gap-2">
+                {depthLoading?<Loader2 className="w-4 h-4 animate-spin"/>:<Play className="w-4 h-4"/>}开始批量分析告警
+              </button>
+            </div>
+            <div className="lg:col-span-3">
+              {depthLoading&&<Skeleton lines={5}/>}
+              {depthInsights&&!depthInsights?.error&&(
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between mb-2"><h3 className="text-sm font-semibold text-text-primary"><Sparkles className="w-4 h-4 text-amber-400 inline mr-1"/>分析结果</h3></div>
+                  {(depthInsights.insights||[]).map((insight:any,i:number)=>(
+                    <div key={i} className="bg-card-bg border border-border-color rounded-xl p-4 hover:bg-card-bg-hover transition-colors">
+                      <div className="flex items-center gap-2 mb-1.5">
+                        <AlertTriangle className={'w-4 h-4 '+(insight.severity==='high'?'text-red-400':'text-amber-400')}/>
+                        <span className="font-medium text-sm text-text-primary">{insight.title}</span>
+                        {insight.severity&&<span className={'badge '+(insight.severity==='high'?'badge-critical':'badge-medium')}>{insight.severity}</span>}
+                      </div>
+                      <p className="text-sm text-text-secondary">{insight.description}</p>
+                    </div>
+                  ))}
+                  {depthInsights.analyzed!==undefined&&(
+                    <div className="grid grid-cols-3 gap-3 mt-3">
+                      <div className="p-3 bg-card-bg border border-border-color rounded-lg text-center"><div className="text-lg font-bold text-text-primary">{depthInsights.analyzed}</div><div className="text-[10px] text-text-muted">已分析</div></div>
+                      <div className="p-3 bg-card-bg border border-border-color rounded-lg text-center"><div className="text-lg font-bold text-emerald-400">{depthInsights.events_created||0}</div><div className="text-[10px] text-text-muted">已生成事件</div></div>
+                      <div className="p-3 bg-card-bg border border-border-color rounded-lg text-center"><div className="text-lg font-bold text-amber-400">{depthInsights.high_risk||0}</div><div className="text-[10px] text-text-muted">高风险</div></div>
+                    </div>
+                  )}
+                </div>
               )}
-            </button>
+              {!depthLoading&&!depthInsights&&<div className="flex flex-col items-center justify-center py-16 text-text-muted"><Sparkles className="w-8 h-8 mb-2 opacity-30"/><div className="text-xs">上传规则或直接点击「开始批量分析」</div></div>}
+            </div>
+          </div>
+        )}
+        {depthActiveSubTab==='triage' && (
+          <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+            <div className="lg:col-span-2 space-y-4">
+              <div className="bg-card-bg border border-amber-500/20 rounded-xl p-4">
+                <div className="flex items-start gap-2 mb-3">
+                  <FileJson className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+                  <div><h3 className="text-sm font-semibold text-text-primary">告警分诊</h3><p className="text-xs text-text-muted mt-0.5">系统将根据以下固定提示词对告警进行研判分析：</p></div>
+                </div>
+                <div className="p-2.5 bg-page-bg rounded-lg border border-border-color text-[11px] text-text-muted leading-relaxed mb-3">
+                  <span className="text-amber-400 font-medium">系统提示词：</span>你是一个安全告警分诊专家。请分析以下告警的误报概率、优先级等级，并给出处置建议。考虑攻击类型、影响范围、历史关联等因素。
+                </div>
+                <label className="block text-xs text-text-secondary mb-1 font-medium">输入告警 JSON</label>
+                <textarea value={depthTriageInput} onChange={e=>setDepthTriageInput(e.target.value)} placeholder={'[\n  {"id":"ALT-001","title":"端口扫描","severity":"high"}\n]'} rows={5} className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-xs font-mono text-text-primary mb-3" />
+                <button onClick={handleDepthTriage} disabled={depthLoading||!depthTriageInput}
+                  className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-medium disabled:opacity-40 hover:bg-blue-500 transition-all active:scale-95 flex items-center justify-center gap-1.5">
+                  {depthLoading?<Loader2 className="w-3.5 h-3.5 animate-spin"/>:<Target className="w-3.5 h-3.5"/>}开始分诊</button>
+              </div>
+            </div>
+            <div className="lg:col-span-3">
+              {(depthTriageResult?.triage_results||[]).map((r:any,i:number)=>(
+                <div key={i} className="flex items-center gap-3 p-3 bg-card-bg border border-border-color rounded-lg mb-2 hover:bg-card-bg-hover transition-colors">
+                  <div className={'w-2 h-2 rounded-full flex-shrink-0 '+(r.is_false_positive?'bg-gray-500':r.priority==='high'?'bg-red-500':'bg-amber-500')}/>
+                  <span className={'px-2 py-0.5 rounded text-xs font-medium whitespace-nowrap '+(r.is_false_positive?'bg-gray-500/10 text-gray-400 border border-gray-500/20':r.priority==='high'?'bg-red-500/10 text-red-400 border border-red-500/20':'bg-amber-500/10 text-amber-400 border border-amber-500/20')}>{r.is_false_positive?'误报':r.priority}</span>
+                  <span className="text-text-primary text-sm flex-1 min-w-0 truncate">{r.suggested_action||r.alert_id||'告警 #'+(i+1)}</span>
+                  <span className="text-text-muted text-xs truncate max-w-[160px] hidden md:block">{r.reason}</span>
+                </div>
+              ))}
+              {depthTriageResult?.error&&<div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-xs text-red-300"><AlertTriangle className="w-3.5 h-3.5 inline mr-1"/>{depthTriageResult.error}</div>}
+              {!depthLoading&&!depthTriageResult&&<div className="flex flex-col items-center justify-center py-16 text-text-muted"><Filter className="w-8 h-8 mb-2 opacity-30"/><div className="text-xs">左侧输入告警 JSON 后点击开始分诊</div></div>}
+            </div>
+          </div>
+        )}
+        {depthActiveSubTab==='investigate' && (
+          <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+            <div className="lg:col-span-2">
+              <div className="bg-card-bg border border-blue-500/20 rounded-xl p-4">
+                <div className="flex items-start gap-2 mb-3">
+                  <GitBranch className="w-4 h-4 text-blue-400 flex-shrink-0 mt-0.5"/>
+                  <div><h3 className="text-sm font-semibold text-text-primary">攻击链分析</h3><p className="text-xs text-text-muted mt-0.5">系统将根据以下固定提示词进行攻击溯源：</p></div>
+                </div>
+                <div className="p-2.5 bg-page-bg rounded-lg border border-border-color text-[11px] text-text-muted leading-relaxed mb-3">
+                  <span className="text-blue-400 font-medium">系统提示词：</span>你是一个攻击溯源专家。根据输入的事件 ID，关联相关告警、资产信息、攻击源与受害目标，分析攻击手法相似性，生成完整攻击链时间线及 MITRE ATT&CK 映射。
+                </div>
+                <label className="block text-xs text-text-secondary mb-1 font-medium">事件编号</label>
+                <div className="flex gap-2">
+                  <input value={depthInvestigateCode} onChange={e=>setDepthInvestigateCode(e.target.value)} placeholder="输入事件 ID" className="flex-1 px-3 py-2 bg-page-bg border border-border-color rounded-lg text-xs font-mono text-text-primary" />
+                  <button onClick={handleDepthInvestigate} disabled={depthLoading||!depthInvestigateCode} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-medium disabled:opacity-40 hover:bg-blue-500 transition-all active:scale-95 flex items-center gap-1">{depthLoading?<Loader2 className="w-3 h-3 animate-spin"/>:<Search className="w-3 h-3"/>}调查</button>
+                </div>
+              </div>
+            </div>
+            <div className="lg:col-span-3">
+              {(depthInvestigateResult?.timeline||[]).map((s:any,i:number)=>(
+                <div key={i} className="flex items-start gap-3 p-3 bg-card-bg border border-border-color rounded-lg mb-2 hover:bg-card-bg-hover transition-colors">
+                  <div className="w-7 h-7 rounded-full bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-xs font-bold text-blue-400 flex-shrink-0">{s.step}</div>
+                  <div className="min-w-0"><div className="text-sm text-text-primary font-medium">{s.action}</div><div className="text-xs text-text-muted mt-0.5"><GitBranch className="w-3 h-3 inline mr-1"/>{s.mitre_technique||s.detail||'-'}</div></div>
+                </div>
+              ))}
+              {depthInvestigateResult?.error&&<div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-xs text-red-300"><AlertTriangle className="w-3.5 h-3.5 inline mr-1"/>{depthInvestigateResult.error}</div>}
+              {!depthLoading&&!depthInvestigateResult&&<div className="flex flex-col items-center justify-center py-16 text-text-muted"><Search className="w-8 h-8 mb-2 opacity-30"/><div className="text-xs">左侧输入事件编号查看攻击链</div></div>}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ==================== 自动化 ====================
+  function renderAutomation() {
+    const tabs = [{id:'respond',label:'智能响应',icon:ShieldCheck},{id:'skills',label:'技能中心',icon:Terminal}];
+    return (
+      <div>
+        <SubTabBar tabs={tabs} active={autoActiveSubTab} onChange={setAutoActiveSubTab} color="#60a5fa" />
+        <div className="mt-4">
+          {autoActiveSubTab==='respond' && (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              <div className="bg-card-bg border border-emerald-500/20 rounded-xl p-4">
+                <div className="flex items-start gap-2 mb-3">
+                  <ShieldCheck className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5"/>
+                  <div><h3 className="text-sm font-semibold text-text-primary">智能响应</h3><p className="text-xs text-text-muted mt-0.5">系统将根据以下固定提示词进行风险决策：</p></div>
+                </div>
+                <div className="p-2.5 bg-page-bg rounded-lg border border-border-color text-[11px] text-text-muted leading-relaxed mb-3">
+                  <span className="text-emerald-400 font-medium">系统提示词：</span>你是一个安全响应专家。根据事件风险等级自动决定处置动作，包括封禁 IP、隔离主机、发送告警通知等。评估威胁等级并给出明确的处置建议。
+                </div>
+                <label className="block text-xs text-text-secondary mb-1 font-medium">事件编号</label>
+                <div className="flex gap-2 mb-3">
+                  <input value={autoEventCode} onChange={e=>setAutoEventCode(e.target.value)} placeholder="输入事件编号" className="flex-1 px-3 py-2 bg-page-bg border border-border-color rounded-lg text-xs font-mono text-text-primary" />
+                  <button onClick={handleAutoRespond} disabled={autoLoading||!autoEventCode} className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-xs font-medium disabled:opacity-40 hover:bg-emerald-500 transition-all active:scale-95 flex items-center gap-1">{autoLoading?<Loader2 className="w-3 h-3 animate-spin"/>:<Zap className="w-3 h-3"/>}分析</button>
+                </div>
+                <div className="pt-3 border-t border-border-color">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[11px] text-text-secondary">🔗 关联 Agent</span>
+                    {agentProviders.find(a=>a.name.includes('响应')||a.skills?.find((s:any)=>s.name.includes('封禁')))
+                      ? <span className="text-[10px] text-emerald-400 flex items-center gap-1"><Check className="w-3 h-3"/>响应Agent已注册</span>
+                      : <button onClick={async()=>{
+                          try{
+                            const r=await aiApi.addAgentProvider({
+                              name:'响应助手',type:'hermes',endpoint:'http://localhost:8080',api_key:'',
+                              description:'自动响应与处置 Agent，根据事件风险执行封禁/隔离/通知等操作',
+                              skills:[
+                                {name:'封禁IP',description:'封禁恶意IP地址'},
+                                {name:'隔离主机',description:'隔离受感染主机'},
+                                {name:'告警通知',description:'发送告警通知给相关人员'},
+                                {name:'事件升级',description:'将高风险事件升级为紧急事件'},
+                              ],
+                              enabled:true
+                            });
+                            if(r.success){
+                              const updated=await aiApi.getAgentProviders();
+                              if(updated.success)setAgentProviders(updated.data||[]);
+                              const newId=r.data?.id;
+                              if(newId)setSelectedProvider('agent:'+newId);
+                              addToast('success','响应Agent已注册，可在对话中 @响应助手 调用');
+                            }
+                          }catch{addToast('error','注册失败');}
+                        }}
+                        className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-medium hover:bg-emerald-500 transition-all active:scale-95 flex items-center gap-1">
+                        <Plus className="w-3 h-3"/>注册响应Agent
+                      </button>
+                    }
+                  </div>
+                  <p className="text-[10px] text-text-muted/60">注册后可在智能对话中输入 <span className="font-mono text-purple-400/60">@响应助手 封禁IP 192.168.1.1</span> 直接执行</p>
+                </div>
+              </div>
+              <div className="lg:col-span-2">
+                {(autoResult?.decisions||[]).map((d:any,i:number)=>(
+                  <div key={i} className="flex items-center gap-3 p-3 bg-card-bg border border-border-color rounded-lg mb-2 hover:bg-card-bg-hover transition-colors">
+                    <span className={'px-2 py-0.5 rounded text-xs font-medium '+(d.status==='auto_executed'?'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20':'bg-amber-500/10 text-amber-400 border border-amber-500/20')}>{d.action}</span>
+                    <span className="text-sm text-text-primary flex-1">{d.target}</span>
+                    <span className="text-xs text-text-muted hidden md:block">{d.reason||'-'}</span>
+                    <span className={'text-xs flex items-center gap-1 '+(d.auto_execute?'text-emerald-400':'text-amber-400')}>{d.auto_execute?<Check className="w-3 h-3"/>:<Clock className="w-3 h-3"/>}{d.auto_execute?'自动':'待审'}</span>
+                  </div>
+                ))}
+                {autoResult?.error&&<div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-xs text-red-300"><AlertTriangle className="w-3.5 h-3.5 inline mr-1"/>{autoResult.error}</div>}
+                {!autoLoading&&!autoResult&&<div className="flex flex-col items-center justify-center py-16 text-text-muted"><ShieldCheck className="w-8 h-8 mb-2 opacity-30"/><div className="text-xs">输入事件编号查看 AI 处置建议</div></div>}
+              </div>
+            </div>
+          )}
+          {autoActiveSubTab==='skills' && (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              <div className="bg-card-bg border border-purple-500/20 rounded-xl p-4">
+                <div className="flex items-start gap-2 mb-3">
+                  <Terminal className="w-4 h-4 text-purple-400 flex-shrink-0 mt-0.5"/>
+                  <div><h3 className="text-sm font-semibold text-text-primary">技能中心</h3><p className="text-xs text-text-muted mt-0.5">系统将根据以下固定提示词执行安全操作：</p></div>
+                </div>
+                <div className="p-2.5 bg-page-bg rounded-lg border border-border-color text-[11px] text-text-muted leading-relaxed mb-3">
+                  <span className="text-purple-400 font-medium">系统提示词：</span>你是一个安全操作执行专家。根据自然语言指令，匹配已注册的安全技能并执行相应操作。支持封禁 IP、隔离主机、查询威胁情报等操作。
+                </div>
+                <label className="block text-xs text-text-secondary mb-1 font-medium">操作指令</label>
+                <input value={skillInstruction} onChange={e=>setSkillInstruction(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleSkillRoute()} placeholder='例如: "封禁 IP 192.168.1.1"' className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-xs text-text-primary mb-2" />
+                <button onClick={handleSkillRoute} disabled={skillLoading||!skillInstruction} className="w-full px-4 py-2 bg-purple-600 text-white rounded-lg text-xs font-medium disabled:opacity-40 hover:bg-purple-500 transition-all active:scale-95 flex items-center justify-center gap-1.5 mb-2">{skillLoading?<Loader2 className="w-3.5 h-3.5 animate-spin"/>:<Play className="w-3.5 h-3.5"/>}执行</button>
+                <p className="text-[10px] text-text-muted/60 text-center">💡 在智能对话中 <span className="font-mono text-purple-400/60">@响应助手 你的指令</span> 可以直接调用技能</p>
+                {skillResult&&!skillResult?.error&&(
+                  <div className="mt-3 p-3 bg-card-bg border border-purple-500/20 rounded-lg text-xs">
+                    <div className="flex items-center gap-1.5 pb-2 border-b border-border-color mb-2"><CheckCircle className="w-3 h-3 text-emerald-400"/><span className="text-text-muted">选定技能:</span><span className="font-medium text-purple-400">{skillResult.selected_skill||'-'}</span></div>
+                    <pre className="text-xs bg-page-bg p-2 rounded font-mono text-text-secondary overflow-x-auto">{typeof skillResult.result==='object'?JSON.stringify(skillResult.result,null,2):skillResult.result}</pre>
+                  </div>
+                )}
+              </div>
+              <div className="lg:col-span-2">
+                <h3 className="text-sm font-semibold text-text-primary mb-3"><Blocks className="w-4 h-4 text-purple-400 inline mr-1"/>已注册技能 ({skills.length})</h3>
+                {skills.length===0
+                  ?<div className="flex flex-col items-center justify-center py-16 text-text-muted"><Terminal className="w-8 h-8 mb-2 opacity-30"/><div className="text-xs">暂无注册技能</div></div>
+                  :<div className="grid grid-cols-1 sm:grid-cols-2 gap-2">{skills.map((s:any)=>(
+                      <div key={s.name} className="flex items-start gap-3 p-3 bg-card-bg border border-border-color rounded-lg hover:bg-card-bg-hover transition-colors">
+                        <div className="w-8 h-8 rounded-lg bg-purple-500/10 flex items-center justify-center flex-shrink-0"><Terminal className="w-4 h-4 text-purple-400"/></div>
+                        <div className="min-w-0 flex-1"><div className="text-sm font-medium text-text-primary">{s.name}</div><div className="text-xs text-text-muted mt-0.5 truncate">{s.description}</div></div>
+                        <span className="text-[10px] px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-full whitespace-nowrap">就绪</span>
+                      </div>
+                    ))}</div>}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ==================== AI 配置 — 模型管理 ====================
+  function renderModels() {
+    const llmForm = () => (
+      <div className="p-4 bg-card-bg border border-blue-500/20 rounded-xl mb-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+          <div><label className="block text-xs text-text-secondary mb-1 font-medium">名称</label><input value={editingLlm?.name||''} onChange={e=>setEditingLlm({...editingLlm,name:e.target.value})} className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-sm text-text-primary" placeholder="DeepSeek Chat"/></div>
+          <div><label className="block text-xs text-text-secondary mb-1 font-medium">提供商</label>
+            <select value={editingLlm?.type||'openai_compatible'} onChange={e=>{
+              const t=e.target.value;
+              const defaults:{[k:string]:{base_url:string;model:string}}={
+                'openai_compatible':{base_url:'https://api.openai.com/v1',model:'gpt-4o'},
+                'deepseek':{base_url:'https://api.deepseek.com/v1',model:'deepseek-chat'},
+                'anthropic':{base_url:'https://api.anthropic.com/v1',model:'claude-3-opus-20240229'},
+              };
+              const d=defaults[t]||{base_url:'',model:''};
+              setEditingLlm({...editingLlm,type:t,base_url:editingLlm?.base_url||d.base_url,model:editingLlm?.model||d.model});
+            }}
+              className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-sm text-text-primary">
+              <option value="openai_compatible">OpenAI 兼容</option>
+              <option value="deepseek">DeepSeek</option>
+              <option value="anthropic">Anthropic</option>
+            </select>
+            <p className="text-[10px] text-text-muted mt-1">选择后自动填充默认服务地址和模型名，可手动修改</p>
+          </div>
+          <div><label className="block text-xs text-text-secondary mb-1 font-medium">服务地址 <span className="text-text-muted font-normal">(LLM API 端点)</span></label><input value={editingLlm?.base_url||''} onChange={e=>setEditingLlm({...editingLlm,base_url:e.target.value})} className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-sm font-mono text-text-primary" placeholder="https://api.openai.com/v1"/></div>
+          <div><label className="block text-xs text-text-secondary mb-1 font-medium">API Key</label><input type="password" value={editingLlm?.api_key||''} onChange={e=>setEditingLlm({...editingLlm,api_key:e.target.value})} className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-sm text-text-primary"/></div>
+          <div className="md:col-span-2"><label className="block text-xs text-text-secondary mb-1 font-medium">模型名称</label>
+            <input value={editingLlm?.model||''} onChange={e=>setEditingLlm({...editingLlm,model:e.target.value})} className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-sm font-mono text-text-primary" placeholder="例如: gpt-4o / deepseek-chat / claude-3-opus-20240229"/></div>
+          <div className="md:col-span-2"><label className="block text-xs text-text-secondary mb-1 font-medium">
+            温度 <span className="text-text-muted font-normal">(Temperature) — 控制输出随机性，0=精准确定，1=创意平衡，2=高度随机</span>
+          </label>
+            <div className="flex items-center gap-3">
+              <input type="range" min={0} max={2} step={0.1} value={editingLlm?.temperature??0.7}
+                onChange={e=>setEditingLlm({...editingLlm,temperature:parseFloat(e.target.value)})}
+                className="flex-1 h-1.5 bg-page-bg rounded-full appearance-none cursor-pointer accent-blue-500" />
+              <span className="text-xs font-mono text-text-primary w-8 text-right">{editingLlm?.temperature??0.7}</span>
+            </div>
+          </div>
+          <div><label className="block text-xs text-text-secondary mb-1 font-medium">最大 Token (Max Tokens)</label>
+            <input type="number" min={1} max={128000} step={1} value={editingLlm?.max_tokens??4096}
+              onChange={e=>setEditingLlm({...editingLlm,max_tokens:parseInt(e.target.value)||4096})}
+              className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-sm font-mono text-text-primary" placeholder="4096"/></div>
+          <div><label className="block text-xs text-text-secondary mb-1 font-medium">超时 (Timeout) 秒</label>
+            <input type="number" min={5} max={300} step={5} value={editingLlm?.timeout??60}
+              onChange={e=>setEditingLlm({...editingLlm,timeout:parseInt(e.target.value)||60})}
+              className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-sm font-mono text-text-primary" placeholder="60"/></div>
+        </div>
+        <div className="flex gap-2 justify-end"><button onClick={()=>setShowAddLlm(false)} className="px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary">取消</button>
+          <button onClick={async()=>{if(!editingLlm?.name){addToast('error','请填写名称');return;}setLlmFormLoading(true);try{if(editingLlm.id)await aiApi.updateLlmProvider(editingLlm.id,editingLlm);else await aiApi.addLlmProvider(editingLlm);setLlmProviders((await aiApi.getLlmProviders()).data||[]);setShowAddLlm(false);addToast('success',editingLlm.id?'已更新':'已添加');}catch{addToast('error','保存失败');}setLlmFormLoading(false);}}
+            disabled={llmFormLoading} className="px-4 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-medium disabled:opacity-40 flex items-center gap-1.5">{llmFormLoading?<Loader2 className="w-3 h-3 animate-spin"/>:<Save className="w-3 h-3"/>}保存</button></div>
+      </div>
+    );
+    return (
+      <div>
+        <div className="flex items-center justify-between mb-4">
+          <div><h3 className="text-sm font-semibold text-text-primary"><Brain className="w-4 h-4 text-blue-400 inline mr-1"/>大模型接口</h3><p className="text-xs text-text-muted mt-0.5">支持 OpenAI / DeepSeek / Anthropic</p></div>
+          <button onClick={()=>{setShowAddLlm(true);setEditingLlm({type:'openai_compatible',enabled:true});}} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-medium hover:bg-blue-500 transition-all active:scale-95"><Plus className="w-3.5 h-3.5"/>添加</button>
+        </div>
+        <AnimatePresence>{showAddLlm&&<motion.div initial={{opacity:0,height:0}} animate={{opacity:1,height:'auto'}} exit={{opacity:0,height:0}} className="overflow-hidden">{llmForm()}</motion.div>}</AnimatePresence>
+        <div className="space-y-2">{(llmProviders||[]).length===0
+          ?<div className="flex flex-col items-center justify-center py-12 text-text-muted"><Server className="w-8 h-8 mb-2 opacity-30"/><div className="text-xs">暂无模型配置</div></div>
+          :llmProviders.map((pr:any)=>(
+              <div key={pr.id} className="flex items-center justify-between p-3 bg-card-bg border border-border-color rounded-lg hover:bg-card-bg-hover transition-colors">
+                <div className="flex items-center gap-3 min-w-0"><div className={'w-2.5 h-2.5 rounded-full flex-shrink-0 '+(pr.enabled!==false?'bg-emerald-500':'bg-gray-600')}/><div className="min-w-0"><div className="text-sm font-medium text-text-primary">{pr.name}</div><div className="text-xs text-text-muted font-mono">{pr.type} · {pr.model||'-'}</div></div></div>
+                <div className="flex items-center gap-1">
+                  <button onClick={()=>{setEditingLlm(pr);setShowAddLlm(true);}} className="p-1.5 text-text-muted hover:text-blue-400 rounded-lg hover:bg-card-bg-hover"><Edit3 className="w-3.5 h-3.5"/></button>
+                  <button onClick={()=>{if(window.confirm('确定删除「'+pr.name+'」？')){(async()=>{try{await aiApi.deleteLlmProvider(pr.id);setLlmProviders((await aiApi.getLlmProviders()).data||[]);addToast('success','已删除');}catch{addToast('error','删除失败');}})();}}} className="p-1.5 text-text-muted hover:text-red-400 rounded-lg hover:bg-card-bg-hover"><Trash2 className="w-3.5 h-3.5"/></button>
+                </div>
+              </div>
+            ))}</div>
+      </div>
+    );
+  }
+
+  // ==================== AI 配置 — Agent管理 ====================
+  function renderAgents() {
+      const agentForm = () => {
+    const [testStatus, setTestStatus] = useState<'idle'|'testing'|'success'|'fail'>('idle');
+    const testConnection = async () => {
+      if(!editingAgent?.endpoint) { addToast('error','请先填写 Endpoint'); return; }
+      setTestStatus('testing');
+      try {
+        const res = await fetch(editingAgent.endpoint.replace(/\/$/,'')+'/v1/models', {
+          signal: AbortSignal.timeout(5000),
+          headers: editingAgent.api_key ? { 'Authorization': 'Bearer '+editingAgent.api_key } : {}
+        });
+        setTestStatus(res.ok ? 'success' : 'fail');
+        if(res.ok) addToast('success','连接成功！Agent 可用');
+        else addToast('error','连接失败：HTTP '+res.status);
+      } catch(e: any) {
+        setTestStatus('fail');
+        addToast('error','连接失败：'+e.message);
+      }
+    };
+    return (
+      <div className="p-4 bg-card-bg border border-purple-500/20 rounded-xl mb-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+          <div className="md:col-span-2 flex items-center gap-2 pb-2 border-b border-border-color mb-1">
+            <Bot className="w-4 h-4 text-purple-400"/>
+            <span className="text-xs font-medium text-text-primary">Agent 连接配置</span>
+            {testStatus==='idle' && <span className="text-[10px] text-text-muted ml-auto">配置后点击「测试连接」验证</span>}
+            {testStatus==='testing' && <Loader2 className="w-3 h-3 animate-spin ml-auto text-purple-400"/>}
+            {testStatus==='success' && <span className="text-[10px] text-emerald-400 ml-auto flex items-center gap-1"><Check className="w-3 h-3"/>连接正常</span>}
+            {testStatus==='fail' && <span className="text-[10px] text-red-400 ml-auto flex items-center gap-1"><X className="w-3 h-3"/>连接失败</span>}
+          </div>
+          <div><label className="block text-xs text-text-secondary mb-1 font-medium">名称</label>
+            <input value={editingAgent?.name||''} onChange={e=>setEditingAgent({...editingAgent,name:e.target.value})}
+              className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-sm text-text-primary" placeholder="Hermes Agent"/></div>
+          <div><label className="block text-xs text-text-secondary mb-1 font-medium">类型</label>
+            <select value={editingAgent?.type||'hermes'} onChange={e=>setEditingAgent({...editingAgent,type:e.target.value})}
+              className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-sm text-text-primary">
+              <option value="hermes">Hermes — OpenAI 兼容 API</option>
+              <option value="openclaw">OpenClaw — 安全操作框架</option>
+              <option value="custom">自定义 Agent</option></select></div>
+          <div><label className="block text-xs text-text-secondary mb-1 font-medium">服务地址 <span className="text-text-muted font-normal">(Agent Endpoint)</span></label>
+            <input value={editingAgent?.endpoint||''} onChange={e=>setEditingAgent({...editingAgent,endpoint:e.target.value})}
+              className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-sm font-mono text-text-primary" placeholder="http://localhost:8080"/></div>
+          <div><label className="block text-xs text-text-secondary mb-1 font-medium">认证密钥 <span className="text-text-muted font-normal">(API Key, 可选)</span></label>
+            <input type="password" value={editingAgent?.api_key||''} onChange={e=>setEditingAgent({...editingAgent,api_key:e.target.value})}
+              className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-sm text-text-primary" placeholder="如不需要可留空"/></div>
+          <div className="flex items-end">
+            <button onClick={testConnection} disabled={testStatus==='testing'||!editingAgent?.endpoint}
+              className="w-full px-4 py-2 bg-page-bg border border-border-color rounded-lg text-xs text-text-secondary hover:text-text-primary hover:border-border-color-hover transition-all disabled:opacity-40 flex items-center justify-center gap-1.5">
+              {testStatus==='testing'?<Loader2 className="w-3 h-3 animate-spin"/>:<Wifi className="w-3 h-3"/>}测试连接</button>
+          </div>
+          <div className="md:col-span-2"><label className="block text-xs text-text-secondary mb-1 font-medium">描述</label>
+            <input value={editingAgent?.description||''} onChange={e=>setEditingAgent({...editingAgent,description:e.target.value})}
+              className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-sm text-text-primary" placeholder="Agent 功能描述"/></div>
+          <div className="md:col-span-2"><label className="block text-xs text-text-secondary mb-1 font-medium">注册技能 <span className="text-text-muted font-normal">(每行一个: 技能名称 | 技能描述)</span></label>
+            <textarea value={(editingAgent?.skills||[]).map((s:any)=>s.name+' | '+s.description).join('\n')}
+              onChange={e=>{const sk=e.target.value.split('\n').filter(Boolean).map(line=>{[n,...d]=line.split('|');return{name:n.trim(),description:d.join('|').trim()||n.trim()}});setEditingAgent({...editingAgent,skills:sk});}}
+              className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-sm h-20 font-mono text-text-primary" placeholder="威胁分析 | 安全事件分析与威胁识别
+告警分诊 | 告警优先级评估与误报判断
+攻击链溯源 | MITRE ATT&CK 攻击链映射"/></div>
+        </div>
+        <div className="flex gap-2 justify-end">
+          <button onClick={()=>setShowAddAgent(false)} className="px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary">取消</button>
+          <button onClick={async()=>{
+            if(!editingAgent?.name){addToast('error','请填写名称');return;}
+            setAgentFormLoading(true);
+            try{
+              if(editingAgent.id) await aiApi.updateAgentProvider(editingAgent.id,editingAgent);
+              else await aiApi.addAgentProvider(editingAgent);
+              const r=await aiApi.getAgentProviders();
+              if(r.success) setAgentProviders(r.data||[]);
+              setShowAddAgent(false);
+              addToast('success',editingAgent.id?'已更新':'已添加');
+            }catch{addToast('error','保存失败');}
+            setAgentFormLoading(false);
+          }}
+            disabled={agentFormLoading}
+            className="px-4 py-1.5 bg-purple-600 text-white rounded-lg text-xs font-medium disabled:opacity-40 hover:bg-purple-500 transition-all active:scale-95 flex items-center gap-1.5">
+            {agentFormLoading?<Loader2 className="w-3 h-3 animate-spin"/>:<Save className="w-3 h-3"/>}保存</button>
+        </div>
+      </div>
+    );
+  };
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+        <div><h3 className="text-sm font-semibold text-text-primary"><Bot className="w-4 h-4 text-purple-400 inline mr-1"/>AI Agent 配置</h3><p className="text-xs text-text-muted mt-0.5">Agent 接口与安全技能管理。Hermes Agent (本地端口 8080) 已自动注册</p></div>
+        <div className="flex items-center gap-2">
+          <button onClick={()=>{setShowAddAgent(true);setEditingAgent({type:'hermes',skills:[],enabled:true});}} className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg text-xs font-medium hover:bg-purple-500 transition-all active:scale-95"><Plus className="w-3.5 h-3.5"/>添加</button>
+        </div>
+      </div>
+      <AnimatePresence>{showAddAgent&&<motion.div initial={{opacity:0,height:0}} animate={{opacity:1,height:'auto'}} exit={{opacity:0,height:0}} className="overflow-hidden">{agentForm()}</motion.div>}</AnimatePresence>
+      <div className="space-y-2">{(agentProviders||[]).length===0
+        ?<div className="flex flex-col items-center justify-center py-12 text-text-muted"><Bot className="w-8 h-8 mb-2 opacity-30"/><div className="text-xs">暂无 Agent 配置</div></div>
+        :agentProviders.map((pr:any)=>(
+            <div key={pr.id} className="flex items-center justify-between p-3 bg-card-bg border border-border-color rounded-lg hover:bg-card-bg-hover transition-colors">
+              <div className="flex items-center gap-3 min-w-0"><div className={'w-9 h-9 rounded-lg '+(pr.enabled!==false?'bg-purple-500/10':'bg-gray-500/10')+' flex items-center justify-center'}><Bot className={'w-4 h-4 '+(pr.enabled!==false?'text-purple-400':'text-gray-500')}/></div><div className="min-w-0"><div className="text-sm font-medium text-text-primary">{pr.name}</div><div className="text-xs text-text-muted">{pr.type} · {(pr?.skills?.length||0)} 项技能</div></div></div>
+              <div className="flex items-center gap-2">
+                <div className="hidden sm:flex gap-1">{(pr.skills||[]).slice(0,2).map((s:any,i:number)=><span key={i} className="text-[10px] px-1.5 py-0.5 bg-purple-500/10 text-purple-400 border border-purple-500/20 rounded">{s.name}</span>)}{(pr.skills||[]).length>2&&<span className="text-[10px] text-text-muted">+{(pr.skills||[]).length-2}</span>}</div>
+                <button onClick={()=>{setEditingAgent(pr);setShowAddAgent(true);}} className="p-1.5 text-text-muted hover:text-purple-400 rounded-lg hover:bg-card-bg-hover"><Edit3 className="w-3.5 h-3.5"/></button>
+                <button onClick={()=>{if(window.confirm('确定删除 Agent「'+pr.name+'」？')){(async()=>{try{await aiApi.deleteAgentProvider(pr.id);setAgentProviders((await aiApi.getAgentProviders()).data||[]);addToast('success','已删除');}catch{addToast('error','删除失败');}})();}}} className="p-1.5 text-text-muted hover:text-red-400 rounded-lg hover:bg-card-bg-hover"><Trash2 className="w-3.5 h-3.5"/></button>
+              </div>
+            </div>
+          ))}</div>
+    </div>
+  );
+}
+
+  // ==================== AI 配置 — 反馈学习 ====================
+  function renderFeedback() {
+    return (
+      <div>
+        <div className="mb-4"><h3 className="text-sm font-semibold text-text-primary"><BookOpen className="w-4 h-4 text-amber-400 inline mr-1"/>知识沉淀与反馈学习</h3><p className="text-xs text-text-muted mt-0.5">记录 AI 分析结果及人工修正，持续提升建议质量</p></div>
+        <div className="grid grid-cols-3 gap-4">
+          {[
+            {icon:FileText,label:'总反馈数',value:feedbackStats?.total||0,color:'text-blue-400',bg:'bg-blue-500/10'},
+            {icon:CheckCircle,label:'已采纳',value:feedbackStats?.accepted||0,color:'text-emerald-400',bg:'bg-emerald-500/10'},
+            {icon:Gauge,label:'采纳率',value:(feedbackStats?.acceptance_rate||0)+'%',color:'text-amber-400',bg:'bg-amber-500/10'},
+          ].map((item,i)=>(
+            <div key={i} className="bg-card-bg border border-border-color rounded-xl p-4 text-center metric-card">
+              <div className={'w-9 h-9 rounded-lg '+item.bg+' flex items-center justify-center mx-auto mb-2'}><item.icon className={'w-4 h-4 '+item.color}/></div>
+              <div className="text-xl font-bold text-text-primary">{item.value}</div>
+              <div className="text-xs text-text-muted mt-0.5">{item.label}</div>
+            </div>
           ))}
         </div>
-
-        <div className="p-6">
-          {activeTab === 'chat' && (
-            <div className="h-[500px] flex gap-4">
-              <div className="w-64 border-r border-border-color pr-4">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-text-primary font-medium">会话历史</h3>
-                  <motion.button
-                    whileHover={{ scale: 1.1 }}
-                    whileTap={{ scale: 0.9 }}
-                    onClick={() => setShowNewSessionModal(true)}
-                    className="p-1.5 text-text-secondary hover:text-primary rounded-lg hover:bg-primary/10"
-                  >
-                    <Plus size={16} />
-                  </motion.button>
-                </div>
-                <div className="space-y-2">
-                  {sessions.length === 0 ? (
-                    <div className="text-center py-8 text-text-muted text-sm">
-                      {sessionsLoading ? '加载中...' : '暂无会话，点击 + 新建'}
-                    </div>
-                  ) : (
-                    sessions.map((session) => (
-                      <motion.div
-                        key={session.id}
-                        whileHover={{ x: 2 }}
-                        onClick={() => {
-                          setCurrentSessionId(session.id);
-                          setSessions(prev => prev.map(s => ({ ...s, active: s.id === session.id })));
-                        }}
-                        className={`group p-3 rounded-lg cursor-pointer transition-colors ${
-                          session.active ? 'bg-primary/10 border border-primary/30' : 'hover:bg-page-bg border border-transparent'
-                        }`}
-                      >
-                        <div className="flex items-start justify-between">
-                          <div className="flex-1 min-w-0">
-                            <p className={`text-sm font-medium truncate ${session.active ? 'text-primary' : 'text-text-primary'}`}>
-                              {session.title}
-                            </p>
-                            <p className="text-xs text-text-muted mt-1">{session.time}</p>
-                          </div>
-                          <button
-                            onClick={(e) => handleDeleteSession(session.id, e)}
-                            className="p-1 text-text-muted hover:text-red-500 rounded opacity-0 group-hover:opacity-100 transition-all"
-                          >
-                            <Trash2 size={12} />
-                          </button>
-                        </div>
-                      </motion.div>
-                    ))
-                  )}
-                </div>
-              </div>
-
-              <div className="flex-1 flex flex-col">
-                <div className="flex-1 overflow-y-auto space-y-4 pr-2">
-                  {messages.map((message) => (
-                    <motion.div
-                      key={message.id}
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      className={`flex gap-3 ${message.role === 'user' ? 'flex-row-reverse' : ''}`}
-                    >
-                      <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
-                        message.role === 'user' ? 'bg-primary/20' : 'bg-purple-500/20'
-                      }`}>
-                        {message.role === 'user' ? (
-                          <User size={16} className="text-primary" />
-                        ) : (
-                          <Bot size={16} className="text-purple-400" />
-                        )}
-                      </div>
-                      <div className={`max-w-[70%] ${message.role === 'user' ? 'text-right' : ''}`}>
-                        <div className={`inline-block p-3 rounded-lg ${
-                          message.role === 'user'
-                            ? 'bg-primary text-white'
-                            : 'bg-page-bg border border-border-color text-text-primary'
-                        }`}>
-                          <p className="text-sm whitespace-pre-wrap">{message.content}</p>
-                        </div>
-                        <div className="flex items-center gap-2 mt-1 text-xs text-text-muted">
-                          <span>{new Date(message.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</span>
-                          {message.model && <><span>·</span><span>{message.model}</span></>}
-                          {message.tokens && <><span>·</span><span>{message.tokens} tokens</span></>}
-                        </div>
-                        {message.role === 'assistant' && (
-                          <div className="flex items-center gap-2 mt-2">
-                            <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} className="p-1.5 text-text-muted hover:text-primary rounded">
-                              <Copy size={14} />
-                            </motion.button>
-                            <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} className="p-1.5 text-text-muted hover:text-primary rounded">
-                              <ThumbsUp size={14} />
-                            </motion.button>
-                            <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} className="p-1.5 text-text-muted hover:text-primary rounded">
-                              <ThumbsDown size={14} />
-                            </motion.button>
-                            <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} className="p-1.5 text-text-muted hover:text-primary rounded">
-                              <RotateCcw size={14} />
-                            </motion.button>
-                          </div>
-                        )}
-                      </div>
-                    </motion.div>
-                  ))}
-                  {isTyping && (
-                    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex gap-3">
-                      <div className="w-8 h-8 rounded-full bg-purple-500/20 flex items-center justify-center">
-                        <Bot size={16} className="text-purple-400" />
-                      </div>
-                      <div className="bg-page-bg border border-border-color rounded-lg p-3">
-                        <div className="flex items-center gap-2">
-                          <Loader2 size={16} className="text-primary animate-spin" />
-                          <span className="text-sm text-text-secondary">AI正在思考...</span>
-                        </div>
-                      </div>
-                    </motion.div>
-                  )}
-                  <div ref={messagesEndRef} />
-                </div>
-
-                <div className="mt-4 pt-4 border-t border-border-color">
-                  <div className="flex flex-wrap gap-2 mb-3">
-                    {quickActions.map((action) => (
-                      <motion.button
-                        key={action.label}
-                        whileHover={{ scale: 1.02 }}
-                        whileTap={{ scale: 0.98 }}
-                        onClick={() => setInputMessage(action.label)}
-                        className="flex items-center gap-1.5 px-3 py-1.5 bg-page-bg border border-border-color rounded-full text-xs text-text-secondary hover:text-text-primary hover:border-primary/50 transition-all"
-                      >
-                        <action.icon size={12} />
-                        {action.label}
-                      </motion.button>
-                    ))}
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <div className="flex-1 relative">
-                      <input
-                        type="text"
-                        placeholder={currentSessionId ? "输入您的问题..." : "请先创建或选择一个会话"}
-                        value={inputMessage}
-                        onChange={(e) => setInputMessage(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
-                        className="w-full px-4 py-3 bg-page-bg border border-border-color rounded-lg text-text-primary placeholder-text-muted focus:outline-none focus:border-primary/50"
-                      />
-                    </div>
-                    <motion.button
-                      whileHover={{ scale: 1.05 }}
-                      whileTap={{ scale: 0.95 }}
-                      onClick={handleSendMessage}
-                      disabled={!inputMessage.trim() || !currentSessionId}
-                      className="p-3 bg-primary text-white rounded-lg hover:bg-primary/90 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      <Send size={18} />
-                    </motion.button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {activeTab === 'insights' && (
-            <div className="space-y-4">
-              <div className="flex items-center gap-4">
-                <div className="flex-1 relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" size={18} />
-                  <input
-                    type="text"
-                    placeholder="搜索AI洞察..."
-                    className="w-full pl-10 pr-4 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary placeholder-text-muted focus:outline-none focus:border-primary/50"
-                  />
-                </div>
-                <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} className="p-2 bg-card-bg border border-border-color rounded-lg text-text-secondary hover:text-text-primary">
-                  <Filter size={18} />
-                </motion.button>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                {aiInsights.map((insight, index) => (
-                  <motion.div
-                    key={insight.id}
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: index * 0.05 }}
-                    whileHover={{ scale: 1.005 }}
-                    className="bg-page-bg border border-border-color rounded-lg p-4 hover:border-primary/30 transition-all"
-                  >
-                    <div className="flex items-start justify-between mb-3">
-                      <div className="flex items-center gap-2">
-                        <span className={`px-2 py-0.5 text-xs rounded-full border ${getSeverityColor(insight.severity)}`}>
-                          {insight.severity.toUpperCase()}
-                        </span>
-                        <span className="px-2 py-0.5 text-xs rounded-full bg-card-bg border border-border-color text-text-secondary">
-                          {insight.category}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} className="p-1.5 text-text-muted hover:text-primary rounded">
-                          <Bookmark size={14} />
-                        </motion.button>
-                        <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} className="p-1.5 text-text-muted hover:text-primary rounded">
-                          <Share2 size={14} />
-                        </motion.button>
-                      </div>
-                    </div>
-                    <h3 className="text-text-primary font-medium mb-2">{insight.title}</h3>
-                    <p className="text-text-secondary text-sm mb-3">{insight.description}</p>
-                    <div className="flex items-center justify-between text-xs text-text-muted">
-                      <div className="flex items-center gap-3">
-                        <span className="flex items-center gap-1">
-                          <Clock size={12} />
-                          {new Date(insight.timestamp).toLocaleString('zh-CN')}
-                        </span>
-                        <span className="flex items-center gap-1">
-                          <Target size={12} />
-                          置信度: {insight.confidence}%
-                        </span>
-                      </div>
-                      {insight.relatedEvents.length > 0 && (
-                        <span className="text-primary">{insight.relatedEvents.length} 个相关事件</span>
-                      )}
-                    </div>
-                  </motion.div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {activeTab === 'agents' && (
-            <div className="grid grid-cols-2 gap-4">
-              {aiAgents.map((agent, index) => (
-                <motion.div
-                  key={agent.id}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: index * 0.05 }}
-                  whileHover={{ scale: 1.005 }}
-                  className="bg-page-bg border border-border-color rounded-lg p-4 hover:border-primary/30 transition-all"
-                >
-                  <div className="flex items-start justify-between mb-3">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
-                        <agent.icon size={20} className="text-primary" />
-                      </div>
-                      <div>
-                        <h3 className="text-text-primary font-medium">{agent.name}</h3>
-                        <span className={`text-xs px-2 py-0.5 rounded-full ${getStatusColor(agent.status)}`}>
-                          {agent.status === 'active' ? '运行中' : agent.status === 'idle' ? '空闲' : '忙碌'}
-                        </span>
-                      </div>
-                    </div>
-                    <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} className="p-1.5 text-text-muted hover:text-text-primary rounded">
-                      <MoreHorizontal size={16} />
-                    </motion.button>
-                  </div>
-                  <p className="text-text-secondary text-sm mb-3">{agent.description}</p>
-                  <div className="flex flex-wrap gap-2 mb-3">
-                    {agent.capabilities.map((cap) => (
-                      <span key={cap} className="px-2 py-1 text-xs rounded bg-card-bg border border-border-color text-text-secondary">
-                        {cap}
-                      </span>
-                    ))}
-                  </div>
-                  <div className="flex items-center justify-between text-xs text-text-muted">
-                    <span className="flex items-center gap-1">
-                      <Clock size={12} />
-                      最后活跃: {new Date(agent.lastActive).toLocaleString('zh-CN')}
-                    </span>
-                    <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} className="flex items-center gap-1 text-primary hover:underline">
-                      查看详情
-                      <ChevronRight size={12} />
-                    </motion.button>
-                  </div>
-                </motion.div>
-              ))}
-            </div>
-          )}
-
-          {activeTab === 'models' && (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <p className="text-text-secondary text-sm">管理 AI 模型及其 API 配置</p>
-                <button
-                  onClick={() => { setNewModel({}); setShowAddModel(true); }}
-                  className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary/90 transition-all"
-                >
-                  <Plus size={16} />
-                  添加模型
-                </button>
-              </div>
-
-              <div className="grid grid-cols-1 gap-3">
-                {modelConfigs.map((model, index) => (
-                  <motion.div
-                    key={model.id}
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: index * 0.05 }}
-                    className="bg-page-bg border border-border-color rounded-lg p-4 hover:border-primary/30 transition-all"
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-4">
-                        <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${model.enabled ? 'bg-primary/10' : 'bg-gray-500/10'}`}>
-                          <Cpu size={20} className={model.enabled ? 'text-primary' : 'text-text-muted'} />
-                        </div>
-                        <div>
-                          <div className="flex items-center gap-3">
-                            <h3 className="text-text-primary font-medium">{model.name}</h3>
-                            <span className={`px-2 py-0.5 text-xs rounded-full ${model.enabled ? 'bg-green-500/20 text-green-400' : 'bg-gray-500/20 text-gray-400'}`}>
-                              {model.enabled ? '已启用' : '已禁用'}
-                            </span>
-                          </div>
-                          <p className="text-text-muted text-xs mt-0.5">{model.provider} · {model.modelId}</p>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => setModelConfigs(prev => prev.map(m => m.id === model.id ? { ...m, enabled: !m.enabled } : m))}
-                          className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
-                            model.enabled
-                              ? 'bg-amber-500/10 text-amber-400 hover:bg-amber-500/20'
-                              : 'bg-green-500/10 text-green-400 hover:bg-green-500/20'
-                          }`}
-                        >
-                          {model.enabled ? '禁用' : '启用'}
-                        </button>
-                        <button
-                          onClick={() => setEditingModel({ ...model })}
-                          className="px-3 py-1.5 text-xs bg-card-bg border border-border-color rounded-lg text-text-secondary hover:text-primary hover:border-primary transition-colors"
-                        >
-                          编辑
-                        </button>
-                        <button
-                          onClick={() => handleDeleteModel(model.id)}
-                          className="p-1.5 text-text-muted hover:text-critical rounded-lg hover:bg-critical/10 transition-colors"
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-4 mt-3 text-xs text-text-muted">
-                      <span className="flex items-center gap-1"><Globe size={12} /> {model.baseUrl}</span>
-                      <span>Temp: {model.temperature}</span>
-                      <span>Max Tokens: {model.maxTokens}</span>
-                      <span>Top P: {model.topP}</span>
-                    </div>
-                  </motion.div>
-                ))}
-              </div>
-
-              {/* Token 消耗趋势 */}
-              <div className="bg-page-bg border border-border-color rounded-lg p-4">
-                <h3 className="text-text-primary font-medium mb-4 flex items-center gap-2">
-                  <BarChart3 size={18} className="text-primary" />
-                  Token 消耗趋势 (近7日)
-                </h3>
-                <div className="h-56">
-                  <div className="flex items-end gap-3 h-44">
-                    {(() => {
-                      const dates = [...new Set(tokenUsage.map(t => t.date))];
-                      const models = [...new Set(tokenUsage.map(t => t.model))];
-                      const modelColors: Record<string, string> = {
-                        'GPT-4o': 'bg-primary/60',
-                        'Claude Opus 4.7': 'bg-purple-500/60',
-                        'DeepSeek V4': 'bg-blue-500/60'
-                      };
-                      const maxTokens = Math.max(...tokenUsage.map(t => t.tokens));
-                      return dates.map((date, i) => {
-                        const dayData = tokenUsage.filter(t => t.date === date);
-                        const dayTotal = dayData.reduce((s, t) => s + t.tokens, 0);
-                        return (
-                          <div key={date} className="flex-1 flex flex-col items-center gap-2">
-                            <div className="w-full flex flex-col-reverse h-36">
-                              {dayData.map((item) => {
-                                const height = (item.tokens / maxTokens) * 100;
-                                return (
-                                  <motion.div
-                                    key={item.model}
-                                    initial={{ height: 0 }}
-                                    animate={{ height: `${(item.tokens / dayTotal) * 100}%` }}
-                                    transition={{ delay: i * 0.05, duration: 0.5 }}
-                                    className={`w-full ${modelColors[item.model] || 'bg-gray-500/40'} first:rounded-t hover:brightness-110 transition-all`}
-                                    title={`${item.model}: ${(item.tokens / 1000).toFixed(0)}K tokens · $${item.cost.toFixed(2)}`}
-                                  />
-                                );
-                              })}
-                            </div>
-                            <span className="text-xs text-text-muted">{date}</span>
-                            <span className="text-xs text-text-secondary font-medium">{(dayTotal / 1000).toFixed(0)}K</span>
-                          </div>
-                        );
-                      });
-                    })()}
-                  </div>
-                </div>
-                <div className="flex items-center justify-center gap-6 mt-2">
-                  {[...new Set(tokenUsage.map(t => t.model))].map(model => {
-                    const modelColors: Record<string, string> = {
-                      'GPT-4o': 'bg-primary/60',
-                      'Claude Opus 4.7': 'bg-purple-500/60',
-                      'DeepSeek V4': 'bg-blue-500/60'
-                    };
-                    return (
-                      <div key={model} className="flex items-center gap-2">
-                        <div className={`w-3 h-3 rounded ${modelColors[model] || 'bg-gray-500/40'}`} />
-                        <span className="text-xs text-text-secondary">{model}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-                <div className="grid grid-cols-3 gap-4 mt-4 pt-4 border-t border-border-color">
-                  <div className="text-center">
-                    <p className="text-2xl font-bold text-text-primary">
-                      {(tokenUsage.reduce((s, t) => s + t.tokens, 0) / 1000).toFixed(0)}K
-                    </p>
-                    <p className="text-xs text-text-muted">本周总Token</p>
-                  </div>
-                  <div className="text-center">
-                    <p className="text-2xl font-bold text-text-primary">
-                      ${tokenUsage.reduce((s, t) => s + t.cost, 0).toFixed(2)}
-                    </p>
-                    <p className="text-xs text-text-muted">本周费用</p>
-                  </div>
-                  <div className="text-center">
-                    <p className="text-2xl font-bold text-text-primary">
-                      {Math.round(tokenUsage.reduce((s, t) => s + t.tokens, 0) / tokenUsage.length)}
-                    </p>
-                    <p className="text-xs text-text-muted">日均Token</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      </motion.div>
-
-      <AnimatePresence>
-        {showNewSessionModal && (
-          <>
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/50 z-50" onClick={() => setShowNewSessionModal(false)} />
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none"
-            >
-              <div className="glass-card rounded-xl p-6 w-[500px] pointer-events-auto" onClick={e => e.stopPropagation()}>
-                <div className="flex items-center justify-between mb-6">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
-                      <Sparkles className="w-5 h-5 text-primary" />
-                    </div>
-                    <div>
-                      <h2 className="text-lg font-semibold text-text-primary">新建会话</h2>
-                      <p className="text-sm text-text-secondary">创建新的AI对话会话</p>
-                    </div>
-                  </div>
-                  <button onClick={() => setShowNewSessionModal(false)} className="p-2 text-text-secondary hover:text-text-primary">
-                    <X className="w-5 h-5" />
-                  </button>
-                </div>
-
-                <div className="space-y-4">
-                  <div>
-                    <label className="block text-text-secondary text-sm mb-2">会话标题</label>
-                    <input
-                      type="text"
-                      value={newSessionForm.title}
-                      onChange={(e) => setNewSessionForm({ ...newSessionForm, title: e.target.value })}
-                      placeholder="例如：分析今日安全事件"
-                      className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary focus:border-primary focus:outline-none"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-text-secondary text-sm mb-2">选择AI代理</label>
-                    <div className="grid grid-cols-2 gap-3">
-                      {aiAgents.map((agent) => (
-                        <button
-                          key={agent.id}
-                          onClick={() => setNewSessionForm({ ...newSessionForm, agent: agent.id })}
-                          className={`p-3 rounded-lg border transition-colors text-left ${
-                            newSessionForm.agent === agent.id
-                              ? 'border-primary bg-primary/10'
-                              : 'border-border-color hover:border-primary/50'
-                          }`}
-                        >
-                          <div className="flex items-center gap-2 mb-1">
-                            <agent.icon size={16} className={newSessionForm.agent === agent.id ? 'text-primary' : 'text-text-secondary'} />
-                            <span className={`font-medium ${newSessionForm.agent === agent.id ? 'text-primary' : 'text-text-primary'}`}>
-                              {agent.name}
-                            </span>
-                          </div>
-                          <p className="text-xs text-text-muted line-clamp-2">{agent.description}</p>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-text-secondary text-sm mb-2">快速模板（可选）</label>
-                    <select
-                      value={newSessionForm.template}
-                      onChange={(e) => setNewSessionForm({ ...newSessionForm, template: e.target.value })}
-                      className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary focus:border-primary focus:outline-none"
-                    >
-                      <option value="">选择模板...</option>
-                      <option value="analyze">分析安全事件</option>
-                      <option value="threat">查询威胁情报</option>
-                      <option value="report">生成报告</option>
-                      <option value="compliance">合规检查</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="flex justify-end gap-3 mt-6">
-                  <button onClick={() => setShowNewSessionModal(false)} className="px-4 py-2 text-text-secondary hover:text-text-primary transition-colors">
-                    取消
-                  </button>
-                  <button
-                    onClick={handleCreateSession}
-                    disabled={!newSessionForm.title}
-                    className="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <MessageSquare className="w-4 h-4" />
-                    创建会话
-                  </button>
-                </div>
-              </div>
-            </motion.div>
-          </>
-        )}
-      </AnimatePresence>
-
-      <AnimatePresence>
-        {showModelConfigModal && (
-          <>
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/50 z-50" onClick={() => setShowModelConfigModal(false)} />
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none"
-            >
-              <div className="glass-card rounded-xl p-6 w-[650px] pointer-events-auto max-h-[80vh] overflow-auto" onClick={e => e.stopPropagation()}>
-                <div className="flex items-center justify-between mb-6">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
-                      <Key className="w-5 h-5 text-primary" />
-                    </div>
-                    <div>
-                      <h2 className="text-lg font-semibold text-text-primary">模型接口配置</h2>
-                      <p className="text-sm text-text-secondary">配置模型 API 接口地址及密钥</p>
-                    </div>
-                  </div>
-                  <button onClick={() => { setShowModelConfigModal(false); setEditingModel(null); }} className="p-2 text-text-secondary hover:text-text-primary">
-                    <X className="w-5 h-5" />
-                  </button>
-                </div>
-
-                <div className="space-y-4">
-                  {modelConfigs.map((model) => (
-                    <div key={model.id} className="bg-page-bg rounded-lg p-4 border border-border-color">
-                      <div className="flex items-center justify-between mb-3">
-                        <div className="flex items-center gap-3">
-                          <Cpu size={20} className={model.enabled ? 'text-primary' : 'text-text-muted'} />
-                          <div>
-                            <h3 className="text-text-primary font-medium">{model.name}</h3>
-                            <p className="text-xs text-text-muted">{model.provider} · {model.modelId}</p>
-                          </div>
-                        </div>
-                        <button
-                          onClick={() => setEditingModel(editingModel?.id === model.id ? null : { ...model })}
-                          className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-card-bg border border-border-color rounded-lg text-text-secondary hover:text-primary hover:border-primary transition-colors"
-                        >
-                          <Sliders size={14} />
-                          {editingModel?.id === model.id ? '收起' : '编辑'}
-                        </button>
-                      </div>
-
-                      {editingModel?.id === model.id && (
-                        <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="space-y-3 pt-3 border-t border-border-color">
-                          <div className="grid grid-cols-2 gap-3">
-                            <div>
-                              <label className="block text-text-secondary text-xs mb-1">接口地址 (Base URL)</label>
-                              <input
-                                type="text"
-                                value={editingModel.baseUrl}
-                                onChange={(e) => setEditingModel({ ...editingModel, baseUrl: e.target.value })}
-                                placeholder="https://api.openai.com/v1"
-                                className="w-full px-3 py-1.5 bg-card-bg border border-border-color rounded text-sm text-text-primary focus:border-primary focus:outline-none"
-                              />
-                            </div>
-                            <div>
-                              <label className="block text-text-secondary text-xs mb-1">模型标识 (Model ID)</label>
-                              <input
-                                type="text"
-                                value={editingModel.modelId}
-                                onChange={(e) => setEditingModel({ ...editingModel, modelId: e.target.value })}
-                                placeholder="gpt-4o"
-                                className="w-full px-3 py-1.5 bg-card-bg border border-border-color rounded text-sm text-text-primary focus:border-primary focus:outline-none"
-                              />
-                            </div>
-                          </div>
-
-                          <div>
-                            <label className="block text-text-secondary text-xs mb-1">API Key</label>
-                            <div className="flex gap-2">
-                              <input
-                                type="password"
-                                value={editingModel.apiKey}
-                                onChange={(e) => setEditingModel({ ...editingModel, apiKey: e.target.value })}
-                                placeholder="sk-..."
-                                className="flex-1 px-3 py-1.5 bg-card-bg border border-border-color rounded text-sm text-text-primary focus:border-primary focus:outline-none"
-                              />
-                              <button className="px-3 py-1.5 text-xs bg-card-bg border border-border-color rounded text-text-secondary hover:text-primary transition-colors">
-                                验证
-                              </button>
-                            </div>
-                          </div>
-
-                          <div className="grid grid-cols-3 gap-3">
-                            <div>
-                              <label className="block text-text-secondary text-xs mb-1">Temperature</label>
-                              <input
-                                type="number"
-                                min="0"
-                                max="2"
-                                step="0.1"
-                                value={editingModel.temperature}
-                                onChange={(e) => setEditingModel({ ...editingModel, temperature: parseFloat(e.target.value) })}
-                                className="w-full px-3 py-1.5 bg-card-bg border border-border-color rounded text-sm text-text-primary focus:border-primary focus:outline-none"
-                              />
-                            </div>
-                            <div>
-                              <label className="block text-text-secondary text-xs mb-1">Max Tokens</label>
-                              <input
-                                type="number"
-                                min="256"
-                                max="8192"
-                                step="256"
-                                value={editingModel.maxTokens}
-                                onChange={(e) => setEditingModel({ ...editingModel, maxTokens: parseInt(e.target.value) })}
-                                className="w-full px-3 py-1.5 bg-card-bg border border-border-color rounded text-sm text-text-primary focus:border-primary focus:outline-none"
-                              />
-                            </div>
-                            <div>
-                              <label className="block text-text-secondary text-xs mb-1">Top P</label>
-                              <input
-                                type="number"
-                                min="0"
-                                max="1"
-                                step="0.1"
-                                value={editingModel.topP}
-                                onChange={(e) => setEditingModel({ ...editingModel, topP: parseFloat(e.target.value) })}
-                                className="w-full px-3 py-1.5 bg-card-bg border border-border-color rounded text-sm text-text-primary focus:border-primary focus:outline-none"
-                              />
-                            </div>
-                          </div>
-
-                          <div className="flex justify-end gap-2">
-                            <button
-                              onClick={() => setEditingModel(null)}
-                              className="px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary"
-                            >
-                              取消
-                            </button>
-                            <button
-                              onClick={handleSaveModelConfig}
-                              className="px-3 py-1.5 text-xs bg-primary text-white rounded hover:bg-primary-hover"
-                            >
-                              保存
-                            </button>
-                          </div>
-                        </motion.div>
-                      )}
-                    </div>
-                  ))}
-
-                  <div className="bg-page-bg rounded-lg p-4 border border-border-color">
-                    <h4 className="text-text-primary font-medium mb-3 flex items-center gap-2">
-                      <Globe size={16} className="text-primary" />
-                      全局设置
-                    </h4>
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <p className="text-text-primary text-sm">默认模型</p>
-                          <p className="text-text-muted text-xs">新会话使用的默认AI模型</p>
-                        </div>
-                        <select className="px-3 py-1.5 bg-card-bg border border-border-color rounded text-sm text-text-primary focus:border-primary focus:outline-none">
-                          {modelConfigs.filter(m => m.enabled).map(m => (
-                            <option key={m.id}>{m.name}</option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <p className="text-text-primary text-sm">流式输出</p>
-                          <p className="text-text-muted text-xs">实时显示AI生成的内容</p>
-                        </div>
-                        <label className="relative inline-flex items-center cursor-pointer">
-                          <input type="checkbox" defaultChecked className="sr-only peer" />
-                          <div className="w-9 h-5 bg-card-bg border border-border-color peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-text-muted after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary peer-checked:border-primary" />
-                        </label>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <p className="text-text-primary text-sm">上下文记忆</p>
-                          <p className="text-text-muted text-xs">保留历史对话上下文</p>
-                        </div>
-                        <label className="relative inline-flex items-center cursor-pointer">
-                          <input type="checkbox" defaultChecked className="sr-only peer" />
-                          <div className="w-9 h-5 bg-card-bg border border-border-color peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-text-muted after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary peer-checked:border-primary" />
-                        </label>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex justify-end gap-3 mt-6">
-                  <button onClick={() => { setShowModelConfigModal(false); setEditingModel(null); }} className="px-4 py-2 text-text-secondary hover:text-text-primary transition-colors">
-                    关闭
-                  </button>
-                </div>
-              </div>
-            </motion.div>
-          </>
-        )}
-      </AnimatePresence>
-
-      <AnimatePresence>
-        {editingModel && !showModelConfigModal && (
-          <>
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/50 z-50" onClick={() => setEditingModel(null)} />
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none"
-            >
-              <div className="glass-card rounded-xl p-6 w-[550px] pointer-events-auto" onClick={e => e.stopPropagation()}>
-                <div className="flex items-center justify-between mb-6">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
-                      <Cpu className="w-5 h-5 text-primary" />
-                    </div>
-                    <div>
-                      <h2 className="text-lg font-semibold text-text-primary">编辑模型</h2>
-                      <p className="text-sm text-text-secondary">{editingModel.name} · {editingModel.provider}</p>
-                    </div>
-                  </div>
-                  <button onClick={() => setEditingModel(null)} className="p-2 text-text-secondary hover:text-text-primary">
-                    <X className="w-5 h-5" />
-                  </button>
-                </div>
-
-                <div className="space-y-4">
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-text-secondary text-sm mb-1">接口地址 (Base URL)</label>
-                      <input
-                        type="text"
-                        value={editingModel.baseUrl}
-                        onChange={(e) => setEditingModel({ ...editingModel, baseUrl: e.target.value })}
-                        placeholder="https://api.openai.com/v1"
-                        className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary focus:border-primary focus:outline-none"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-text-secondary text-sm mb-1">模型标识 (Model ID)</label>
-                      <input
-                        type="text"
-                        value={editingModel.modelId}
-                        onChange={(e) => setEditingModel({ ...editingModel, modelId: e.target.value })}
-                        placeholder="gpt-4o"
-                        className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary focus:border-primary focus:outline-none"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-text-secondary text-sm mb-1">API Key</label>
-                    <div className="flex gap-2">
-                      <input
-                        type="password"
-                        value={editingModel.apiKey}
-                        onChange={(e) => setEditingModel({ ...editingModel, apiKey: e.target.value })}
-                        placeholder="输入API密钥"
-                        className="flex-1 px-3 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary focus:border-primary focus:outline-none"
-                      />
-                      <button className="px-4 py-2 bg-card-bg border border-border-color rounded-lg text-text-secondary hover:text-primary transition-colors">
-                        验证
-                      </button>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-text-secondary text-sm mb-1">Temperature</label>
-                    <div className="flex items-center gap-3">
-                      <input
-                        type="range"
-                        min="0"
-                        max="2"
-                        step="0.1"
-                        value={editingModel.temperature}
-                        onChange={(e) => setEditingModel({ ...editingModel, temperature: parseFloat(e.target.value) })}
-                        className="flex-1 h-2 bg-card-bg rounded-lg appearance-none cursor-pointer accent-primary"
-                      />
-                      <span className="w-12 text-right text-text-primary">{editingModel.temperature}</span>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-text-secondary text-sm mb-1">Max Tokens</label>
-                    <input
-                      type="number"
-                      min="256"
-                      max="8192"
-                      step="256"
-                      value={editingModel.maxTokens}
-                      onChange={(e) => setEditingModel({ ...editingModel, maxTokens: parseInt(e.target.value) })}
-                      className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary focus:border-primary focus:outline-none"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-text-secondary text-sm mb-1">Top P</label>
-                    <div className="flex items-center gap-3">
-                      <input
-                        type="range"
-                        min="0"
-                        max="1"
-                        step="0.1"
-                        value={editingModel.topP}
-                        onChange={(e) => setEditingModel({ ...editingModel, topP: parseFloat(e.target.value) })}
-                        className="flex-1 h-2 bg-card-bg rounded-lg appearance-none cursor-pointer accent-primary"
-                      />
-                      <span className="w-12 text-right text-text-primary">{editingModel.topP}</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex justify-end gap-3 mt-6">
-                  <button onClick={() => setEditingModel(null)} className="px-4 py-2 text-text-secondary hover:text-text-primary transition-colors">
-                    取消
-                  </button>
-                  <button
-                    onClick={handleSaveModelConfig}
-                    className="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg transition-colors flex items-center gap-2"
-                  >
-                    <CheckCircle className="w-4 h-4" />
-                    保存配置
-                  </button>
-                </div>
-              </div>
-            </motion.div>
-          </>
-        )}
-      </AnimatePresence>
-
-      <AnimatePresence>
-        {showAddModel && (
-          <>
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/50 z-50" onClick={() => setShowAddModel(false)} />
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none"
-            >
-              <div className="glass-card rounded-xl p-6 w-[550px] pointer-events-auto" onClick={e => e.stopPropagation()}>
-                <div className="flex items-center justify-between mb-6">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
-                      <Plus className="w-5 h-5 text-primary" />
-                    </div>
-                    <div>
-                      <h2 className="text-lg font-semibold text-text-primary">添加模型</h2>
-                      <p className="text-sm text-text-secondary">配置新的AI模型接口</p>
-                    </div>
-                  </div>
-                  <button onClick={() => setShowAddModel(false)} className="p-2 text-text-secondary hover:text-text-primary">
-                    <X className="w-5 h-5" />
-                  </button>
-                </div>
-
-                <div className="space-y-4">
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-text-secondary text-sm mb-1">模型名称 *</label>
-                      <input
-                        type="text"
-                        value={newModel.name || ''}
-                        onChange={(e) => setNewModel({ ...newModel, name: e.target.value })}
-                        placeholder="例如：GPT-4o"
-                        className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary focus:border-primary focus:outline-none"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-text-secondary text-sm mb-1">提供商 *</label>
-                      <input
-                        type="text"
-                        value={newModel.provider || ''}
-                        onChange={(e) => setNewModel({ ...newModel, provider: e.target.value })}
-                        placeholder="例如：OpenAI"
-                        className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary focus:border-primary focus:outline-none"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-text-secondary text-sm mb-1">接口地址 (Base URL) *</label>
-                      <input
-                        type="text"
-                        value={newModel.baseUrl || ''}
-                        onChange={(e) => setNewModel({ ...newModel, baseUrl: e.target.value })}
-                        placeholder="https://api.openai.com/v1"
-                        className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary focus:border-primary focus:outline-none"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-text-secondary text-sm mb-1">模型标识 (Model ID) *</label>
-                      <input
-                        type="text"
-                        value={newModel.modelId || ''}
-                        onChange={(e) => setNewModel({ ...newModel, modelId: e.target.value })}
-                        placeholder="gpt-4o"
-                        className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary focus:border-primary focus:outline-none"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-text-secondary text-sm mb-1">API Key</label>
-                    <div className="flex gap-2">
-                      <input
-                        type="password"
-                        value={newModel.apiKey || ''}
-                        onChange={(e) => setNewModel({ ...newModel, apiKey: e.target.value })}
-                        placeholder="sk-..."
-                        className="flex-1 px-3 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary focus:border-primary focus:outline-none"
-                      />
-                      <button className="px-4 py-2 bg-card-bg border border-border-color rounded-lg text-text-secondary hover:text-primary transition-colors">
-                        验证
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-3 gap-3">
-                    <div>
-                      <label className="block text-text-secondary text-sm mb-1">Temperature</label>
-                      <input
-                        type="number"
-                        min="0"
-                        max="2"
-                        step="0.1"
-                        value={newModel.temperature ?? 0.7}
-                        onChange={(e) => setNewModel({ ...newModel, temperature: parseFloat(e.target.value) })}
-                        className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary focus:border-primary focus:outline-none"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-text-secondary text-sm mb-1">Max Tokens</label>
-                      <input
-                        type="number"
-                        min="256"
-                        max="8192"
-                        step="256"
-                        value={newModel.maxTokens ?? 4096}
-                        onChange={(e) => setNewModel({ ...newModel, maxTokens: parseInt(e.target.value) })}
-                        className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary focus:border-primary focus:outline-none"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-text-secondary text-sm mb-1">Top P</label>
-                      <input
-                        type="number"
-                        min="0"
-                        max="1"
-                        step="0.1"
-                        value={newModel.topP ?? 1}
-                        onChange={(e) => setNewModel({ ...newModel, topP: parseFloat(e.target.value) })}
-                        className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary focus:border-primary focus:outline-none"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex justify-end gap-3 mt-6">
-                  <button onClick={() => setShowAddModel(false)} className="px-4 py-2 text-text-secondary hover:text-text-primary transition-colors">
-                    取消
-                  </button>
-                  <button
-                    onClick={handleAddModel}
-                    disabled={!newModel.name || !newModel.provider || !newModel.modelId || !newModel.baseUrl}
-                    className="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <Plus className="w-4 h-4" />
-                    添加模型
-                  </button>
-                </div>
-              </div>
-            </motion.div>
-          </>
-        )}
-      </AnimatePresence>
-    </motion.div>
-  );
+      </div>
+    );
+  }
 };
 
 export default AICenter;

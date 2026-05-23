@@ -49,10 +49,11 @@ const nodeTypes = [
   { id: 'webhook', name: 'Webhook', icon: Server, color: '#14B8A6', category: '集成', desc: 'HTTP回调' },
   { id: 'delay', name: '延迟等待', icon: Clock, color: '#6B7280', category: '控制', desc: '等待指定时间' },
   { id: 'parallel', name: '并行执行', icon: LayoutGrid, color: '#A855F7', category: '控制', desc: '并行分支' },
-  { id: 'subflow', name: '子流程', icon: Workflow, color: '#22C55E', category: '控制', desc: '调用其他剧本' }
+  { id: 'subflow', name: '子流程', icon: Workflow, color: '#22C55E', category: '控制', desc: '调用其他剧本' },
+  { id: 'ai_analysis', name: 'AI分析', icon: Cpu, color: '#FF6B35', category: '分析', desc: 'AI智能分析事件内容及关联告警' }
 ];
 
-const categories = ['基础', '控制', '动作', '数据', '集成'];
+const categories = ['基础', '控制', '动作', '数据', '集成', '分析'];
 
 const triggerTypes = [
   { value: 'event', label: '事件触发', desc: '当安全事件发生时自动执行' },
@@ -279,7 +280,7 @@ export default function Playbooks() {
     setFlow({
       nodes: [
         { id: 'start', type: 'trigger', name: '开始', config: {}, params: [], position: { x: 400, y: 50 } },
-        { id: 'action1', type: 'script', name: '处理事件', config: {}, params: defaultParams.script || [], script: scriptTemplates.script, position: { x: 400, y: 200 } },
+        { id: 'action1', type: 'ai_analysis', name: 'AI分析', config: {}, params: defaultParams.ai_analysis || [], position: { x: 400, y: 200 } },
         { id: 'end', type: 'notification', name: '发送通知', config: {}, params: defaultParams.notification || [], position: { x: 400, y: 350 } }
       ],
       connections: [

@@ -133,7 +133,7 @@ export default function DataIngestion() {
               partitionInterval: item.storage_partition || '1 day'
             },
             productMappings: [],
-            stats: { parsedSuccess: 0, parsedFailed: 0 }
+            stats: item.stats || { parsedSuccess: 0, parsedFailed: 0 }
           })));
         }
       } catch (error) {
@@ -190,19 +190,19 @@ export default function DataIngestion() {
   }, [activeSection, dataSources]);
 
   return (
-    <div className="flex h-full gap-6">
+    <div className="flex flex-col sm:flex-row h-full sm:gap-4 lg:gap-6">
       <LogConfigSidebar activeSection={activeSection} onSectionChange={setActiveSection} dataSourceCount={dataSources.length} currentMapping={currentMapping} />
 
-      <div className="flex-1 overflow-auto">
+      <div className="flex-1 overflow-auto p-2 sm:p-0">
         {/* Context-Aware Header */}
         <div className="mb-6">
-          <div className={`flex items-center gap-4 p-5 rounded-2xl ${section.bannerBg} border ${section.bannerBorder} mb-4`}>
-            <div className={`w-12 h-12 rounded-xl ${section.iconBg} flex items-center justify-center`}>
-              <SectionIcon className={`w-6 h-6 ${section.iconColor}`} />
+          <div className={`flex flex-col sm:flex-row items-start sm:items-center gap-3 sm:gap-4 p-4 sm:p-5 rounded-2xl ${section.bannerBg} border ${section.bannerBorder} mb-4`}>
+            <div className={`w-10 h-10 sm:w-12 sm:h-12 rounded-xl ${section.iconBg} flex items-center justify-center flex-shrink-0`}>
+              <SectionIcon className={`w-5 h-5 sm:w-6 sm:h-6 ${section.iconColor}`} />
             </div>
-            <div>
-              <h1 className="text-xl font-semibold text-text-primary">{section.title}</h1>
-              <p className="text-sm text-text-muted mt-0.5">{section.description}</p>
+            <div className="min-w-0">
+              <h1 className="text-lg sm:text-xl font-semibold text-text-primary truncate">{section.title}</h1>
+              <p className="text-sm text-text-muted mt-0.5 truncate">{section.description}</p>
             </div>
           </div>
 
@@ -235,7 +235,7 @@ export default function DataIngestion() {
 function StatCard({ icon: Icon, s, value, label }: {
   icon: any; s: keyof typeof statCardStyles; value: string | number; label: string;
 }) {
-  const style = statCardStyles[s];
+  const style = statCardStyles[s as keyof typeof statCardStyles];
   return (
     <div className={`bg-gradient-to-br ${style.card} rounded-xl p-4`}>
       <div className="flex items-center gap-3">

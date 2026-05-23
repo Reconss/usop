@@ -165,7 +165,7 @@ export default function AlertDetail({ alert, onClose, onCreateEvent, onMarkFalse
                   </span>
                   <span className={`px-2 py-0.5 rounded text-xs font-medium ${productConfig?.color} bg-white/10`}>
                     <ProductIcon className="w-3 h-3 inline mr-1" />
-                    {productConfig?.name}
+                    {productConfig?.name}</span>
                 </div>
                 
                 <h2 className="text-xl font-semibold text-text-primary mb-1">{alert.title}</h2>

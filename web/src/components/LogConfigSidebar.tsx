@@ -57,11 +57,10 @@ const LogConfigSidebar = React.memo(function LogConfigSidebar({ activeSection, o
   const fetching = useRef(false);
 
   useEffect(() => {
-    if (prevCount.current === dataSourceCount && counts.sources > 0) return;
-    prevCount.current = dataSourceCount;
+    // 移除缓存检查，始终尝试获取最新数据
     if (fetching.current) return;
-
     fetching.current = true;
+    prevCount.current = dataSourceCount;
     const fetchCounts = async () => {
       try {
         const token = localStorage.getItem('token');
@@ -77,6 +76,9 @@ const LogConfigSidebar = React.memo(function LogConfigSidebar({ activeSection, o
             fetch('/api/storage-tables?page_size=1', { headers }).then(r => r.json()).catch(() => ({} as any)),
           ]);
 
+        // 系统预置表只有2个：alert_logs 和 security_events
+        const systemTableCount = 2;
+        
         const getCount = (res: any): number => {
           if (res?.data?.total !== undefined) return res.data.total;
           if (Array.isArray(res?.data)) return res.data.length;
@@ -88,7 +90,7 @@ const LogConfigSidebar = React.memo(function LogConfigSidebar({ activeSection, o
           parsing: pipelinesRes?.data?.total ?? 0,
           logtypes: logTypesRes?.data?.total ?? 0,
           templates: getCount(formatsRes),
-          storage: getCount(storageRes),
+          storage: systemTableCount,  // 系统预置表固定为2个
         });
       } catch (error) {
         console.error('获取配置项数量失败:', error);
@@ -100,7 +102,7 @@ const LogConfigSidebar = React.memo(function LogConfigSidebar({ activeSection, o
   }, [dataSourceCount]);
 
   return (
-    <div className="w-72 bg-card-bg rounded-2xl shadow-sm border border-border-color flex flex-col h-full overflow-hidden">
+    <div className="w-20 sm:w-40 md:w-56 lg:w-64 xl:w-72 bg-card-bg rounded-2xl shadow-sm border border-border-color flex flex-col h-full overflow-hidden flex-shrink-0">
       <div className="p-5 border-b border-border-color">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-sm">

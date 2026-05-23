@@ -97,6 +97,7 @@ export default function FormatTemplate() {
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [activeTab, setActiveTab] = useState<'config' | 'fields'>('config');
   const [detectedFields, setDetectedFields] = useState<{ name: string; type: string; value: any; selected: boolean; targetName?: string }[]>([]);
+  const [testError, setTestError] = useState<string | null>(null);
   const [fieldSearchQuery, setFieldSearchQuery] = useState('');
   const [fieldSortBy, setFieldSortBy] = useState<'name' | 'type'>('name');
 
@@ -114,7 +115,14 @@ export default function FormatTemplate() {
           category: item.category || 'application',
           description: item.description,
           fields: item.fields || [],
-          parserType: item.parser_type || item.type || 'json'
+          parserType: item.parser_type || item.type || 'json',
+          sample: item.sample || '',
+          parserConfig: item.input_config || {},
+          grokPattern: item.grok_pattern || '',
+          regexPattern: item.regex_pattern || '',
+          csvDelimiter: item.delimiter || ',',
+          priority: item.priority || 100,
+          isPreset: item.is_system || false,
         })));
       }
     } catch (error) {
@@ -171,6 +179,19 @@ export default function FormatTemplate() {
     }
   };
 
+  /**
+   * JSON 样本预处理：清洗常见不标准字符（智能引号、不可见字符等）
+   */
+  const normalizeJsonSample = (sample: string): string => {
+    return sample
+      .replace(/[“”„‟″]/g, '"')
+      .replace(/[‘’‚‛′‵]/g, "'")
+      .replace(/[–—]/g, '-')
+      .replace(/[ --﻿]/g, '')
+      .replace(/[  -‏  　]/g, ' ')
+      .trim();
+  };
+
   const parseWithConfig = (sample: string, parserType: string, config?: ParserConfig): any[] => {
     if (!sample?.trim()) return [];
     const fields: any[] = [];
@@ -181,7 +202,8 @@ export default function FormatTemplate() {
     try {
       switch (parserType) {
         case 'json':
-          const jsonData = JSON.parse(sample);
+          const cleanedSample = normalizeJsonSample(sample);
+          const jsonData = JSON.parse(cleanedSample);
           const extractFields = (obj: any, prefix = '') => {
             Object.entries(obj).forEach(([key, value]) => {
               const fullKey = prefix ? `${prefix}.${key}` : key;
@@ -360,7 +382,12 @@ export default function FormatTemplate() {
     setSelectedTemplate(template);
     setTestResult(null);
     setActiveTab('config');
-    setFormData({ ...template });
+    setFormData({
+      ...formData,  // 保留未在 template 上的默认值（sample, parserConfig 等）
+      ...template,
+      parserConfig: template.parserConfig || formData.parserConfig,
+      sample: template.sample || formData.sample,
+    });
     setShowAddModal(true);
   };
 
@@ -500,7 +527,7 @@ export default function FormatTemplate() {
               </div>
               <p className="text-sm text-green-600">配置键值对的分隔符，支持自定义格式</p>
             </div>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
               <div>
                 <label className="block text-sm font-medium text-text-primary mb-2">键值分隔符</label>
                 <input
@@ -619,7 +646,7 @@ export default function FormatTemplate() {
               </div>
               <p className="text-sm text-violet-600">配置CSV分隔符和列映射</p>
             </div>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
               <div>
                 <label className="block text-sm font-medium text-text-primary mb-2">分隔符</label>
                 <select
@@ -659,7 +686,7 @@ export default function FormatTemplate() {
             </div>
             <div>
               <label className="block text-sm font-medium text-text-primary mb-2">Syslog变体</label>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3">
                 <button
                   onClick={() => updateParserConfig('syslogVariant', 'rfc3164')}
                   className={`p-3 rounded-lg border-2 text-left transition-all ${
@@ -838,7 +865,7 @@ export default function FormatTemplate() {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-card-bg border border-border-color rounded-xl w-full max-w-4xl max-h-[90vh] overflow-auto shadow-2xl"
+              className="bg-card-bg border border-border-color rounded-xl w-full max-w-lg sm:max-w-xl md:max-w-2xl lg:max-w-3xl xl:max-w-4xl max-h-[90vh] overflow-auto shadow-2xl"
               onClick={e => e.stopPropagation()}
             >
               {/* Header */}
@@ -880,7 +907,7 @@ export default function FormatTemplate() {
                 {activeTab === 'config' ? (
                   <div className="space-y-6">
                     {/* Basic Info */}
-                    <div className="grid grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
                       <div>
                         <label className="block text-sm font-medium text-text-primary mb-2">模板名称</label>
                         <input
@@ -905,7 +932,7 @@ export default function FormatTemplate() {
                     {/* Parser Type */}
                     <div>
                       <label className="block text-sm font-medium text-text-primary mb-2">解析方式</label>
-                      <div className="grid grid-cols-7 gap-2">
+                      <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-7 gap-2">
                         {parserTypes.map(parser => {
                           const Icon = parser.icon;
                           const isSelected = formData.parserType === parser.id;
@@ -1116,6 +1143,11 @@ export default function FormatTemplate() {
                       <div className="text-center py-12 text-text-muted">
                         <TestTube className="w-12 h-12 mx-auto mb-3 opacity-50" />
                         <p>暂无识别字段</p>
+                        {testError && (
+                          <div className="mt-3 px-4 py-2 bg-red-50 border border-red-200 rounded-lg text-sm text-red-600 max-w-md mx-auto">
+                            {testError}
+                          </div>
+                        )}
                         <p className="text-sm mt-1">请在"配置"页面输入样本数据并运行测试</p>
                       </div>
                     )}
