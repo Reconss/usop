@@ -153,9 +153,11 @@ def execute_agents(state: SecurityState) -> dict:
 def _get_agent(name, role, goal, tools):
     from langchain_openai import ChatOpenAI
     from app.core.config import settings
+    base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
     llm = ChatOpenAI(
-        model=settings.llm_model or "gpt-4o-mini",
-        api_key=settings.openai_api_key or os.getenv("OPENAI_API_KEY",""),
+        model=settings.llm_model or "deepseek-chat",
+        api_key=settings.openai_api_key or os.getenv("DEEPSEEK_API_KEY",""),
+        base_url=base_url,
         temperature=0.3
     )
     return Agent(role=role, goal=goal, backstory=f"负责{goal}", tools=tools, llm=llm, verbose=False)

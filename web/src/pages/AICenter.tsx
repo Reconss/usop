@@ -107,9 +107,6 @@ const AICenter: React.FC = () => {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const [showNlInput, setShowNlInput] = useState(false);
   const [analysisNlQuery, setAnalysisNlQuery] = useState('');
-  const [mentionOpen, setMentionOpen] = useState(false);
-  const [mentionFilter, setMentionFilter] = useState('');
-  const inputRef = useRef<HTMLInputElement>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [nlReply, setNlReply] = useState('');
 
@@ -149,30 +146,7 @@ const AICenter: React.FC = () => {
   useEffect(()=>{
     Promise.all([
       aiApi.getLlmProviders().then(r=>r.success&&setLlmProviders(r.data)).catch(()=>{}),
-      aiApi.getAgentProviders().then(async r=>{
-        if(r.success){
-          const providers=r.data||[];
-          setAgentProviders(providers);
-          // 优先选择本地的 Hermes Agent
-          const hermesAgent = providers.find((p:any)=>p.name==='Hermes Agent');
-          if(hermesAgent && !selectedProvider){setSelectedProvider('agent:'+hermesAgent.id);}
-          // 如果没有 Hermes Agent，自动创建
-          if(!providers.find((p:any)=>p.name==='Hermes Agent'||(p.type==='hermes'&&p.endpoint?.includes('localhost:8080')))){
-            try{
-              const res=await aiApi.addAgentProvider({
-                name:'Hermes Agent',type:'hermes',endpoint:'http://localhost:8080',api_key:'',
-                description:'本地 Hermes AI Agent，基于 DeepSeek，提供安全分析与自动化能力',
-                skills:[{name:'威胁分析',description:'安全事件分析与威胁识别'},{name:'告警分诊',description:'告警优先级评估与误报判断'},{name:'攻击链溯源',description:'MITRE ATT&CK 攻击链映射'}],
-                enabled:true
-              });
-              if(res.success){
-                const updated=await aiApi.getAgentProviders();
-                if(updated.success)setAgentProviders(updated.data||[]);
-              }
-            }catch(e){/* Hermes auto-register failed */}
-          }
-        }
-      }).catch(()=>{}),
+      aiApi.getAgentProviders().then(r=>r.success&&setAgentProviders(r.data||[])).catch(()=>{}),
       aiApi.listSkills().then(r=>r.success&&setSkills(r.data?.skills||[])).catch(()=>{}),
       aiApi.getFeedbackStats().then(r=>r.success&&setFeedbackStats(r.data)).catch(()=>{}),
       aiApi.getSessions().then(r=>r.success&&setSessions(r.data||[])).catch(()=>{}),
@@ -188,25 +162,15 @@ const AICenter: React.FC = () => {
 
   const handleSend = useCallback(async()=>{
     if(!inputMsg.trim()){addToast('info','请输入消息');return;}
-    const mentionMatch=inputMsg.match(/@([\w\u4e00-\u9fa5-]+)/);
     let sid=activeSessionId;
     if(!sid){try{const r=await aiApi.createSession({title:inputMsg.slice(0,30)});if(r.success){sid=r.data.id;setActiveSessionId(sid);setSessions(p=>[r.data,...p]);}}catch{addToast('error','创建会话失败');return;}}
     const userMsg={role:'user' as const,content:inputMsg};
     setMessages(p=>[...p,userMsg]);setInputMsg('');setChatLoading(true);setStreamingContent('');
     try{
-      // @mention → 直接调用 Agent；否则 → LangGraph 编排
-      if(mentionMatch && selectedProvider){
-        const agentName=mentionMatch[1];
-        const matchedAgent=agentProviders.find(a=>a.enabled!==false&&a.name.includes(agentName));
-        const providerId=matchedAgent?'agent:'+matchedAgent.id:selectedProvider;
-        const r=await aiApi.invokeAI({provider_id:providerId.split(':')[1],provider_type:providerId.split(':')[0],messages:[...messages,userMsg]});
-        if(r.success){const reply=r.data?.choices?.[0]?.message?.content||'无响应';let idx=0;const iv=setInterval(()=>{idx+=3;if(idx>=reply.length){clearInterval(iv);setStreamingContent('');setMessages(p=>[...p,{role:'assistant',content:reply}]);setChatLoading(false);}else setStreamingContent(reply.slice(0,idx));},20);}
-        else{setChatLoading(false);addToast('error','AI 响应失败');}
-      }else{
-        // LangGraph 编排
+      // LangGraph 编排
         const r=await aiApi.orchestrate({query:inputMsg,session_id:sid});
         if(r.success){const reply=r.data?.response||'无响应';let idx=0;const iv=setInterval(()=>{idx+=3;if(idx>=reply.length){clearInterval(iv);setStreamingContent('');setMessages(p=>[...p,{role:'assistant',content:reply}]);setChatLoading(false);}else setStreamingContent(reply.slice(0,idx));},20);}
-        else{setChatLoading(false);addToast('error','编排失败');}}
+        else{setChatLoading(false);addToast('error','编排失败');}
     }catch(e:any){setChatLoading(false);setMessages(p=>[...p,{role:'assistant',content:`请求失败: ${e.message}`}]);addToast('error',e.message);}
   },[inputMsg,selectedProvider,activeSessionId,messages,addToast]);
 
@@ -270,7 +234,7 @@ const AICenter: React.FC = () => {
           <div className="w-px h-6 bg-border-color" />
           <div className="flex-1 min-w-0">
             {mainTab==='analysis' && <SubTabBar tabs={[{id:'chat',label:'智能对话',icon:MessageSquare}]} active={analysisSub} onChange={setAnalysisSub} color="#60a5fa" />}
-            {mainTab==='config' && <SubTabBar tabs={[{id:'models',label:'模型管理',icon:Brain},{id:'agents',label:'Agent管理',icon:Bot},{id:'feedback',label:'反馈学习',icon:BookOpen}]} active={configSub} onChange={setConfigSub} color="#38bdf8" />}
+            {mainTab==='config' && <SubTabBar tabs={[{id:'models',label:'模型管理',icon:Brain},{id:'feedback',label:'反馈学习',icon:BookOpen}]} active={configSub} onChange={setConfigSub} color="#38bdf8" />}
           </div>
         </div>
 
@@ -281,7 +245,6 @@ const AICenter: React.FC = () => {
               {mainTab==='analysis' && analysisSub==='chat' && renderChat()}
 
               {mainTab==='config' && configSub==='models' && renderModels()}
-              {mainTab==='config' && configSub==='agents' && renderAgents()}
               {mainTab==='config' && configSub==='feedback' && renderFeedback()}
             </motion.div>
           </AnimatePresence>
@@ -325,13 +288,11 @@ const AICenter: React.FC = () => {
               {activeSessionId&&<span className="text-[11px] text-text-muted"><Wifi className="w-3 h-3 inline mr-1 text-emerald-500" />会话已连接</span>}
             </div>
             <div className="flex items-center gap-1.5">
-              <select value={selectedProvider} onChange={e=>setSelectedProvider(e.target.value)}
-                className="px-2 py-1 bg-page-bg border border-border-color rounded-lg text-[11px] text-text-muted font-mono max-w-[160px] cursor-pointer hover:border-border-color-hover transition-colors">
-                <option value="">AI 离线</option>
-                {agentProviders.filter(a=>a.enabled!==false).map(a=><option key={a.id} value={'agent:'+a.id}>🤖 {a.name}</option>)}
-                {llmProviders.filter(p=>p.enabled!==false).map(p=><option key={p.id} value={'llm:'+p.id}>🧠 {p.name}</option>)}
-              </select>
-              {selectedProvider&&<span className="w-1.5 h-1.5 rounded-full bg-emerald-500" title="已连接"/>}
+              <div className="flex items-center gap-1.5 text-[11px] text-text-muted">
+                <Brain className="w-3.5 h-3.5 text-blue-400" />
+                <span>AI 编排模式</span>
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" title="在线" />
+              </div>
             </div>
           </div>
 
@@ -418,62 +379,22 @@ const AICenter: React.FC = () => {
               <button key={qa.id} onClick={qa.action} className="flex items-center gap-1 px-2 py-1 text-[10px] text-text-muted hover:text-text-primary bg-page-bg border border-border-color rounded-lg hover:border-border-color-hover transition-all"><qa.icon className="w-3 h-3" style={{color:qa.color}}/>{qa.label}</button>
             ))}
               <div className="flex-1" />
-              {agentProviders.filter(a=>a.enabled!==false).length>0&&
-                <span className="text-[10px] text-text-muted/50">在输入框中输入 <span className="font-mono text-purple-400/60">@Agent名</span> 可调用 Agent 技能</span>
-              }
+
             </div>
             <div className="flex items-center gap-2">
               <div className="relative flex-1">
                 <input ref={inputRef} value={selectedProvider?inputMsg:teamMsg} onChange={e=>{
                   const val=e.target.value;
                   selectedProvider?setInputMsg(val):setTeamMsg(val);
-                  // @mention 检测
-                  const pos=e.target.selectionStart||0;
-                  const before=val.slice(0,pos);
-                  const lastAt=before.lastIndexOf('@');
-                  if(lastAt>=0&&pos-lastAt<=20){
-                    setMentionFilter(before.slice(lastAt+1));
-                    setMentionOpen(true);
-                  }else{setMentionOpen(false);}
+
                 }}
                 onKeyDown={e=>{
-                  if(mentionOpen&&e.key==='Enter'){e.preventDefault();return;}
-                  if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();selectedProvider?handleSend():handleTeamSend();}
-                  if(e.key==='Escape')setMentionOpen(false);
-                }}
+                                    if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();selectedProvider?handleSend():handleTeamSend();}
+                                  }}
                 placeholder={selectedProvider?'输入安全事件信息，AI 将辅助分析...':'输入团队讨论内容...'}
                 disabled={chatLoading}
                 className="w-full px-4 py-2.5 bg-page-bg border border-border-color rounded-xl text-sm text-text-primary placeholder:text-text-muted/50 disabled:opacity-50 focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/20 transition-all" />
-                {/* @mention 弹出层 */}
-                {mentionOpen&&(
-                  <div className="absolute bottom-full left-0 right-0 mb-1 bg-card-bg border border-border-color rounded-xl shadow-xl overflow-hidden z-10">
-                    <div className="p-1.5 text-[10px] text-text-muted/50 border-b border-border-color px-3 py-1">选择 Agent 调用</div>
-                    <div className="max-h-36 overflow-y-auto">
-                      {agentProviders.filter(a=>a.enabled!==false&&(a.name.includes(mentionFilter)||mentionFilter==='')).map(a=>{
-                        const skills=a.skills||[];
-                        return (
-                          <div key={a.id} className="flex items-center gap-2.5 px-3 py-2 cursor-pointer hover:bg-card-bg-hover transition-colors border-b border-border-color/50 last:border-0"
-                            onClick={()=>{
-                              const curVal=selectedProvider?inputMsg:teamMsg;
-                              const pos=inputRef.current?.selectionStart||curVal.length;
-                              const beforeAt=curVal.lastIndexOf('@',pos);
-                              const after=curVal.slice(pos);
-                              const newVal=curVal.slice(0,beforeAt)+'@'+a.name+' '+after;
-                              selectedProvider?setInputMsg(newVal):setTeamMsg(newVal);
-                              setMentionOpen(false);
-                              inputRef.current?.focus();
-                            }}>
-                            <div className="w-6 h-6 rounded-lg bg-purple-500/20 flex items-center justify-center text-[10px] font-bold text-purple-400 flex-shrink-0">{a.name.charAt(0)}</div>
-                            <div className="min-w-0 flex-1">
-                              <div className="text-xs font-medium text-text-primary truncate">{a.name}</div>
-                              <div className="text-[10px] text-text-muted truncate">{skills.slice(0,2).map((s:any)=>s.name).join(' · ')||a.type}</div>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
+
               </div>
               <button onClick={selectedProvider?handleSend:handleTeamSend} disabled={(selectedProvider?!inputMsg.trim():!teamMsg.trim())||(selectedProvider&&chatLoading)}
                 className="px-5 py-2.5 bg-gradient-to-br from-blue-600 to-indigo-600 text-white rounded-xl text-sm font-medium disabled:opacity-40 hover:from-blue-500 hover:to-indigo-500 transition-all active:scale-95 flex items-center gap-1.5 shadow-sm">
@@ -508,40 +429,7 @@ const AICenter: React.FC = () => {
                   <input value={autoEventCode} onChange={e=>setAutoEventCode(e.target.value)} placeholder="输入事件编号" className="flex-1 px-3 py-2 bg-page-bg border border-border-color rounded-lg text-xs font-mono text-text-primary" />
                   <button onClick={handleAutoRespond} disabled={autoLoading||!autoEventCode} className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-xs font-medium disabled:opacity-40 hover:bg-emerald-500 transition-all active:scale-95 flex items-center gap-1">{autoLoading?<Loader2 className="w-3 h-3 animate-spin"/>:<Zap className="w-3 h-3"/>}分析</button>
                 </div>
-                <div className="pt-3 border-t border-border-color">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-[11px] text-text-secondary">🔗 关联 Agent</span>
-                    {agentProviders.find(a=>a.name.includes('响应')||a.skills?.find((s:any)=>s.name.includes('封禁')))
-                      ? <span className="text-[10px] text-emerald-400 flex items-center gap-1"><Check className="w-3 h-3"/>响应Agent已注册</span>
-                      : <button onClick={async()=>{
-                          try{
-                            const r=await aiApi.addAgentProvider({
-                              name:'响应助手',type:'hermes',endpoint:'http://localhost:8080',api_key:'',
-                              description:'自动响应与处置 Agent，根据事件风险执行封禁/隔离/通知等操作',
-                              skills:[
-                                {name:'封禁IP',description:'封禁恶意IP地址'},
-                                {name:'隔离主机',description:'隔离受感染主机'},
-                                {name:'告警通知',description:'发送告警通知给相关人员'},
-                                {name:'事件升级',description:'将高风险事件升级为紧急事件'},
-                              ],
-                              enabled:true
-                            });
-                            if(r.success){
-                              const updated=await aiApi.getAgentProviders();
-                              if(updated.success)setAgentProviders(updated.data||[]);
-                              const newId=r.data?.id;
-                              if(newId)setSelectedProvider('agent:'+newId);
-                              addToast('success','响应Agent已注册，可在对话中 @响应助手 调用');
-                            }
-                          }catch{addToast('error','注册失败');}
-                        }}
-                        className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[10px] font-medium hover:bg-emerald-500 transition-all active:scale-95 flex items-center gap-1">
-                        <Plus className="w-3 h-3"/>注册响应Agent
-                      </button>
-                    }
-                  </div>
-                  <p className="text-[10px] text-text-muted/60">注册后可在智能对话中输入 <span className="font-mono text-purple-400/60">@响应助手 封禁IP 192.168.1.1</span> 直接执行</p>
-                </div>
+
               </div>
               <div className="lg:col-span-2">
                 {(autoResult?.decisions||[]).map((d:any,i:number)=>(
@@ -570,7 +458,7 @@ const AICenter: React.FC = () => {
                 <label className="block text-xs text-text-secondary mb-1 font-medium">操作指令</label>
                 <input value={skillInstruction} onChange={e=>setSkillInstruction(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleSkillRoute()} placeholder='例如: "封禁 IP 192.168.1.1"' className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-xs text-text-primary mb-2" />
                 <button onClick={handleSkillRoute} disabled={skillLoading||!skillInstruction} className="w-full px-4 py-2 bg-purple-600 text-white rounded-lg text-xs font-medium disabled:opacity-40 hover:bg-purple-500 transition-all active:scale-95 flex items-center justify-center gap-1.5 mb-2">{skillLoading?<Loader2 className="w-3.5 h-3.5 animate-spin"/>:<Play className="w-3.5 h-3.5"/>}执行</button>
-                <p className="text-[10px] text-text-muted/60 text-center">💡 在智能对话中 <span className="font-mono text-purple-400/60">@响应助手 你的指令</span> 可以直接调用技能</p>
+
                 {skillResult&&!skillResult?.error&&(
                   <div className="mt-3 p-3 bg-card-bg border border-purple-500/20 rounded-lg text-xs">
                     <div className="flex items-center gap-1.5 pb-2 border-b border-border-color mb-2"><CheckCircle className="w-3 h-3 text-emerald-400"/><span className="text-text-muted">选定技能:</span><span className="font-medium text-purple-400">{skillResult.selected_skill||'-'}</span></div>
@@ -672,114 +560,6 @@ const AICenter: React.FC = () => {
   }
 
   // ==================== AI 配置 — Agent管理 ====================
-  function renderAgents() {
-      const agentForm = () => {
-    const [testStatus, setTestStatus] = useState<'idle'|'testing'|'success'|'fail'>('idle');
-    const testConnection = async () => {
-      if(!editingAgent?.endpoint) { addToast('error','请先填写 Endpoint'); return; }
-      setTestStatus('testing');
-      try {
-        const res = await fetch(editingAgent.endpoint.replace(/\/$/,'')+'/v1/models', {
-          signal: AbortSignal.timeout(5000),
-          headers: editingAgent.api_key ? { 'Authorization': 'Bearer '+editingAgent.api_key } : {}
-        });
-        setTestStatus(res.ok ? 'success' : 'fail');
-        if(res.ok) addToast('success','连接成功！Agent 可用');
-        else addToast('error','连接失败：HTTP '+res.status);
-      } catch(e: any) {
-        setTestStatus('fail');
-        addToast('error','连接失败：'+e.message);
-      }
-    };
-    return (
-      <div className="p-4 bg-card-bg border border-purple-500/20 rounded-xl mb-4">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
-          <div className="md:col-span-2 flex items-center gap-2 pb-2 border-b border-border-color mb-1">
-            <Bot className="w-4 h-4 text-purple-400"/>
-            <span className="text-xs font-medium text-text-primary">Agent 连接配置</span>
-            {testStatus==='idle' && <span className="text-[10px] text-text-muted ml-auto">配置后点击「测试连接」验证</span>}
-            {testStatus==='testing' && <Loader2 className="w-3 h-3 animate-spin ml-auto text-purple-400"/>}
-            {testStatus==='success' && <span className="text-[10px] text-emerald-400 ml-auto flex items-center gap-1"><Check className="w-3 h-3"/>连接正常</span>}
-            {testStatus==='fail' && <span className="text-[10px] text-red-400 ml-auto flex items-center gap-1"><X className="w-3 h-3"/>连接失败</span>}
-          </div>
-          <div><label className="block text-xs text-text-secondary mb-1 font-medium">名称</label>
-            <input value={editingAgent?.name||''} onChange={e=>setEditingAgent({...editingAgent,name:e.target.value})}
-              className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-sm text-text-primary" placeholder="Hermes Agent"/></div>
-          <div><label className="block text-xs text-text-secondary mb-1 font-medium">类型</label>
-            <select value={editingAgent?.type||'hermes'} onChange={e=>setEditingAgent({...editingAgent,type:e.target.value})}
-              className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-sm text-text-primary">
-              <option value="hermes">Hermes — OpenAI 兼容 API</option>
-              <option value="openclaw">OpenClaw — 安全操作框架</option>
-              <option value="custom">自定义 Agent</option></select></div>
-          <div><label className="block text-xs text-text-secondary mb-1 font-medium">服务地址 <span className="text-text-muted font-normal">(Agent Endpoint)</span></label>
-            <input value={editingAgent?.endpoint||''} onChange={e=>setEditingAgent({...editingAgent,endpoint:e.target.value})}
-              className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-sm font-mono text-text-primary" placeholder="http://localhost:8080"/></div>
-          <div><label className="block text-xs text-text-secondary mb-1 font-medium">认证密钥 <span className="text-text-muted font-normal">(API Key, 可选)</span></label>
-            <input type="password" value={editingAgent?.api_key||''} onChange={e=>setEditingAgent({...editingAgent,api_key:e.target.value})}
-              className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-sm text-text-primary" placeholder="如不需要可留空"/></div>
-          <div className="flex items-end">
-            <button onClick={testConnection} disabled={testStatus==='testing'||!editingAgent?.endpoint}
-              className="w-full px-4 py-2 bg-page-bg border border-border-color rounded-lg text-xs text-text-secondary hover:text-text-primary hover:border-border-color-hover transition-all disabled:opacity-40 flex items-center justify-center gap-1.5">
-              {testStatus==='testing'?<Loader2 className="w-3 h-3 animate-spin"/>:<Wifi className="w-3 h-3"/>}测试连接</button>
-          </div>
-          <div className="md:col-span-2"><label className="block text-xs text-text-secondary mb-1 font-medium">描述</label>
-            <input value={editingAgent?.description||''} onChange={e=>setEditingAgent({...editingAgent,description:e.target.value})}
-              className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-sm text-text-primary" placeholder="Agent 功能描述"/></div>
-          <div className="md:col-span-2"><label className="block text-xs text-text-secondary mb-1 font-medium">注册技能 <span className="text-text-muted font-normal">(每行一个: 技能名称 | 技能描述)</span></label>
-            <textarea value={(editingAgent?.skills||[]).map((s:any)=>s.name+' | '+s.description).join('\n')}
-              onChange={e=>{const sk=e.target.value.split('\n').filter(Boolean).map(line=>{[n,...d]=line.split('|');return{name:n.trim(),description:d.join('|').trim()||n.trim()}});setEditingAgent({...editingAgent,skills:sk});}}
-              className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-sm h-20 font-mono text-text-primary" placeholder="威胁分析 | 安全事件分析与威胁识别
-告警分诊 | 告警优先级评估与误报判断
-攻击链溯源 | MITRE ATT&CK 攻击链映射"/></div>
-        </div>
-        <div className="flex gap-2 justify-end">
-          <button onClick={()=>setShowAddAgent(false)} className="px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary">取消</button>
-          <button onClick={async()=>{
-            if(!editingAgent?.name){addToast('error','请填写名称');return;}
-            setAgentFormLoading(true);
-            try{
-              if(editingAgent.id) await aiApi.updateAgentProvider(editingAgent.id,editingAgent);
-              else await aiApi.addAgentProvider(editingAgent);
-              const r=await aiApi.getAgentProviders();
-              if(r.success) setAgentProviders(r.data||[]);
-              setShowAddAgent(false);
-              addToast('success',editingAgent.id?'已更新':'已添加');
-            }catch{addToast('error','保存失败');}
-            setAgentFormLoading(false);
-          }}
-            disabled={agentFormLoading}
-            className="px-4 py-1.5 bg-purple-600 text-white rounded-lg text-xs font-medium disabled:opacity-40 hover:bg-purple-500 transition-all active:scale-95 flex items-center gap-1.5">
-            {agentFormLoading?<Loader2 className="w-3 h-3 animate-spin"/>:<Save className="w-3 h-3"/>}保存</button>
-        </div>
-      </div>
-    );
-  };
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
-        <div><h3 className="text-sm font-semibold text-text-primary"><Bot className="w-4 h-4 text-purple-400 inline mr-1"/>AI Agent 配置</h3><p className="text-xs text-text-muted mt-0.5">Agent 接口与安全技能管理。Hermes Agent (本地端口 8080) 已自动注册</p></div>
-        <div className="flex items-center gap-2">
-          <button onClick={()=>{setShowAddAgent(true);setEditingAgent({type:'hermes',skills:[],enabled:true});}} className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg text-xs font-medium hover:bg-purple-500 transition-all active:scale-95"><Plus className="w-3.5 h-3.5"/>添加</button>
-        </div>
-      </div>
-      <AnimatePresence>{showAddAgent&&<motion.div initial={{opacity:0,height:0}} animate={{opacity:1,height:'auto'}} exit={{opacity:0,height:0}} className="overflow-hidden">{agentForm()}</motion.div>}</AnimatePresence>
-      <div className="space-y-2">{(agentProviders||[]).length===0
-        ?<div className="flex flex-col items-center justify-center py-12 text-text-muted"><Bot className="w-8 h-8 mb-2 opacity-30"/><div className="text-xs">暂无 Agent 配置</div></div>
-        :agentProviders.map((pr:any)=>(
-            <div key={pr.id} className="flex items-center justify-between p-3 bg-card-bg border border-border-color rounded-lg hover:bg-card-bg-hover transition-colors">
-              <div className="flex items-center gap-3 min-w-0"><div className={'w-9 h-9 rounded-lg '+(pr.enabled!==false?'bg-purple-500/10':'bg-gray-500/10')+' flex items-center justify-center'}><Bot className={'w-4 h-4 '+(pr.enabled!==false?'text-purple-400':'text-gray-500')}/></div><div className="min-w-0"><div className="text-sm font-medium text-text-primary">{pr.name}</div><div className="text-xs text-text-muted">{pr.type} · {(pr?.skills?.length||0)} 项技能</div></div></div>
-              <div className="flex items-center gap-2">
-                <div className="hidden sm:flex gap-1">{(pr.skills||[]).slice(0,2).map((s:any,i:number)=><span key={i} className="text-[10px] px-1.5 py-0.5 bg-purple-500/10 text-purple-400 border border-purple-500/20 rounded">{s.name}</span>)}{(pr.skills||[]).length>2&&<span className="text-[10px] text-text-muted">+{(pr.skills||[]).length-2}</span>}</div>
-                <button onClick={()=>{setEditingAgent(pr);setShowAddAgent(true);}} className="p-1.5 text-text-muted hover:text-purple-400 rounded-lg hover:bg-card-bg-hover"><Edit3 className="w-3.5 h-3.5"/></button>
-                <button onClick={()=>{if(window.confirm('确定删除 Agent「'+pr.name+'」？')){(async()=>{try{await aiApi.deleteAgentProvider(pr.id);setAgentProviders((await aiApi.getAgentProviders()).data||[]);addToast('success','已删除');}catch{addToast('error','删除失败');}})();}}} className="p-1.5 text-text-muted hover:text-red-400 rounded-lg hover:bg-card-bg-hover"><Trash2 className="w-3.5 h-3.5"/></button>
-              </div>
-            </div>
-          ))}</div>
-    </div>
-  );
-}
-
-  // ==================== AI 配置 — 反馈学习 ====================
   function renderFeedback() {
     return (
       <div>
