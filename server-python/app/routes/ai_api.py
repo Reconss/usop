@@ -1283,3 +1283,173 @@ def orchestrate_approve():
     from app.ai_analysis.approval import approve_action
     result = approve_action(action_id, approved)
     return jsonify(result)
+
+@ai_api_bp.route('/workflows', methods=['GET'])
+@login_required
+def list_workflows():
+    """获取所有保存的工作流"""
+    from app.models import SystemConfig
+    configs = SystemConfig.query.filter(SystemConfig.key.like('ai_workflow_%')).all()
+    result = []
+    for c in configs:
+        import json as _j
+        try: val = _j.loads(c.value) if c.value else {}
+        except: val = {}
+        val['id'] = c.key.replace('ai_workflow_', '')
+        result.append(val)
+    return jsonify({'success': True, 'data': result})
+
+
+
+@ai_api_bp.route('/pipeline/status', methods=['GET'])
+@login_required
+def pipeline_status():
+    """获取告警处理流水线运行状态"""
+    import json, os
+    status_file = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'pipeline_status.json')
+    status = {"running": False, "last_run": None, "total_analyzed": 0, "total_events": 0, "error": None}
+    if os.path.exists(status_file):
+        try:
+            with open(status_file) as f:
+                status.update(json.load(f))
+        except: pass
+    return jsonify({'success': True, 'data': status})
+
+
+@ai_api_bp.route('/pipeline/start', methods=['POST'])
+@login_required
+def pipeline_start():
+    """启动定时告警分析"""
+    import json, os, threading
+    from flask import current_app
+    status_file = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'pipeline_status.json')
+    
+    def run_analysis():
+        with current_app.app_context():
+            from app.ai_analysis.alert_analyzer import analyze_alert_batch
+            try:
+                result = analyze_alert_batch(limit=50)
+                status = {"running": False, "last_run": __import__('datetime').datetime.utcnow().isoformat(),
+                          "total_analyzed": result.get('analyzed', 0), "total_events": result.get('events_created', 0),
+                          "error": result.get('error')}
+            except Exception as e:
+                status = {"running": False, "error": str(e)}
+            os.makedirs(os.path.dirname(status_file), exist_ok=True)
+            with open(status_file, 'w') as f:
+                json.dump(status, f)
+    
+    os.makedirs(os.path.dirname(status_file), exist_ok=True)
+    with open(status_file, 'w') as f:
+        json.dump({"running": True, "last_run": None, "error": None}, f)
+    
+    t = threading.Thread(target=run_analysis, daemon=True)
+    t.start()
+    return jsonify({'success': True, 'message': '分析已启动'})
+
+
+@ai_api_bp.route('/pipeline/stop', methods=['POST'])
+@login_required
+def pipeline_stop():
+    """停止定时分析（标记停止）"""
+    import json, os
+    status_file = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'pipeline_status.json')
+    os.makedirs(os.path.dirname(status_file), exist_ok=True)
+    with open(status_file, 'w') as f:
+        json.dump({"running": False, "last_run": None, "stopped": True}, f)
+    return jsonify({'success': True, 'message': '已停止'})
+
+
+@ai_api_bp.route('/alerts/schema', methods=['GET'])
+@login_required
+def get_alerts_schema():
+    from app.timescaledb import get_tsdb
+    from sqlalchemy import text
+    try:
+        tsdb = get_tsdb(); sess = tsdb.get_session()
+        rows = sess.execute(text("SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_name = 'alerts' ORDER BY ordinal_position")).fetchall()
+        tsdb.close_session(sess)
+        fields = [{"name": r[0], "type": r[1], "nullable": r[2] == 'YES', "label": _alert_field_label(r[0])} for r in rows]
+        parsed_sub = [
+            {"name": "extra_data.parsed.attack_type", "type": "text", "label": "攻击类型(解析)"},
+            {"name": "extra_data.parsed.method", "type": "text", "label": "请求方法(解析)"},
+            {"name": "extra_data.parsed.uri", "type": "text", "label": "请求URI(解析)"},
+            {"name": "extra_data.parsed.risk_level", "type": "text", "label": "风险等级(解析)"},
+        ]
+        return jsonify({'success': True, 'data': fields + parsed_sub})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+def _alert_field_label(name):
+    labels = {'id':'ID','alert_code':'告警编号','title':'标题','description':'描述','severity':'严重度','status':'状态','source':'来源','source_product':'数据源产品','source_type':'数据源类型','category':'分类','confidence':'置信度','src_ip':'源IP','src_port':'源端口','dst_ip':'目标IP','dst_port':'目标端口','protocol':'协议','hostname':'主机名','raw_log':'原始日志','first_seen':'首次发现','last_seen':'最后发现','tags':'标签'}
+    return labels.get(name, name)
+
+@ai_api_bp.route('/whitelist/rules', methods=['GET'])
+@login_required
+def get_whitelist_rules():
+    """获取白名单规则列表"""
+    from app.ai_analysis.whitelist import get_rules
+    rules = get_rules()
+    return jsonify({'success': True, 'data': rules})
+
+@ai_api_bp.route('/whitelist/rules', methods=['POST'])
+@login_required
+def add_whitelist_rule():
+    """添加白名单规则"""
+    data = request.get_json() or {}
+    name = data.get('name', '')
+    conditions = data.get('conditions', {})
+    reason = data.get('reason', '')
+    if not name:
+        return jsonify({'success': False, 'error': '规则名称不能为空'}), 400
+    from app.ai_analysis.whitelist import get_rules, save_rules
+    rules = get_rules()
+    rules.append({"name": name, "conditions": conditions, "reason": reason or name})
+    save_rules(rules)
+    return jsonify({'success': True, 'message': '规则已添加'})
+
+@ai_api_bp.route('/whitelist/rules/<int:index>', methods=['DELETE'])
+@login_required
+def delete_whitelist_rule(index):
+    """删除白名单规则"""
+    from app.ai_analysis.whitelist import get_rules, save_rules
+    rules = get_rules()
+    if index < 0 or index >= len(rules):
+        return jsonify({'success': False, 'error': '规则不存在'}), 404
+    rules.pop(index)
+    save_rules(rules)
+    return jsonify({'success': True, 'message': '规则已删除'})
+
+@ai_api_bp.route('/workflows', methods=['POST'])
+@login_required
+def save_workflow():
+    """保存工作流配置"""
+    from app.models import SystemConfig, db
+    from uuid import uuid4
+    data = request.get_json() or {}
+    name = data.get('name', 'default')
+    workflow_id = data.get('id', str(uuid4())[:8])
+    import json as _j
+    config = SystemConfig.query.filter_by(key=f'ai_workflow_{workflow_id}').first()
+    if not config:
+        config = SystemConfig(key=f'ai_workflow_{workflow_id}', value='{}', category='ai_workflow')
+        db.session.add(config)
+    config.value = _j.dumps({
+        'name': name,
+        'nodes': data.get('nodes', []),
+        'connections': data.get('connections', []),
+        'config': data.get('config', {}),
+        'enabled': data.get('enabled', True),
+    }, ensure_ascii=False)
+    db.session.commit()
+    return jsonify({'success': True, 'data': {'id': workflow_id, 'name': name}})
+
+
+@ai_api_bp.route('/workflows/<workflow_id>', methods=['DELETE'])
+@login_required
+def delete_workflow(workflow_id):
+    from app.models import SystemConfig, db
+    config = SystemConfig.query.filter_by(key=f'ai_workflow_{workflow_id}').first()
+    if config:
+        db.session.delete(config)
+        db.session.commit()
+    return jsonify({'success': True})

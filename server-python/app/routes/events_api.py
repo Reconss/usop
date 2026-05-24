@@ -158,6 +158,8 @@ def create_event():
     if alert_info:
         extra_data['related_alerts'] = alert_info
         extra_data['alert_count'] = len(alert_info)
+    if data.get('attachments'):
+        extra_data['attachments'] = data['attachments']
     
     # 创建事件
     event = Event(
@@ -363,6 +365,70 @@ def update_event_status(event_id):
     return jsonify({
         'success': True,
         'data': event.to_dict()
+    })
+
+
+@events_api_bp.route('/events/<event_id>/playbooks/<playbook_id>/execute', methods=['POST'])
+@login_required
+def trigger_event_playbook(event_id, playbook_id):
+    """执行事件关联的剧本（带事件上下文传递给AI分析等节点）"""
+    from app.models import Event as DBEvent
+    from app.database import db as pg_db
+    import requests as http_requests
+    import json
+
+    # 查询事件
+    if event_id.isdigit():
+        event = DBEvent.query.get(int(event_id))
+    else:
+        event = DBEvent.query.filter_by(event_code=event_id).first()
+    if not event:
+        return jsonify({'success': False, 'error': '事件不存在'}), 404
+
+    # 构建事件上下文
+    extra = event.extra_data or {}
+    related_alerts = extra.get('related_alerts', [])
+    event_context = {
+        'id': event.id,
+        'eventCode': event.event_code,
+        'title': event.title,
+        'description': event.description,
+        'severity': event.severity,
+        'eventType': event.category or '其他',
+        'sourceIp': event.source or '',
+        'affectedAssets': [],
+        'relatedAlerts': related_alerts,
+        'timestamp': event.timestamp.isoformat() if event.timestamp else None,
+    }
+
+    # 调用剧本执行 API
+    try:
+        resp = http_requests.post(
+            f'http://127.0.0.1:5001/api/playbooks-api/playbooks/{playbook_id}/execute',
+            json={'event_context': event_context},
+            timeout=300
+        )
+        playbook_result = resp.json() if resp.ok else {'success': False, 'error': f'HTTP {resp.status_code}'}
+    except Exception as e:
+        playbook_result = {'success': False, 'error': str(e)}
+
+    # 创建处置记录
+    user_id = getattr(request, 'user_id', None)
+    user_name = getattr(request, 'username', 'system')
+    create_action_record(
+        event_id=event.event_code,
+        action='playbook_triggered',
+        user_id=user_id,
+        user_name=user_name,
+        content=f'执行剧本 #{playbook_id}',
+        playbook_id=playbook_id,
+        playbook_result=playbook_result.get('data', {})
+    )
+
+    return jsonify({
+        'success': playbook_result.get('success', False),
+        'data': playbook_result.get('data', {}),
+        'event_context': event_context
     })
 
 

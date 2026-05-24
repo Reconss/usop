@@ -390,35 +390,14 @@ const AlertDetailDrawer = ({
               <h3 className="text-sm font-semibold text-text-primary">告警详情</h3>
             </div>
             <div className="flex flex-wrap gap-x-8 gap-y-2 text-sm">
-              <button
-                onClick={() => { fetchAlerts(); }}
-                className="p-2 bg-page-bg border border-border-color rounded-lg hover:bg-card-bg transition-colors"
-                title="刷新数据"
-              >
-                <RefreshCw className={`w-4 h-4 text-text-secondary ${isLoading ? 'animate-spin' : ''}`} />
-              </button>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-text-muted">分类:</span>
                 <span className="text-text-primary font-medium">{alert.category || '-'}</span>
               </div>
-              <button
-                onClick={() => { fetchAlerts(); }}
-                className="p-2 bg-page-bg border border-border-color rounded-lg hover:bg-card-bg transition-colors"
-                title="刷新数据"
-              >
-                <RefreshCw className={`w-4 h-4 text-text-secondary ${isLoading ? 'animate-spin' : ''}`} />
-              </button>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-text-muted">数据源:</span>
                 <span className="text-text-primary">{alert.source || '-'}</span>
               </div>
-              <button
-                onClick={() => { fetchAlerts(); }}
-                className="p-2 bg-page-bg border border-border-color rounded-lg hover:bg-card-bg transition-colors"
-                title="刷新数据"
-              >
-                <RefreshCw className={`w-4 h-4 text-text-secondary ${isLoading ? 'animate-spin' : ''}`} />
-              </button>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-text-muted">主机/资产:</span>
                 <span className="text-text-primary">{alert.hostname || '-'}</span>

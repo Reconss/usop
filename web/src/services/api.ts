@@ -596,6 +596,14 @@ export const aiApi = {
   gatewayExecuteTool: (toolName: string, data: any) => 
     request(`/ai-api/gateway/tools/${toolName}/execute`, { method: 'POST', body: data }),
 
+  /** LangGraph + CrewAI 编排分析 */
+  orchestrate: (data: { query: string; session_id?: string }) =>
+    request('/ai-api/orchestrate', { method: 'POST', body: data }),
+
+  /** 编排人工审批 */
+  orchestrateApprove: (data: { session_id: string; approved: boolean }) =>
+    request('/ai-api/orchestrate/approve', { method: 'POST', body: data }),
+
   // ===== AI Capabilities =====
   copilotAnalyzeEvent: (data: any) => request('/ai-api/copilot/analyze-event', { method: 'POST', body: data }),
   alertsAnalyzeBatch: (data?: any) => request('/ai-api/alerts/analyze-batch', { method: 'POST', body: data || {} }),
@@ -857,4 +865,11 @@ export const systemConfigApi = {
     request(`/config/config/${key}`, { method: 'PUT', body: { value, category } }),
   batchUpdate: (items: { key: string; value: string; category?: string }[]) =>
     request('/config/config/batch', { method: 'POST', body: { items } }),
+};
+
+
+export const workflowApi = {
+  list: () => request("/ai-api/workflows"),
+  save: (data: any) => request("/ai-api/workflows", {method:"POST",body:data}),
+  delete: (id:string) => request("/ai-api/workflows/"+id, {method:"DELETE"}),
 };

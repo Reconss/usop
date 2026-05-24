@@ -424,7 +424,12 @@ const parseWithConfig = (sample: string, parserType: string, config?: any): Arra
   try {
     switch (parserType) {
       case 'json':
-        const jsonData = JSON.parse(sample);
+        let jsonData;
+        try { jsonData = JSON.parse(sample); }
+        catch { 
+          fields.push({ name: '_parse_error', type: 'string', value: 'JSON 格式错误，请检查样本日志' });
+          return fields;
+        }
         const extractFields = (obj: any, prefix = '') => {
           Object.entries(obj).forEach(([key, value]) => {
             const fullKey = prefix ? `${prefix}.${key}` : key;
@@ -531,7 +536,7 @@ const parseWithConfig = (sample: string, parserType: string, config?: any): Arra
 const SYSTEM_FIELD_NAMES = new Set([
   'id', 'alert_code', 'event_code', 'status', 'source', 'source_type',
   'confidence', 'asset_id', 'asset_name', 'affected_assets', 'event_ids',
-  'assigned_to', 'parsed_data', 'extra_data', 'tags',
+  'assigned_to', 'extra_data', 'tags',
   'first_seen', 'last_seen', 'created_at', 'updated_at',
 ]);
 
@@ -675,7 +680,8 @@ export default function SmartParser() {
               linkedPipelines: item.linked_pipelines || [],
               fieldMappings: fieldMappings,
               filterRules: item.filter_rules || [],
-              parserConfig: item.input_config || {}
+              parserConfig: item.input_config || {},
+              sample: item.sample || item.sample_log || '',
             };
           }) as any);
         }
@@ -1117,6 +1123,7 @@ export default function SmartParser() {
     try {
       const payload = {
         name: formData.name.trim(),
+        sample: formData.sample,
         input_format: formData.parser,
         description: formData.description.trim(),
         priority: formData.priority,
@@ -1214,6 +1221,7 @@ export default function SmartParser() {
     try {
       const payload = {
         name: formData.name.trim(),
+        sample: formData.sample,
         input_format: formData.parser,
         description: formData.description.trim(),
         priority: formData.priority,

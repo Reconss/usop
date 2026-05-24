@@ -9,9 +9,9 @@ import {
   AlertCircle, Settings, PanelLeftClose, PanelLeft,
   RefreshCw, Layers, Lightbulb,
   ShieldCheck, Blocks, BookOpen, Radar, Gauge, Combine,
-  Wrench, Upload, FileJson, Flag, Link2, Wifi, CheckCircle, ChevronRight
+  Wrench, Upload, FileJson, Flag, Link2, Wifi, CheckCircle, ChevronRight, Database
 } from 'lucide-react';
-import { aiApi } from '../services/api';
+import { aiApi, request as apiRequest } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 
 interface LlmProvider { id: string; name: string; type: string; base_url: string; api_key: string; model: string; temperature?: number; max_tokens?: number; timeout?: number; enabled?: boolean; }
@@ -80,9 +80,21 @@ const SubTabBar: React.FC<{tabs:{id:string;label:string;icon:React.ElementType}[
 // ==================== 主组件 ====================
 const AICenter: React.FC = () => {
   const { user } = useAuth();
-  const [mainTab, setMainTab] = useState('analysis');
+  const [mainTab, setMainTab] = useState(localStorage.getItem('ai_mainTab') || 'analysis');
   const [analysisSub, setAnalysisSub] = useState('chat');
   const [configSub, setConfigSub] = useState('models');
+  const [pipelineRunning, setPipelineRunning] = useState(false);
+  const [pipelineLastRun, setPipelineLastRun] = useState<string|null>(null);
+  const [pipelineStats, setPipelineStats] = useState<any>({analyzed:0,events:0,high_risk:0});
+  const [pendingActions, setPendingActions] = useState<any[]>([]);
+  const [approvalLoading, setApprovalLoading] = useState(false);
+  const [cronResult, setCronResult] = useState<any>(null);
+  const [cronLoading, setCronLoading] = useState(false);
+  const [wlRules, setWlRules] = useState<any[]>([]);
+  const [wlLoading, setWlLoading] = useState(false);
+  const [wlNewRule, setWlNewRule] = useState<any>({name:'',reason:'',conditions:[{field:'src_ip',op:'eq',value:''}]});
+  const [alertFields, setAlertFields] = useState<any[]>([]);
+  const [wfLoading, setWfLoading] = useState(false);
 
   const [llmProviders, setLlmProviders] = useState<LlmProvider[]>([]);
   const [agentProviders, setAgentProviders] = useState<AgentProvider[]>([]);
@@ -153,6 +165,19 @@ const AICenter: React.FC = () => {
     ]);
   },[]);
 
+  useEffect(()=>{
+    apiRequest('/ai-api/pipeline/status').then(r => {
+      if(r.success){const d=r.data||{};setPipelineRunning(d.running);setPipelineLastRun(d.last_run);setPipelineStats({analyzed:d.total_analyzed||0,events:d.total_events||0});}
+    }).catch(()=>{});
+    apiRequest('/ai-api/approval/pending').then(r => {
+      if(r.success) setPendingCount(r.data?.length||0);
+    }).catch(()=>{});
+  },[]);
+
+  useEffect(()=>{
+    localStorage.setItem('ai_mainTab', mainTab);
+  },[mainTab]);
+
   useEffect(()=>{chatEndRef.current?.scrollIntoView({behavior:'smooth'});},[messages,streamingContent]);
   useEffect(()=>{teamEndRef.current?.scrollIntoView({behavior:'smooth'});},[teamMessages]);
 
@@ -204,7 +229,7 @@ const AICenter: React.FC = () => {
     {id:'attack',label:'攻击链',icon:GitBranch,color:'#f472b6',action:()=>{setInputMsg('请追踪事件编号的攻击链');}},
     {id:'respond',label:'智能响应',icon:Zap,color:'#10b981',action:()=>{setInputMsg('请评估事件编号 的风险并建议处置');}},
     {id:'intel',label:'威胁情报',icon:Search,color:'#8b5cf6',action:()=>{setInputMsg('查询IP 的威胁情报');}},
-    {id:'batch',label:'定时分析',icon:RefreshCw,color:'#6366f1',action:async()=>{try{const r=await aiApi.request('/ai-api/cron/analyze-alerts');if(r.success)addToast('success','分析完成: '+r.analyzed+'条');else addToast('error',r.error||'分析失败');}catch(e:any){addToast('error',e.message);}}},
+    {id:'batch',label:'定时分析',icon:RefreshCw,color:'#6366f1',action:async()=>{try{const r=await apiRequest('/ai-api/cron/analyze-alerts');if(r.success)addToast('success','分析完成: '+r.analyzed+'条');else addToast('error',r.error||'分析失败');}catch(e:any){addToast('error',e.message);}}},
   ];
 
   // ==================== 主渲染 ====================
@@ -222,12 +247,22 @@ const AICenter: React.FC = () => {
               <button onClick={()=>setMainTab('analysis')}
                 className={'flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all '+(mainTab==='analysis'?'text-white shadow-sm':'text-text-muted hover:text-text-secondary')}
                 style={mainTab==='analysis'?{background:'linear-gradient(135deg, #3b82f6, #6366f1)'}:{}}>
-                <Radar className="w-3 h-3" />分析中心
+                <MessageSquare className="w-3 h-3" />智能调查
+              </button>
+              <button onClick={()=>setMainTab('monitor')}
+                className={'flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all '+(mainTab==='monitor'?'text-white shadow-sm':'text-text-muted hover:text-text-secondary')}
+                style={mainTab==='monitor'?{background:'linear-gradient(135deg, #f59e0b, #ef4444)'}:{}}>
+                <AlertTriangle className="w-3 h-3" />告警监控
+              </button>
+              <button onClick={()=>setMainTab('automation')}
+                className={'flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all '+(mainTab==='automation'?'text-white shadow-sm':'text-text-muted hover:text-text-secondary')}
+                style={mainTab==='automation'?{background:'linear-gradient(135deg, #10b981, #059669)'}:{}}>
+                <GitBranch className="w-3 h-3" />自动化规则
               </button>
               <button onClick={()=>setMainTab('config')}
                 className={'flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all '+(mainTab==='config'?'text-white shadow-sm':'text-text-muted hover:text-text-secondary')}
                 style={mainTab==='config'?{background:'linear-gradient(135deg, #0ea5e9, #06b6d4)'}:{}}>
-                <Wrench className="w-3 h-3" />AI 配置
+                <Settings className="w-3 h-3" />系统配置
               </button>
             </div>
           </div>
@@ -244,7 +279,8 @@ const AICenter: React.FC = () => {
             <motion.div key={mainTab+'-'+analysisSub+'-'+configSub} initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:0.12}}>
               {mainTab==='analysis' && analysisSub==='chat' && renderChat()}
               {mainTab==='analysis' && analysisSub==='capabilities' && renderCapabilities()}
-
+              {mainTab==='monitor' && renderMonitorCenter()}
+              {mainTab==='automation' && renderAutomationCenter()}
               {mainTab==='config' && configSub==='models' && renderModels()}
               {mainTab==='config' && configSub==='cron' && renderCron()}
               {mainTab==='config' && configSub==='approval' && renderApproval()}
@@ -257,7 +293,193 @@ const AICenter: React.FC = () => {
   );
 
   // ==================== 智能对话（团队协作 + AI 分析） ====================
-  function renderCapabilities() {
+  
+  // ===== 告警监控 =====
+    function renderMonitorCenter() {
+    const loadWlRules = async () => {
+      setWlLoading(true);
+      try{const r=await apiRequest('/ai-api/whitelist/rules');if(r.success)setWlRules(r.data||[]);}catch(e){}
+      setWlLoading(false);
+    };
+    if(wlRules.length===0)setTimeout(()=>loadWlRules(),200);
+    // 状态在 main 组件中定义: pipelineStatus / pipelineRunning / setPipelineRunning
+    const pipelineSteps = [
+      {name:'数据采集',icon:Database,color:'text-blue-400',desc:'TimescaleDB alerts超表\nWAF/IDS日志实时写入'},
+      {name:'白名单过滤',icon:Filter,color:'text-gray-400',desc:'内置规则匹配\n命中→false_positive'},
+      {name:'AI研判',icon:Bot,color:'text-amber-400',desc:'LLM分析告警\nrisk_score(1-100)'},
+      {name:'风险决策',icon:ShieldCheck,color:'text-red-400',desc:'score>=80→创建事件\n<80→标记ai_analyzed'},
+      {name:'处置输出',icon:FileText,color:'text-emerald-400',desc:'events表写入\nalerts状态更新'},
+    ];
+    return (
+      <div className="space-y-4">
+        {/* 状态与控制栏 */}
+        <div className="bg-card-bg border border-border-color rounded-xl p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-3">
+              <div className={'flex items-center gap-2 '+(pipelineRunning?'text-emerald-400':'text-gray-500')}>
+                <span className={'w-2.5 h-2.5 rounded-full '+(pipelineRunning?'bg-emerald-500 animate-pulse':'bg-gray-600')} />
+                <span className="text-xs font-medium">{pipelineRunning?'运行中':'已停止'}</span>
+              </div>
+              {pipelineLastRun && (
+                <span className="text-[10px] text-text-muted">上次: {new Date(pipelineLastRun).toLocaleString()}</span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <button onClick={async()=>{
+                try{const r=await apiRequest('/ai-api/pipeline/status');if(r.success){const d=r.data||{};setPipelineRunning(d.running);setPipelineLastRun(d.last_run);setPipelineStats({analyzed:d.total_analyzed||0,events:d.total_events||0});}
+                }catch(e){}}
+              } className="px-2.5 py-1.5 text-[10px] bg-page-bg border border-border-color rounded-lg text-text-secondary hover:text-text-primary hover:border-border-color-hover transition-all flex items-center gap-1">
+                <RefreshCw className="w-3 h-3"/>刷新状态
+              </button>
+              {pipelineRunning ? (
+                <button onClick={async()=>{try{await apiRequest('/ai-api/pipeline/stop',{method:'POST'});setPipelineRunning(false);addToast('info','已停止');}catch(e){}}}
+                  className="px-3 py-1.5 text-[10px] bg-red-600/80 text-white rounded-lg hover:bg-red-500 transition-all">停止</button>
+              ) : (
+                <button onClick={async()=>{try{const r=await apiRequest('/ai-api/pipeline/start',{method:'POST'});setPipelineRunning(true);addToast('success','分析已启动');}catch(e){}setTimeout(async()=>{try{const r=await apiRequest('/ai-api/pipeline/status');if(r.success){const d=r.data||{};setPipelineRunning(d.running);setPipelineLastRun(d.last_run);setPipelineStats({analyzed:d.total_analyzed||0,events:d.total_events||0});}}catch(e){}},3000);}}
+                  className="px-3 py-1.5 text-[10px] bg-emerald-600 text-white rounded-lg hover:bg-emerald-500 transition-all">启动分析</button>
+              )}
+            </div>
+          </div>
+          <div className="grid grid-cols-3 gap-3 mt-3 pt-3 border-t border-border-color">
+            <div className="text-center"><div className="text-lg font-bold text-text-primary">{pipelineStats.analyzed}</div><div className="text-[10px] text-text-muted">已分析告警</div></div>
+            <div className="text-center"><div className="text-lg font-bold text-emerald-400">{pipelineStats.events}</div><div className="text-[10px] text-text-muted">已生成事件</div></div>
+            <div className="text-center"><div className="text-lg font-bold text-amber-400">{pipelineStats.high_risk||0}</div><div className="text-[10px] text-text-muted">高风险</div></div>
+          </div>
+        </div>
+
+        {/* 处理流水线 */}
+        <div className="bg-card-bg border border-border-color rounded-xl p-5">
+          <h3 className="text-xs font-semibold text-text-primary mb-4 flex items-center gap-2"><Activity className="w-4 h-4 text-amber-400"/>处理流水线</h3>
+          <div className="flex items-center justify-between gap-1">
+            {pipelineSteps.map((p,i)=>(
+              <div key={i} className="flex items-center gap-1 flex-1">
+                <div className={'flex-1 flex flex-col items-center text-center p-2.5 rounded-xl border-2 bg-page-bg min-h-[95px] border-'+p.color.split('-')[1]+'-500/30'}>
+                  <p.icon className={'w-5 h-5 mb-1 '+p.color}/>
+                  <div className="text-[10px] font-semibold text-text-primary">{p.name}</div>
+                  <div className="text-[8px] text-text-muted mt-0.5 leading-tight whitespace-pre-line">{p.desc}</div>
+                </div>
+                {i<pipelineSteps.length-1&&<div className="text-text-muted/20 text-lg flex-shrink-0">→</div>}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* 能力说明 */}
+        <div className="grid grid-cols-3 gap-3">
+          {[
+            {label:'LLM调用',icon:Bot,desc:'_deepseek_request',color:'text-amber-400'},
+            {label:'批量处理',icon:Cpu,desc:'analyze_alert_batch()',color:'text-blue-400'},
+            {label:'事件创建',icon:FileText,desc:'CreateIncidentTool',color:'text-emerald-400'},
+          ].map((c,i)=>(
+            <div key={i} className="bg-card-bg border border-border-color rounded-xl p-3">
+              <c.icon className={'w-5 h-5 mb-1.5 '+c.color}/>
+              <div className="text-xs font-medium text-text-primary">{c.label}</div>
+              <div className="text-[9px] text-text-muted mt-0.5 font-mono">{c.desc}</div>
+            </div>
+          ))}
+        </div>
+        {/* 白名单规则 */}
+        <div className="bg-card-bg border border-border-color rounded-xl p-3">
+          <div className="flex items-center justify-between mb-2">
+            <h4 className="text-xs font-semibold text-text-primary"><Filter className="w-4 h-4 text-gray-400 inline mr-1"/>白名单规则 ({wlRules.length}条)</h4>
+            <button onClick={()=>loadWlRules()} className="text-[10px] text-blue-400 hover:text-blue-300 transition-colors">刷新</button>
+          </div>
+          <div className="flex items-center gap-1.5 mb-2 flex-wrap">
+            <input value={wlNewRule.name} onChange={e=>setWlNewRule({...wlNewRule,name:e.target.value})} placeholder="规则名" className="w-28 px-2 py-1.5 text-xs bg-page-bg border border-border-color rounded text-text-primary"/>
+            <input value={wlNewRule.reason} onChange={e=>setWlNewRule({...wlNewRule,reason:e.target.value})} placeholder="理由" className="w-28 px-2 py-1.5 text-xs bg-page-bg border border-border-color rounded text-text-primary"/>
+            <select value={wlNewRule.conditions[0].field} onChange={e=>setWlNewRule({...wlNewRule,conditions:[{...wlNewRule.conditions[0],field:e.target.value}]})} className="w-32 px-2 py-1.5 text-xs bg-page-bg border border-border-color rounded text-text-primary">
+              {alertFields.map((f:any)=><option key={f.name} value={f.name}>{f.name}</option>)}
+            </select>
+            <select value={wlNewRule.conditions[0].op} onChange={e=>setWlNewRule({...wlNewRule,conditions:[{...wlNewRule.conditions[0],op:e.target.value}]})} className="w-24 px-2 py-1.5 text-xs bg-page-bg border border-border-color rounded text-text-primary">
+              <option value="eq">等于 (=)</option>
+              <option value="ne">不等于 (!=)</option>
+              <option value="contains">包含</option>
+              <option value="not_contains">不包含</option>
+              <option value="prefix">前缀匹配</option>
+              <option value="suffix">后缀匹配</option>
+              <option value="regex">正则匹配</option>
+              <option value="in">属于列表</option>
+              <option value="cidr">IP网段</option>
+              <option value="gt">大于</option>
+              <option value="lt">小于</option>
+              <option value="range">范围</option>
+            </select>
+            <input value={wlNewRule.conditions[0].value} onChange={e=>setWlNewRule({...wlNewRule,conditions:[{...wlNewRule.conditions[0],value:e.target.value}]})} placeholder={wlNewRule.conditions[0].op==='in'?'用逗号分隔':wlNewRule.conditions[0].op==='cidr'?'如 10.0.0.0/8':wlNewRule.conditions[0].op==='range'?'min,max':wlNewRule.conditions[0].op==='regex'?'正则表达式':'匹配值'} className="w-36 px-2 py-1.5 text-xs bg-page-bg border border-border-color rounded text-text-primary"/>
+            <button onClick={async()=>{
+              if(!wlNewRule.name)return;
+              try{await apiRequest('/ai-api/whitelist/rules',{method:'POST',body:{name:wlNewRule.name,conditions:{[wlNewRule.conditions[0].field]:wlNewRule.conditions[0].value},reason:wlNewRule.reason}});addToast('success','已添加');loadWlRules();setWlNewRule({name:'',reason:'',conditions:[{field:'src_ip',op:'eq',value:''}]});}catch(e:any){addToast('error',e.message);}
+            }} className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-500">添加</button>
+          </div>
+          <div className="space-y-1 max-h-32 overflow-y-auto">
+            {wlRules.length===0 ? (
+              <div className="text-[10px] text-text-muted text-center py-2">暂无自定义规则</div>
+            ) : wlRules.slice(0,5).map((rule:any,i:number)=>(
+              <div key={i} className="flex items-center justify-between px-2 py-1 bg-page-bg rounded border border-border-color text-[10px]">
+                <span className="text-text-primary truncate">{rule.name} <span className="text-text-muted">{JSON.stringify(rule.conditions)}</span></span>
+                <button onClick={async()=>{try{await apiRequest('/ai-api/whitelist/rules/'+i,{method:'DELETE'});addToast('success','已删除');loadWlRules();}catch(e){}}} className="p-0.5 text-text-muted hover:text-red-400 flex-shrink-0"><Trash2 className="w-3 h-3"/></button>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+function renderAutomationCenter() {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="text-sm font-semibold text-text-primary flex items-center gap-2"><GitBranch className="w-5 h-5 text-emerald-400"/>自动化规则</h2>
+          <button onClick={()=>setMainTab('config')} className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-medium hover:bg-emerald-500 transition-all active:scale-95">前往配置</button>
+        </div>
+        <p className="text-xs text-text-muted mb-3">配置告警处理流程、审批规则和Agent启用状态</p>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div className="bg-card-bg border border-border-color rounded-xl p-4">
+            <h3 className="text-xs font-semibold text-text-primary mb-3 flex items-center gap-2"><ShieldCheck className="w-4 h-4 text-amber-400"/>审批规则</h3>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between p-2 bg-page-bg rounded-lg border border-border-color">
+                <span className="text-xs text-text-primary">block_ip（封禁IP）</span>
+                <span className="text-[10px] px-2 py-0.5 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded">需审批</span>
+              </div>
+              <div className="flex items-center justify-between p-2 bg-page-bg rounded-lg border border-border-color">
+                <span className="text-xs text-text-primary">isolate_host（隔离主机）</span>
+                <span className="text-[10px] px-2 py-0.5 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded">需审批</span>
+              </div>
+              <div className="flex items-center justify-between p-2 bg-page-bg rounded-lg border border-border-color">
+                <span className="text-xs text-text-primary">query_alerts（查询告警）</span>
+                <span className="text-[10px] px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded">直接执行</span>
+              </div>
+              <div className="flex items-center justify-between p-2 bg-page-bg rounded-lg border border-border-color">
+                <span className="text-xs text-text-primary">nl_query（NL查询）</span>
+                <span className="text-[10px] px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded">直接执行</span>
+              </div>
+            </div>
+          </div>
+          <div className="bg-card-bg border border-border-color rounded-xl p-4">
+            <h3 className="text-xs font-semibold text-text-primary mb-3 flex items-center gap-2"><Cpu className="w-4 h-4 text-purple-400"/>Agent 状态</h3>
+            <div className="space-y-2">
+              {[
+                {name:'alert_analyzer',status:'启用',desc:'告警分析+分诊'},
+                {name:'event_copilot',status:'启用',desc:'事件协查'},
+                {name:'threat_intel',status:'启用',desc:'威胁情报'},
+                {name:'investigator',status:'启用',desc:'攻击溯源'},
+                {name:'nl_analyst',status:'启用',desc:'NL查询'},
+                {name:'skill_operator',status:'启用',desc:'技能执行'},
+              ].map(a=>(
+                <div key={a.name} className="flex items-center justify-between p-2 bg-page-bg rounded-lg border border-border-color">
+                  <div><div className="text-xs text-text-primary">{a.name}</div><div className="text-[9px] text-text-muted">{a.desc}</div></div>
+                  <span className="text-[10px] px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded">{a.status}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+function renderCapabilities() {
     const agents = [
       {name:'alert_analyzer',role:'安全告警分析师',color:'from-red-500 to-orange-600',icon:AlertTriangle,
        desc:'分析告警数据，评估风险等级，识别威胁模式',tools:['timescaledb_query','query_alerts','create_incident'],
@@ -665,20 +887,17 @@ const AICenter: React.FC = () => {
 
   // ==================== AI 配置 — Agent管理 ====================
   function renderApproval() {
-    const [pendingActions, setPendingActions] = useState<any[]>([]);
-    const [loading, setLoading] = useState(false);
     const refresh = async () => {
-      setLoading(true);
-      try { const r = await aiApi.request('/ai-api/approval/pending'); if (r.success) setPendingActions(r.data||[]); }
+      setApprovalLoading(true);
+      try { const r = await apiRequest('/ai-api/approval/pending'); if (r.success) setPendingActions(r.data||[]); }
       catch { /* ignore */ }
-      setLoading(false);
+      setApprovalLoading(false);
     };
-    useEffect(() => { refresh(); }, []);
     return (
       <div>
         <div className="mb-4"><h3 className="text-sm font-semibold text-text-primary"><ShieldCheck className="w-4 h-4 text-amber-400 inline mr-1"/>审批管理</h3><p className="text-xs text-text-muted mt-0.5">高风险操作（封禁IP、隔离主机等）需人工审批后才执行</p></div>
         <div className="flex items-center gap-2 mb-3">
-          <button onClick={refresh} disabled={loading}
+          <button onClick={refresh} disabled={approvalLoading}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-card-bg border border-border-color rounded-lg text-xs text-text-secondary hover:text-text-primary transition-all disabled:opacity-40">
             <RefreshCw className={'w-3 h-3 '+(loading?'animate-spin':'')}/>刷新
           </button>
@@ -703,9 +922,9 @@ const AICenter: React.FC = () => {
                   ))}
                 </div>
                 <div className="flex gap-2">
-                  <button onClick={async()=>{try{await aiApi.request('/ai-api/orchestrate/approve',{method:'POST',body:{action_id:a.id,approved:true}});addToast('success','已批准，操作已执行');refresh();}catch(e:any){addToast('error',e.message);}}}
+                  <button onClick={async()=>{try{await apiRequest('/ai-api/orchestrate/approve',{method:'POST',body:{action_id:a.id,approved:true}});addToast('success','已批准，操作已执行');refresh();}catch(e:any){addToast('error',e.message);}}}
                     className="px-4 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-medium hover:bg-emerald-500 transition-all active:scale-95">批准</button>
-                  <button onClick={async()=>{try{await aiApi.request('/ai-api/orchestrate/approve',{method:'POST',body:{action_id:a.id,approved:false}});addToast('info','已拒绝');refresh();}catch(e:any){addToast('error',e.message);}}}
+                  <button onClick={async()=>{try{await apiRequest('/ai-api/orchestrate/approve',{method:'POST',body:{action_id:a.id,approved:false}});addToast('info','已拒绝');refresh();}catch(e:any){addToast('error',e.message);}}}
                     className="px-4 py-1.5 bg-red-600/80 text-white rounded-lg text-xs font-medium hover:bg-red-500 transition-all active:scale-95">拒绝</button>
                 </div>
               </div>
@@ -717,8 +936,6 @@ const AICenter: React.FC = () => {
   }
 
   function renderCron() {
-    const [cronResult, setCronResult] = useState<any>(null);
-    const [cronLoading, setCronLoading] = useState(false);
     return (
       <div>
         <div className="mb-4"><h3 className="text-sm font-semibold text-text-primary"><RefreshCw className="w-4 h-4 text-blue-400 inline mr-1"/>定时告警分析</h3><p className="text-xs text-text-muted mt-0.5">AI 自动从数据库拉取未分析的告警，批量分析后高风险自动创建安全事件</p></div>
@@ -728,7 +945,7 @@ const AICenter: React.FC = () => {
               <RefreshCw className="w-4 h-4 text-blue-400" />
               <span className="text-sm font-medium text-text-primary">立即执行分析</span>
             </div>
-            <button onClick={async()=>{setCronLoading(true);try{const r=await aiApi.request('/ai-api/cron/analyze-alerts');setCronResult(r.data||r);if(r.success)addToast('success','分析完成');}catch(e:any){addToast('error',e.message);}setCronLoading(false);}}
+            <button onClick={async()=>{setCronLoading(true);try{const r=await apiRequest('/ai-api/cron/analyze-alerts');setCronResult(r.data||r);if(r.success)addToast('success','分析完成');}catch(e:any){addToast('error',e.message);}setCronLoading(false);}}
               disabled={cronLoading}
               className="px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-medium disabled:opacity-40 hover:bg-blue-500 transition-all active:scale-95 flex items-center gap-1.5">
               {cronLoading?<Loader2 className="w-3 h-3 animate-spin"/>:<Play className="w-3 h-3"/>}执行分析</button>

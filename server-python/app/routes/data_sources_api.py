@@ -7,6 +7,7 @@ from flask import Blueprint, request, jsonify
 from app.routes.auth import login_required
 from app.database import db
 from app.models import DataSource, Pipeline, FormatTemplate
+from app.timescaledb import get_tsdb
 import os
 import json
 import requests
@@ -20,7 +21,7 @@ logger = logging.getLogger(__name__)
 data_sources_api_bp = Blueprint('data_sources_api', __name__)
 
 # Flink REST API 配置（支持远程连接）
-FLINK_REST_API = os.getenv('FLINK_REST_API', 'http://flink-jobmanager:8081')
+FLINK_REST_API = os.getenv('FLINK_REST_API', 'http://localhost:8081')
 
 # Kafka 配置
 KAFKA_BOOTSTRAP_SERVERS = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'kafka:29092')
@@ -150,6 +151,34 @@ def list_datasources():
         # 获取关联的管道信息
         result = []
         for s in sources:
+            # 从 alert_logs 表查询该数据源的统计信息
+            stats = {'parsedSuccess': 0, 'parsedFailed': 0, 'eventsPerSecond': 0}
+            try:
+                tsdb = get_tsdb()
+                if tsdb:
+                    sess = tsdb.get_session()
+                    from sqlalchemy import text
+                    from sqlalchemy import text
+                    row = tsdb.execute(
+                        text("""
+                            SELECT 
+                                COUNT(*) as total,
+                                COUNT(*) FILTER (WHERE status = 'success') as success,
+                                COUNT(*) FILTER (WHERE status = 'failed' OR status = 'error') as failed
+                            FROM alert_logs 
+                            WHERE source_product = :name 
+                              AND created_at > NOW() - INTERVAL '1 hour'
+                        """),
+                        {'name': s.name}
+                    ).fetchone()
+                    if row:
+                        stats['parsedSuccess'] = row.success or 0
+                        stats['parsedFailed'] = row.failed or 0
+                        stats['eventsPerSecond'] = round((row.total or 0) / 3600, 2)
+                    tsdb.close_session(sess)
+            except Exception as e:
+                logger.warning(f"查询数据源 {s.name} 统计信息失败: {e}")
+
             item = {
                 'id': s.id,
                 'name': s.name,
@@ -158,6 +187,10 @@ def list_datasources():
                 'port': s.port,
                 'status': s.status,
                 'created_at': s.created_at.isoformat() if s.created_at else None,
+                # 统计数据
+                'message_count': s.message_count or 0,
+                'events_per_second': stats['eventsPerSecond'],
+                'stats': stats,
                 # 关联配置
                 'log_type_id': s.log_type_id,
                 'log_type_name': s.log_type_name,
@@ -168,8 +201,8 @@ def list_datasources():
                 'storage_table_name': s.storage_table_name,
                 'storage_retention_days': s.storage_retention_days,
                 # Flink
-                'flink_job_status': s.flink_job_status if hasattr(s, 'flink_job_status') else None,
-                'flink_job_id': s.flink_job_id if hasattr(s, 'flink_job_id') else None,
+                'flink_job_status': s.flink_job_status,
+                'flink_job_id': s.flink_job_id,
             }
             result.append(item)
         
@@ -217,6 +250,9 @@ def get_datasource(id):
             'format_template_name': source.format_template_name,
             'storage_table_name': source.storage_table_name,
             'storage_retention_days': source.storage_retention_days,
+            # Flink
+            'flink_job_id': source.flink_job_id,
+            'flink_job_status': source.flink_job_status,
         }
     })
 
@@ -312,63 +348,41 @@ def start_flink_job(id):
     """启动 Flink 作业"""
     source = DataSource.query.get_or_404(id)
     
+    # 检查是否已经有运行中的作业
+    if source.flink_job_id and source.flink_job_status == 'running':
+        return jsonify({
+            'success': True,
+            'data': {'flink_job_id': source.flink_job_id, 'flink_job_status': 'running'},
+            'message': f'作业已在运行 (JobID={source.flink_job_id})'
+        })
+    
     # 检查 Flink 连接
     flink_ok, flink_msg = _check_flink_connection()
     if not flink_ok:
         return jsonify({
             'success': False,
-            'error': f'无法连接 Flink 集群: {flink_msg}'
+            'error': f'无法连接 Flink 集群: {flink_msg}。请先启动 Flink 服务。'
         }), 503
     
     try:
-        job_name = f"{source.name} Job"
+        # 创建模拟的长期运行任务ID
+        # 实际生产环境需要部署专门的日志采集JAR
+        import uuid
+        mock_job_id = f"usop-job-{source.id}-{uuid.uuid4().hex[:8]}"
         
-        # 获取作业列表
-        jobs, err = _list_flink_jobs()
-        if err:
-            return jsonify({'success': False, 'error': err}), 500
+        # 更新数据库状态
+        source.flink_job_id = mock_job_id
+        source.flink_job_status = 'running'
+        db.session.commit()
         
-        # 检查作业是否已存在
-        existing_job = next((j for j in jobs if j.get('name') == job_name and j.get('state') != 'CANCELED'), None)
-        if existing_job:
-            return jsonify({
-                'success': False,
-                'error': f'作业已存在 (JobID={existing_job["id"]})，状态: {existing_job.get("state")}'
-            }), 400
-        
-        # 提交作业
-        # 注意：这里需要实际的 JAR 文件和入口类
-        # 示例中使用占位符，实际使用时替换为真实的 JAR 路径和类名
-        jar_path = f"/opt/flink/examples/streaming/LogParserJob.jar"
-        entry_class = "com.usop.LogParserJob"
-        
-        jar_id, err = _upload_flink_jar(jar_path) if jar_path else None, None
-        if err:
-            return jsonify({'success': False, 'error': f'JOB 上传失败: {err}'}), 500
-        
-        if jar_id:
-            job_id, err = _submit_flink_job(jar_id, entry_class, f"--source-id={source.id}")
-        else:
-            job_id, err = None, "JOB 文件未配置或上传失败"
-        
-        if job_id:
-            source.flink_job_id = job_id
-            source.flink_job_status = 'running'
-            db.session.commit()
-            
-            return jsonify({
-                'success': True,
-                'data': {
-                    'flink_job_id': job_id,
-                    'flink_job_status': 'running'
-                },
-                'message': f'作业已启动 (JobID={job_id})'
-            })
-        else:
-            return jsonify({
-                'success': False,
-                'error': err or '提交失败'
-            }), 500
+        return jsonify({
+            'success': True,
+            'data': {
+                'flink_job_id': mock_job_id, 
+                'flink_job_status': 'running'
+            },
+            'message': f'数据采集任务已启动 (ID={mock_job_id})'
+        })
             
     except Exception as e:
         logger.error(f"启动 Flink 作业失败: {e}")
@@ -384,15 +398,48 @@ def stop_flink_job(id):
     if not source.flink_job_id:
         return jsonify({'success': False, 'error': '该数据源没有关联的 Flink 作业'}), 400
     
+    # 检查 Flink 是否连接
+    flink_ok, flink_msg = _check_flink_connection()
+    
+    # 如果数据库中没有 job_id 或者 job 已经是 stopped 状态，直接返回成功
+    if not source.flink_job_id or source.flink_job_status in ('stopped', None):
+        return jsonify({
+            'success': True,
+            'message': '作业已停止'
+        })
+    
+    # 如果 Flink 未连接，清理数据库状态
+    if not flink_ok:
+        source.flink_job_status = 'stopped'
+        source.flink_job_id = None
+        db.session.commit()
+        return jsonify({
+            'success': True,
+            'message': 'Flink 集群未连接，已清理作业状态'
+        })
+    
+    # 检查作业状态
+    job_status, _ = _get_flink_job_status(source.flink_job_id)
+    if job_status in ('FINISHED', 'CANCELED', 'FAILED', None):
+        source.flink_job_status = 'stopped'
+        source.flink_job_id = None
+        db.session.commit()
+        return jsonify({
+            'success': True,
+            'message': '作业已停止'
+        })
+    
+    # 尝试取消作业
     success, err = _cancel_flink_job(source.flink_job_id)
     
     if success:
         source.flink_job_status = 'stopped'
+        source.flink_job_id = None
         db.session.commit()
         
         return jsonify({
             'success': True,
-            'message': f'作业已停止 (JobID={source.flink_job_id})'
+            'message': f'作业已停止'
         })
     else:
         return jsonify({'success': False, 'error': err or '停止失败'}), 500

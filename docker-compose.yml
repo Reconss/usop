@@ -154,7 +154,9 @@ services:
     - TSDB_PORT=5432
     - TSDB_USER=postgres
     - TSDB_PASSWORD=postgres
-    - TSDB_NAME=postgres
+    - TSDB_NAME=usop_alert
+    - USE_HERMES_PROXY=true
+    - HERMES_BASE_URL=http://hermes-agent:8080
     - REDIS_HOST=redis
     - REDIS_PORT=6379
     - KAFKA_BOOTSTRAP_SERVERS=kafka:29092

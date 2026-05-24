@@ -23,6 +23,8 @@ alerts_api_bp = Blueprint('alerts_api', __name__)
 @alerts_api_bp.route('/alerts', methods=['GET'])
 @login_required
 def get_alerts():
+    import traceback as _tb, logging as _lg
+    _logger = _lg.getLogger(__name__)
     """获取告警列表"""
     page = request.args.get('page', 1, type=int)
     page_size = request.args.get('page_size', 20, type=int)
@@ -60,16 +62,29 @@ def get_alerts():
             offset=offset
         )
 
+        # 将 parsed_data 合并到 extra_data 中
+        items = []
+        for item in result['items']:
+            pd = item.get('parsed_data', {})
+            ed = item.get('extra_data', {})
+            if pd and not ed.get('parsed_data'):
+                ed['parsed_data'] = pd
+                item['extra_data'] = ed
+            items.append(item)
+        
         return jsonify({
             'success': True,
             'data': {
-                'items': result['items'],
+                'items': items,
                 'total': result['total'],
                 'page': page,
                 'page_size': page_size,
                 'pages': (result['total'] + page_size - 1) // page_size
             }
         })
+    except Exception as e:
+        _logger.error(f"查询告警失败: {e}\n{_tb.format_exc()}")
+        return jsonify({'success': False, 'error': f'查询失败: {str(e)}'}), 500
     finally:
         tsdb.close_session(session)
 
@@ -101,6 +116,9 @@ def get_alert(alert_id):
             'success': True,
             'data': alert
         })
+    except Exception as e:
+        _logger.error(f"查询告警失败: {e}\n{_tb.format_exc()}")
+        return jsonify({'success': False, 'error': f'查询失败: {str(e)}'}), 500
     finally:
         tsdb.close_session(session)
 
@@ -158,6 +176,9 @@ def update_alert_status(alert_id):
             'success': True,
             'data': {'id': alert_row_id, 'status': new_status}
         })
+    except Exception as e:
+        _logger.error(f"查询告警失败: {e}\n{_tb.format_exc()}")
+        return jsonify({'success': False, 'error': f'查询失败: {str(e)}'}), 500
     finally:
         tsdb.close_session(session)
 
@@ -198,6 +219,9 @@ def batch_update_status():
                 'updated_count': result.rowcount
             }
         })
+    except Exception as e:
+        _logger.error(f"查询告警失败: {e}\n{_tb.format_exc()}")
+        return jsonify({'success': False, 'error': f'查询失败: {str(e)}'}), 500
     finally:
         tsdb.close_session(session)
 
@@ -228,6 +252,9 @@ def delete_alert(alert_id):
             'success': True,
             'message': '告警已删除'
         })
+    except Exception as e:
+        _logger.error(f"查询告警失败: {e}\n{_tb.format_exc()}")
+        return jsonify({'success': False, 'error': f'查询失败: {str(e)}'}), 500
     finally:
         tsdb.close_session(session)
 
@@ -258,6 +285,9 @@ def batch_delete():
                 'deleted_count': result.rowcount
             }
         })
+    except Exception as e:
+        _logger.error(f"查询告警失败: {e}\n{_tb.format_exc()}")
+        return jsonify({'success': False, 'error': f'查询失败: {str(e)}'}), 500
     finally:
         tsdb.close_session(session)
 
@@ -279,6 +309,9 @@ def get_stats():
             'success': True,
             'data': stats
         })
+    except Exception as e:
+        _logger.error(f"查询告警失败: {e}\n{_tb.format_exc()}")
+        return jsonify({'success': False, 'error': f'查询失败: {str(e)}'}), 500
     finally:
         tsdb.close_session(session)
 
@@ -301,6 +334,9 @@ def get_trend():
             'success': True,
             'data': trend
         })
+    except Exception as e:
+        _logger.error(f"查询告警失败: {e}\n{_tb.format_exc()}")
+        return jsonify({'success': False, 'error': f'查询失败: {str(e)}'}), 500
     finally:
         tsdb.close_session(session)
 
@@ -342,6 +378,9 @@ def export_alerts():
             'success': True,
             'data': export_data
         })
+    except Exception as e:
+        _logger.error(f"查询告警失败: {e}\n{_tb.format_exc()}")
+        return jsonify({'success': False, 'error': f'查询失败: {str(e)}'}), 500
     finally:
         tsdb.close_session(session)
 
@@ -425,6 +464,9 @@ def create_alert():
                 **alert_data
             }
         }), 201
+    except Exception as e:
+        _logger.error(f"查询告警失败: {e}\n{_tb.format_exc()}")
+        return jsonify({'success': False, 'error': f'查询失败: {str(e)}'}), 500
     finally:
         tsdb.close_session(session)
 
@@ -552,6 +594,9 @@ def aggregate_alerts_endpoint():
                 'aggregated_count': len(alert_ids)
             }
         }), 201
+    except Exception as e:
+        _logger.error(f"查询告警失败: {e}\n{_tb.format_exc()}")
+        return jsonify({'success': False, 'error': f'查询失败: {str(e)}'}), 500
     finally:
         tsdb.close_session(session)
 
@@ -576,5 +621,8 @@ def init_hypertable():
                 'success': False,
                 'error': 'Hypertable 初始化失败'
             }), 500
+    except Exception as e:
+        _logger.error(f"查询告警失败: {e}\n{_tb.format_exc()}")
+        return jsonify({'success': False, 'error': f'查询失败: {str(e)}'}), 500
     finally:
         tsdb.close_session(session)

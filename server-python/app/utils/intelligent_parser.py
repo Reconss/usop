@@ -19,6 +19,36 @@ from enum import Enum
 import statistics
 
 
+def normalize_json_sample(sample: str) -> str:
+    """清洗 JSON 样本中的花式引号等不标准字符"""
+    if not sample:
+        return sample
+    
+    REPLACEMENTS = {
+        '\u201c': '"', '\u201d': '"', '\u201e': '"', '\u201f': '"', '\u2033': '"',
+        '\u2018': "'", '\u2019': "'", '\u201a': "'", '\u201b': "'",
+        '\u2032': "'", '\u2035': "'",
+        '\u2013': '-', '\u2014': '-',
+        '\ufeff': '',
+    }
+    
+    result = sample
+    for old_ch, new_ch in REPLACEMENTS.items():
+        result = result.replace(old_ch, new_ch)
+    
+    # 不可见控制字符（保留换行/制表符）
+    result = ''.join(c for c in result if c >= ' ' or c in '\n\r\t')
+    
+    # 非标准空格 → 普通空格
+    NBSP = chr(0x00A0)
+    for code in range(0x2000, 0x2010):
+        result = result.replace(chr(code), ' ')
+    result = result.replace(chr(0x202F), ' ').replace(chr(0x205F), ' ').replace(chr(0x3000), ' ')
+    result = result.replace(NBSP, ' ')
+    
+    return result.strip()
+
+
 class LogFormat(Enum):
     """检测到的日志格式"""
     JSON = "json"

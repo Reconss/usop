@@ -1,9 +1,10 @@
 from flask import Blueprint, request, jsonify
 from app.database import db
-from app.models import Pipeline, DataSource, Product, DataFormat
+from app.models import Pipeline, DataSource, Product, DataFormat, DataTable
 from app.routes.auth import login_required
 from app.utils.parser import LogProcessor, PRODUCT_PRESETS
 from app.utils.collector import collector_manager, create_collector
+from sqlalchemy.exc import IntegrityError
 from datetime import datetime
 import threading
 import uuid
@@ -47,6 +48,40 @@ def get_pipeline(id):
     })
 
 
+def _resolve_output_table_id(val):
+    """将 output_table_id 转换为 data_tables 中有效的 ID"""
+    if not val:
+        return None
+    from app.routes.storage_tables import StorageTable
+    
+    # 已经是有效的 data_tables.id（tbl_xxx 格式）
+    if isinstance(val, str) and val.startswith('tbl_'):
+        return val
+    
+    # 按 storage_tables.name 或 id 查找
+    st = None
+    if isinstance(val, int) or (isinstance(val, str) and val.isdigit()):
+        st = StorageTable.query.get(int(val))
+    if not st:
+        st = StorageTable.query.filter_by(name=str(val)).first()
+    
+    if st:
+        dt_id = f'tbl_{st.name}'
+        dt = DataTable.query.get(dt_id)
+        if not dt:
+            dt = DataTable(
+                id=dt_id,
+                name=st.name,
+                code=st.name,
+                description=st.display_name,
+                columns=st.columns or [],
+                retention_days=st.retention_days or 90,
+                status='active'
+            )
+            db.session.add(dt)
+        return dt_id
+    return None
+
 @pipelines_bp.route('', methods=['POST'])
 @login_required
 def create_pipeline():
@@ -85,7 +120,7 @@ def create_pipeline():
         product_id=product_id,
         log_type_id=data.get('log_type_id'),
         format_id=format_id,
-        output_table_id=str(data['output_table_id']) if data.get('output_table_id') else None,
+        output_table_id=_resolve_output_table_id(data.get('output_table_id')),
         input_format=data.get('input_format', 'json'),
         input_config=data.get('input_config', {}),
         field_mapping=data.get('field_mapping', {}),
@@ -102,8 +137,23 @@ def create_pipeline():
         next_pipeline_id=next_pipeline_id
     )
     
-    db.session.add(pipeline)
-    db.session.commit()
+    try:
+        db.session.add(pipeline)
+        db.session.commit()
+    except IntegrityError as e:
+        db.session.rollback()
+        error_msg = str(e)
+        if 'foreign key constraint' in error_msg.lower() and 'output_table_id' in error_msg.lower():
+            return jsonify({'success': False, 'error': '存储表ID不存在，请检查存储配置是否正确'}), 400
+        elif 'foreign key constraint' in error_msg.lower():
+            return jsonify({'success': False, 'error': '关联的ID不存在，请检查配置是否正确'}), 400
+        else:
+            return jsonify({'success': False, 'error': f'数据库约束错误: {str(e)}'}), 400
+    except Exception as e:
+        db.session.rollback()
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': f'更新失败: {str(e)}'}), 500
     
     return jsonify({
         'success': True,
@@ -136,8 +186,24 @@ def update_pipeline(id):
                 return jsonify({'success': False, 'error': '格式模板不存在'}), 400
         pipeline.format_id = data['format_id']
     if 'output_table_id' in data:
-        # 转换为字符串，避免类型不匹配问题
-        pipeline.output_table_id = str(data['output_table_id']) if data['output_table_id'] else None
+        val = data['output_table_id']
+        if val:
+            # 尝试通过 storage_tables 名称查找对应 DataTable
+            from app.routes.storage_tables import StorageTable
+            from app.models import DataTable
+            # 先直接按 data_tables.id 查找（tbl_xxx 格式）
+            dt = DataTable.query.get(str(val))
+            if dt:
+                pipeline.output_table_id = str(val)
+            else:
+                # 尝试按 storage_tables.name 查找
+                st = StorageTable.query.get(int(val)) if str(val).isdigit() else StorageTable.query.filter_by(name=str(val)).first()
+                if st:
+                    pipeline.output_table_id = st.id
+                else:
+                    pipeline.output_table_id = None
+        else:
+            pipeline.output_table_id = None
     if 'input_format' in data:
         pipeline.input_format = data['input_format']
     if 'input_config' in data:
@@ -160,6 +226,10 @@ def update_pipeline(id):
         pipeline.status = data['status']
     if 'priority' in data:
         pipeline.priority = data['priority']
+    if 'sample' in data:
+        pipeline.sample_log = data['sample']
+    elif 'sample_log' in data:
+        pipeline.sample_log = data['sample_log']
     if 'match_conditions' in data:
         pipeline.match_conditions = data['match_conditions']
     if 'rule_type' in data:
@@ -174,7 +244,22 @@ def update_pipeline(id):
                 return jsonify({'success': False, 'error': '不能将管道串联到自己'}), 400
         pipeline.next_pipeline_id = data['next_pipeline_id']
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except IntegrityError as e:
+        db.session.rollback()
+        error_msg = str(e)
+        if 'foreign key constraint' in error_msg.lower() and 'output_table_id' in error_msg.lower():
+            return jsonify({'success': False, 'error': '存储表ID不存在，请检查存储配置是否正确'}), 400
+        elif 'foreign key constraint' in error_msg.lower():
+            return jsonify({'success': False, 'error': '关联的ID不存在，请检查配置是否正确'}), 400
+        else:
+            return jsonify({'success': False, 'error': f'数据库约束错误: {str(e)}'}), 400
+    except Exception as e:
+        db.session.rollback()
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': f'更新失败: {str(e)}'}), 500
     
     return jsonify({
         'success': True,

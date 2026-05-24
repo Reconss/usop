@@ -48,11 +48,43 @@ class ParserBase:
 class JSONParser(ParserBase):
     """JSON格式解析器"""
     
+    @staticmethod
+    def _normalize_json(raw: str) -> str:
+        """清洗 JSON 字符串：处理花式引号等不标准字符"""
+        if not raw:
+            return raw
+        
+        # 构建替换表
+        REPLACEMENTS = {
+            '\u201c': '"', '\u201d': '"', '\u201e': '"', '\u201f': '"', '\u2033': '"',
+            '\u2018': "'", '\u2019': "'", '\u201a': "'", '\u201b': "'",
+            '\u2032': "'", '\u2035': "'",
+            '\u2013': '-', '\u2014': '-',
+            '\ufeff': '',
+        }
+        
+        result = raw
+        for old, new in REPLACEMENTS.items():
+            result = result.replace(old, new)
+        
+        # BOM 及不可见控制字符（保留换行/制表符）
+        result = ''.join(c for c in result if c >= ' ' or c in '\n\r\t')
+        
+        # 非标准空格 → 普通空格
+        NBSP = chr(0x00A0)
+        for code in range(0x2000, 0x2010):
+            result = result.replace(chr(code), ' ')
+        result = result.replace(chr(0x202F), ' ').replace(chr(0x205F), ' ').replace(chr(0x3000), ' ')
+        result = result.replace(NBSP, ' ')
+        
+        return result.strip()
+
     def parse(self, raw_log: str) -> Dict[str, Any]:
         result = {'raw_log': raw_log, 'parsed_at': datetime.utcnow().isoformat()}
         
         try:
-            data = json.loads(raw_log)
+            cleaned = self._normalize_json(raw_log)
+            data = json.loads(cleaned)
             if isinstance(data, dict):
                 result.update(data)
                 # 提取时间戳

@@ -68,6 +68,9 @@ class Event(db.Model):
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     def to_dict(self):
+        extra = self.extra_data or {}
+        related_alerts = extra.get('related_alerts', [])
+        attachments = extra.get('attachments', [])
         return {
             'id': self.id,
             'event_code': self.event_code,
@@ -78,7 +81,9 @@ class Event(db.Model):
             'source': self.source,
             'status': self.status,
             'raw_log': self.raw_log,
-            'extra_data': self.extra_data or {},
+            'extra_data': extra,
+            'related_alerts': related_alerts,
+            'attachments': attachments,
             'timestamp': self.timestamp.isoformat() if self.timestamp else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
@@ -530,6 +535,7 @@ class Pipeline(db.Model):
     # 解析配置（当没有引用格式模板时使用）
     input_format = db.Column(db.String(50), default='json')  # json, syslog, keyvalue, csv, grok, 或 custom_xxx
     input_config = db.Column(db.JSON, default=dict)  # 解析器配置
+    sample_log = db.Column(db.Text, default='')  # 样本日志
 
     # 字段映射
     field_mapping = db.Column(db.JSON, default=dict)  # 字段映射规则
@@ -581,6 +587,7 @@ class Pipeline(db.Model):
             'output_table_name': None,
             'input_format': self.input_format,
             'input_config': self.input_config or {},
+            'sample': self.sample_log or '',
             'field_mapping': self.field_mapping or {},
             'filter_rules': self.filter_rules or [],
             'transform_rules': self.transform_rules or [],

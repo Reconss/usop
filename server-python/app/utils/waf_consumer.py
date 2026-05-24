@@ -91,7 +91,7 @@ class WAFLogConsumer:
         alerts 表字段:
         - alert_code, title, description, severity, status, source
         - src_ip, src_port, dst_ip, dst_port, protocol, hostname
-        - raw_log, parsed_data, first_seen, last_seen, tags, category
+        - raw_log, extra_data, first_seen, last_seen, tags, category
         """
         risk_level = raw_log.get('risk_level', '中')
         severity = self._map_severity(risk_level)
@@ -102,12 +102,22 @@ class WAFLogConsumer:
             # 使用时间戳后6位，确保不超出 VARCHAR(20)
             alert_id = f"WAF-{int(time.time() * 1000) % 1000000}"
         
-        # 解析时间戳
+        # 解析时间戳（源日志为中国时区 UTC+8，统一转 UTC 存储）
         timestamp = raw_log.get('timestamp', '')
         try:
             if isinstance(timestamp, str):
-                # 处理 ISO 格式时间戳
-                first_seen = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                # 处理 ISO 格式时间戳，按中国时区 UTC+8 解析
+                ts_str = timestamp.replace('Z', '+00:00')
+                if '+' not in ts_str and ts_str.endswith('0') == False and 'T' in ts_str:
+                    # 无时区标记的统一按 Asia/Shanghai (UTC+8) 处理
+                    ts_str += '+08:00'
+                dt = datetime.fromisoformat(ts_str)
+                if dt.tzinfo is None:
+                    # 兜底：无时区的视为 UTC+8
+                    from datetime import timezone, timedelta
+                    dt = dt.replace(tzinfo=timezone(timedelta(hours=8)))
+                # 统一转为 UTC 存储
+                first_seen = dt.astimezone(timezone.utc).replace(tzinfo=None)
             else:
                 first_seen = datetime.utcnow()
         except Exception:
@@ -136,17 +146,19 @@ class WAFLogConsumer:
             
             # 原始数据
             'raw_log': json.dumps(raw_log, ensure_ascii=False),
-            'parsed_data': {
-                'method': raw_log.get('method'),
-                'uri': raw_log.get('uri'),
-                'host': raw_log.get('host'),
-                'status_code': raw_log.get('status_code'),
-                'rule_id': raw_log.get('rule_id'),
-                'action': raw_log.get('action'),
-                'attack_type': raw_log.get('attack_type'),
-                'risk_level': raw_log.get('risk_level'),
+            'parsed_data': {},
+            'extra_data': {
+                'parsed': {
+                    'method': raw_log.get('method'),
+                    'uri': raw_log.get('uri'),
+                    'host': raw_log.get('host'),
+                    'status_code': raw_log.get('status_code'),
+                    'rule_id': raw_log.get('rule_id'),
+                    'action': raw_log.get('action'),
+                    'attack_type': raw_log.get('attack_type'),
+                    'risk_level': raw_log.get('risk_level'),
+                },
             },
-            'extra_data': {},
             
             # 时间字段（TimescaleDB 分区键）
             'first_seen': first_seen,
@@ -174,13 +186,13 @@ class WAFLogConsumer:
                         alert_code, title, description, severity, status,
                         source, source_product, source_type, category, confidence,
                         src_ip, src_port, dst_ip, dst_port, protocol, hostname,
-                        raw_log, parsed_data, extra_data,
+                        raw_log, extra_data,
                         first_seen, last_seen, tags
                     ) VALUES (
                         :alert_code, :title, :description, :severity, :status,
                         :source, :source_product, :source_type, :category, :confidence,
                         :src_ip, :src_port, :dst_ip, :dst_port, :protocol, :hostname,
-                        :raw_log, :parsed_data, :extra_data,
+                        :raw_log, :extra_data,
                         :first_seen, :last_seen, :tags
                     )
                     RETURNING id
@@ -204,7 +216,6 @@ class WAFLogConsumer:
                     'protocol': alert_data.get('protocol'),
                     'hostname': alert_data.get('hostname'),
                     'raw_log': alert_data.get('raw_log', ''),
-                    'parsed_data': Json(alert_data.get('parsed_data', {})),
                     'extra_data': Json(alert_data.get('extra_data', {})),
                     'first_seen': alert_data['first_seen'],
                     'last_seen': alert_data['last_seen'],

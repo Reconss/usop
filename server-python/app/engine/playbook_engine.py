@@ -161,6 +161,21 @@ class PlaybookEngine:
         if node_type == 'trigger':
             return {'success': True, 'message': '触发器通过', 'data': {}}
 
+        elif node_type == 'ai_analysis':
+            from app.engine.actions import AIAnalysisAction
+            action_config = node.get('config', {})
+            params = {p['name']: p.get('defaultValue') for p in node.get('params', [])}
+            merged_config = {**action_config, **params}
+            # 将整个节点 params 作为 config 传入
+            node_params_map = {}
+            for p in node.get('params', []):
+                val = p.get('defaultValue')
+                node_params_map[p['name']] = val
+            result = AIAnalysisAction.execute(node_params_map, context)
+            if result.success and result.data:
+                context.variables['ai_analysis_result'] = result.data
+            return result.to_dict()
+
         elif node_type == 'action':
             action_name = node_data.get('action', '')
             action_config = node_data.get('config', {})

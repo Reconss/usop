@@ -22,7 +22,7 @@ def analyze_alert_batch(limit: int = 50) -> dict:
     try:
         rows = sess.execute(text("""
             SELECT id, alert_code, title, description, severity, src_ip, dst_ip,
-                   attack_type, first_seen, raw_log, category
+                   category, first_seen, raw_log, source_type
             FROM alerts 
             WHERE status IS NULL OR status NOT IN ('ai_analyzed','closed','false_positive')
             ORDER BY first_seen DESC LIMIT :lim
@@ -48,7 +48,7 @@ def analyze_alert_batch(limit: int = 50) -> dict:
             if is_fp:
                 sess.execute(text("""
                     UPDATE alerts SET status = 'false_positive',
-                        extra_data = extra_data || :extra::jsonb
+                        extra_data = COALESCE(extra_data, '{}'::jsonb) || CAST(:extra AS jsonb)
                     WHERE alert_code = :code
                 """), {"code": alert_code, "extra": json.dumps({
                     "ai_analyzed": True, "ai_analyzed_at": datetime.utcnow().isoformat(),
@@ -60,10 +60,10 @@ def analyze_alert_batch(limit: int = 50) -> dict:
                 event_id = _create_event(alert_code, analysis)
                 sess.execute(text("""
                     UPDATE alerts SET status = 'closed',
-                        incident_id = :eid,
-                        extra_data = extra_data || :extra::jsonb
+                        event_ids = COALESCE(event_ids, '[]'::jsonb) || CAST(:eid_arr AS jsonb),
+                        extra_data = COALESCE(extra_data, '{}'::jsonb) || CAST(:extra AS jsonb)
                     WHERE alert_code = :code
-                """), {"code": alert_code, "eid": event_id, "extra": json.dumps({
+                """), {"code": alert_code, "eid_arr": json.dumps([event_id]), "extra": json.dumps({
                     "ai_analyzed": True, "ai_analyzed_at": datetime.utcnow().isoformat(),
                     "ai_analysis": analysis, "ai_verdict": "attack", "incident_id": event_id
                 }, ensure_ascii=False)})
@@ -72,7 +72,7 @@ def analyze_alert_batch(limit: int = 50) -> dict:
                 # 低风险 → 标为已分析
                 sess.execute(text("""
                     UPDATE alerts SET status = 'ai_analyzed',
-                        extra_data = extra_data || :extra::jsonb
+                        extra_data = COALESCE(extra_data, '{}'::jsonb) || CAST(:extra AS jsonb)
                     WHERE alert_code = :code
                 """), {"code": alert_code, "extra": json.dumps({
                     "ai_analyzed": True, "ai_analyzed_at": datetime.utcnow().isoformat(),
@@ -102,11 +102,11 @@ def _analyze_with_llm(alerts: List[dict]) -> List[dict]:
     for a in alerts[:20]:
         summaries.append(f"[{a['severity']}] {a.get('alert_code','')}: {a.get('title','')} | "
                          f"src={a.get('src_ip','')} dst={a.get('dst_ip','')} | "
-                         f"type={a.get('attack_type','')}")
+                         f"type={a.get('category','')}")
 
     prompt = """你是安全告警分析师。分析每条告警输出JSON (每行一条):
 {"alert_code":"...","analysis":{"is_attack":true/false,"is_false_positive":true/false,
-"priority":"critical/high/medium/low","attack_type":"...","suggested_action":"...","reason":"..."}}
+"priority":"critical/high/medium/low","category":"...","suggested_action":"...","reason":"..."}}
 
 注意: 如果src_ip或dst_ip命中白名单则is_false_positive=true"""
 
@@ -148,12 +148,12 @@ def _rule_fallback(alerts: List[dict]) -> List[dict]:
     results = []
     for a in alerts:
         sev = a.get("severity", "medium")
-        atk = a.get("attack_type", "")
+        atk = a.get("category", "")
         is_attack = sev in ("critical","high") and atk not in ("info","notice")
         results.append({"alert_code": a["alert_code"], "analysis": {
             "is_attack": is_attack, "is_false_positive": False,
             "priority": "high" if is_attack else "low",
-            "attack_type": atk or "unknown",
+            "category": atk or "unknown",
             "suggested_action": "block_ip" if is_attack else "review",
             "reason": f"规则分析: severity={sev}, type={atk}"
         }})
@@ -179,11 +179,11 @@ def _create_event(alert_code: str, analysis: dict) -> str:
     ec = generate_event_code()
     event = Event(
         event_code=ec,
-        title=f"[AI自动] {analysis.get('attack_type','安全告警')} - {ad.get('src_ip','')}",
+        title=f"[AI自动] {analysis.get('category','安全告警')} - {ad.get('src_ip','')}",
         description=f"AI自动分析\n分析: {analysis.get('reason','')}\n告警: {alert_code}\n"
                     f"{ad.get('src_ip','')} -> {ad.get('dst_ip','')}",
         severity=analysis.get('priority', 'medium'),
-        category=analysis.get('attack_type', '其他'),
+        category=analysis.get('category', '其他'),
         source='ai_auto_analysis', status='new',
         extra_data={'source_alert': alert_code, 'ai_analysis': analysis},
         raw_log=ad.get('raw_log', '')
@@ -192,7 +192,9 @@ def _create_event(alert_code: str, analysis: dict) -> str:
     db.session.add(event)
     db.session.flush()
     create_action_record(ec, 'created', None, 'AI自动',
-                         f'AI 从告警 {alert_code} 创建事件', {'source': 'ai_auto_analysis'})
+                         f'AI 从告警 {alert_code} 创建事件',
+                         previous_status='new',
+                         extra_data=json.dumps({'source': 'ai_auto_analysis'}))
     db.session.commit()
     logger.info(f"创建事件: {ec} <- 告警 {alert_code}")
     return ec

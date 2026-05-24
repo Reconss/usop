@@ -225,6 +225,18 @@ class ActionHandler:
     description = ""
 
     @classmethod
+    def _get_db_config(cls, key: str, default: str = '') -> str:
+        """从 DB 获取 AI 提供商配置"""
+        try:
+            from app.models import SystemConfig
+            cfg = SystemConfig.query.filter_by(key=f'ai_provider_{key}').first()
+            if cfg and cfg.value:
+                return cfg.value
+        except Exception:
+            pass
+        return os.getenv(key.upper(), default)
+
+    @classmethod
     def execute(cls, config: Dict, context: ActionContext) -> ActionResult:
         raise NotImplementedError
 
@@ -232,6 +244,18 @@ class ActionHandler:
 class BlockIPAction(ActionHandler):
     name = "block_ip"
     description = "封堵 IP 地址"
+
+    @classmethod
+    def _get_db_config(cls, key: str, default: str = '') -> str:
+        """从 DB 获取 AI 提供商配置"""
+        try:
+            from app.models import SystemConfig
+            cfg = SystemConfig.query.filter_by(key=f'ai_provider_{key}').first()
+            if cfg and cfg.value:
+                return cfg.value
+        except Exception:
+            pass
+        return os.getenv(key.upper(), default)
 
     @classmethod
     def execute(cls, config: Dict, context: ActionContext) -> ActionResult:
@@ -256,6 +280,18 @@ class UnblockIPAction(ActionHandler):
     description = "解封 IP 地址"
 
     @classmethod
+    def _get_db_config(cls, key: str, default: str = '') -> str:
+        """从 DB 获取 AI 提供商配置"""
+        try:
+            from app.models import SystemConfig
+            cfg = SystemConfig.query.filter_by(key=f'ai_provider_{key}').first()
+            if cfg and cfg.value:
+                return cfg.value
+        except Exception:
+            pass
+        return os.getenv(key.upper(), default)
+
+    @classmethod
     def execute(cls, config: Dict, context: ActionContext) -> ActionResult:
         ip = context.resolve(config.get('ip', '')) or context.get('src_ip', '')
         if not ip:
@@ -266,6 +302,18 @@ class UnblockIPAction(ActionHandler):
 class QuarantineHostAction(ActionHandler):
     name = "quarantine_host"
     description = "隔离主机"
+
+    @classmethod
+    def _get_db_config(cls, key: str, default: str = '') -> str:
+        """从 DB 获取 AI 提供商配置"""
+        try:
+            from app.models import SystemConfig
+            cfg = SystemConfig.query.filter_by(key=f'ai_provider_{key}').first()
+            if cfg and cfg.value:
+                return cfg.value
+        except Exception:
+            pass
+        return os.getenv(key.upper(), default)
 
     @classmethod
     def execute(cls, config: Dict, context: ActionContext) -> ActionResult:
@@ -288,6 +336,18 @@ class QuarantineHostAction(ActionHandler):
 class SendNotificationAction(ActionHandler):
     name = "send_notification"
     description = "发送通知"
+
+    @classmethod
+    def _get_db_config(cls, key: str, default: str = '') -> str:
+        """从 DB 获取 AI 提供商配置"""
+        try:
+            from app.models import SystemConfig
+            cfg = SystemConfig.query.filter_by(key=f'ai_provider_{key}').first()
+            if cfg and cfg.value:
+                return cfg.value
+        except Exception:
+            pass
+        return os.getenv(key.upper(), default)
 
     @classmethod
     def execute(cls, config: Dict, context: ActionContext) -> ActionResult:
@@ -324,6 +384,18 @@ class SendNotificationAction(ActionHandler):
 class WebhookAction(ActionHandler):
     name = "webhook"
     description = "调用外部 Webhook"
+
+    @classmethod
+    def _get_db_config(cls, key: str, default: str = '') -> str:
+        """从 DB 获取 AI 提供商配置"""
+        try:
+            from app.models import SystemConfig
+            cfg = SystemConfig.query.filter_by(key=f'ai_provider_{key}').first()
+            if cfg and cfg.value:
+                return cfg.value
+        except Exception:
+            pass
+        return os.getenv(key.upper(), default)
 
     @classmethod
     def execute(cls, config: Dict, context: ActionContext) -> ActionResult:
@@ -363,6 +435,18 @@ class WebhookAction(ActionHandler):
 class RunScriptAction(ActionHandler):
     name = "run_script"
     description = "执行脚本"
+
+    @classmethod
+    def _get_db_config(cls, key: str, default: str = '') -> str:
+        """从 DB 获取 AI 提供商配置"""
+        try:
+            from app.models import SystemConfig
+            cfg = SystemConfig.query.filter_by(key=f'ai_provider_{key}').first()
+            if cfg and cfg.value:
+                return cfg.value
+        except Exception:
+            pass
+        return os.getenv(key.upper(), default)
 
     @classmethod
     def execute(cls, config: Dict, context: ActionContext) -> ActionResult:
@@ -413,6 +497,18 @@ class UpdateEventAction(ActionHandler):
     description = "更新事件状态/严重度"
 
     @classmethod
+    def _get_db_config(cls, key: str, default: str = '') -> str:
+        """从 DB 获取 AI 提供商配置"""
+        try:
+            from app.models import SystemConfig
+            cfg = SystemConfig.query.filter_by(key=f'ai_provider_{key}').first()
+            if cfg and cfg.value:
+                return cfg.value
+        except Exception:
+            pass
+        return os.getenv(key.upper(), default)
+
+    @classmethod
     def execute(cls, config: Dict, context: ActionContext) -> ActionResult:
         event_code = context.get('event_code') or config.get('event_code', '')
 
@@ -450,6 +546,18 @@ class AddTagAction(ActionHandler):
     description = "添加标签到事件"
 
     @classmethod
+    def _get_db_config(cls, key: str, default: str = '') -> str:
+        """从 DB 获取 AI 提供商配置"""
+        try:
+            from app.models import SystemConfig
+            cfg = SystemConfig.query.filter_by(key=f'ai_provider_{key}').first()
+            if cfg and cfg.value:
+                return cfg.value
+        except Exception:
+            pass
+        return os.getenv(key.upper(), default)
+
+    @classmethod
     def execute(cls, config: Dict, context: ActionContext) -> ActionResult:
         event_code = context.get('event_code') or config.get('event_code', '')
         tag = context.resolve(config.get('tag', ''))
@@ -483,6 +591,18 @@ class AddTagAction(ActionHandler):
 class EnrichIPAction(ActionHandler):
     name = "enrich_ip"
     description = "IP 威胁情报富化"
+
+    @classmethod
+    def _get_db_config(cls, key: str, default: str = '') -> str:
+        """从 DB 获取 AI 提供商配置"""
+        try:
+            from app.models import SystemConfig
+            cfg = SystemConfig.query.filter_by(key=f'ai_provider_{key}').first()
+            if cfg and cfg.value:
+                return cfg.value
+        except Exception:
+            pass
+        return os.getenv(key.upper(), default)
 
     @classmethod
     def execute(cls, config: Dict, context: ActionContext) -> ActionResult:
@@ -525,6 +645,192 @@ class EnrichIPAction(ActionHandler):
 
 
 # 注册所有动作处理器
+class AIAnalysisAction:
+    """AI 分析动作 - 调用 AI 分析事件内容及关联告警（支持远程/本地多种提供商）"""
+    name = 'ai_analysis'
+    description = 'AI智能分析事件内容，判断攻击类型、影响范围和处置建议'
+
+    @classmethod
+    def _build_prompt(cls, event: Dict, include_alerts: bool) -> str:
+        title = event.get('title', '未知事件')
+        description = event.get('description', '')
+        severity = event.get('severity', 'medium')
+        event_type = event.get('eventType', event.get('category', ''))
+        source_ip = event.get('sourceIp', event.get('source', ''))
+        affected_assets = event.get('affectedAssets', [])
+        
+        extra = event.get('extra_data', {})
+        if isinstance(extra, str):
+            try: extra = json.loads(extra)
+            except: extra = {}
+        related_alerts = event.get('relatedAlerts', []) or extra.get('related_alerts', [])
+        
+        alert_text = ''
+        if include_alerts and related_alerts:
+            lines = [f'- [{a.get("severity","?")}] {a.get("alert_code",a.get("id",""))}: {a.get("title","")}' for a in related_alerts[:20]]
+            alert_text = '\n\n## 关联告警\n' + '\n'.join(lines)
+        
+        return f"""## 安全事件分析请求
+
+### 事件基本信息
+- **标题**: {title}
+- **类型**: {event_type}
+- **严重程度**: {severity}
+- **源IP**: {source_ip}
+- **影响资产**: {', '.join(affected_assets) if affected_assets else '无'}
+- **描述**: {description}{alert_text}
+
+### 分析要求
+请按以下格式输出分析结果：
+
+**1. 攻击判断**
+- 是否为真实攻击：
+- 攻击类型：
+- 置信度：
+
+**2. 影响评估**
+- 受影响资产：
+- 影响范围：
+- 风险等级：
+
+**3. 处置建议**
+- 立即措施：
+- 后续措施：
+- 预防建议：
+
+**4. 优先级建议**
+- 处理优先级：
+- 建议响应时间："""
+
+    @classmethod
+    def _get_db_config(cls, key: str, default: str = '') -> str:
+        """从 DB 获取 AI 提供商配置"""
+        try:
+            from app.models import SystemConfig
+            cfg = SystemConfig.query.filter_by(key=f'ai_provider_{key}').first()
+            if cfg and cfg.value:
+                return cfg.value
+        except Exception:
+            pass
+        return os.getenv(key.upper(), default)
+
+    @classmethod
+    def execute(cls, config: Dict, context: ActionContext) -> ActionResult:
+        import requests as http_requests
+        
+        system_prompt = config.get('systemPrompt', '你是一个安全分析专家。请分析以下安全事件，判断是否为真实攻击、影响范围、严重程度以及建议的处置措施。')
+        model = config.get('model', 'deepseek-chat')
+        temperature = float(config.get('temperature', 0.3))
+        include_alerts = config.get('includeAlerts', True)
+        provider = config.get('provider', 'auto')  # auto, deepseek, hermes, local
+        
+        event = context.event or {}
+        user_message = cls._build_prompt(event, include_alerts)
+        
+        # 判断是否启用全局 Hermes 代理（优先 DB 配置）
+        use_hermes_global = cls._get_db_config('use_hermes_proxy', 'false').lower() == 'true'
+        hermes_url = cls._get_db_config('hermes_base_url', 'http://hermes-agent:8080')
+        
+        # 优先使用本地 AI（优先 DB 配置）
+        local_ai_type = cls._get_db_config('local_ai_type', '')
+        if provider in ('auto', 'local') and local_ai_type:
+            try:
+                result = cls._call_local_ai(system_prompt, user_message, model, temperature)
+                if result:
+                    return result
+            except Exception:
+                pass  # fallback
+        
+        # 尝试 Hermes（远程代理）- 如果 provider 指定或全局启用
+        if provider in ('auto', 'hermes') or (provider == 'auto' and use_hermes_global):
+            try:
+                result = cls._call_hermes(hermes_url, system_prompt, user_message)
+                if result:
+                    return result
+            except Exception:
+                pass  # fallback
+        
+        # 兜底 DeepSeek 云端 API
+        return cls._call_deepseek(system_prompt, user_message, model, temperature)
+
+    @classmethod
+    def _call_local_ai(cls, system_prompt: str, user_message: str, model: str, temperature: float) -> Optional[ActionResult]:
+        import requests as http_requests
+        ai_type = cls._get_db_config('local_ai_type', '')
+        base_url = cls._get_db_config('local_ai_base_url', 'http://localhost:11434')
+        local_model = cls._get_db_config('local_ai_model', 'llama3')
+        api_key = cls._get_db_config('local_ai_api_key', '')
+        
+        messages = [
+            {'role': 'system', 'content': system_prompt},
+            {'role': 'user', 'content': user_message}
+        ]
+        
+        if ai_type == 'ollama':
+            resp = http_requests.post(f'{base_url}/api/chat', json={
+                'model': local_model, 'messages': messages, 'stream': False,
+                'options': {'temperature': temperature}
+            }, timeout=120)
+            resp.raise_for_status()
+            data = resp.json()
+            return ActionResult(success=True, message='AI分析完成（本地Ollama）', data={
+                'analysis': data['message']['content'],
+                'model': f'ollama/{local_model}', 'source': 'local'
+            })
+        elif ai_type in ('lm_studio', 'openai'):
+            headers = {'Content-Type': 'application/json'}
+            if api_key: headers['Authorization'] = f'Bearer {api_key}'
+            resp = http_requests.post(f'{base_url}/v1/chat/completions', headers=headers, json={
+                'model': model if ai_type == 'openai' else local_model,
+                'messages': messages, 'temperature': temperature, 'max_tokens': 4096,
+            }, timeout=120)
+            resp.raise_for_status()
+            data = resp.json()
+            return ActionResult(success=True, message='AI分析完成（本地）', data={
+                'analysis': data['choices'][0]['message']['content'],
+                'model': local_model, 'source': 'local'
+            })
+        return None
+
+    @classmethod
+    def _call_hermes(cls, hermes_url: str, system_prompt: str, user_message: str) -> Optional[ActionResult]:
+        import requests as http_requests
+        resp = http_requests.post(f'{hermes_url}/v1/chat/completions', json={
+            'messages': [
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': user_message}
+            ]
+        }, timeout=120)
+        resp.raise_for_status()
+        data = resp.json()
+        return ActionResult(success=True, message='AI分析完成（Hermes）', data={
+            'analysis': data['choices'][0]['message']['content'],
+            'source': 'hermes'
+        })
+
+    @classmethod
+    def _call_deepseek(cls, system_prompt: str, user_message: str, model: str, temperature: float) -> ActionResult:
+        import requests as http_requests
+        try:
+            api_key = cls._get_db_config('deepseek_api_key', 'sk-bf41b5f890024a739325b3f765129dbc')
+            api_base = cls._get_db_config('deepseek_base_url', 'https://api.deepseek.com/v1')
+            resp = http_requests.post(f'{api_base}/chat/completions',
+                headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+                json={'model': model, 'messages': [
+                    {'role': 'system', 'content': system_prompt},
+                    {'role': 'user', 'content': user_message}
+                ], 'temperature': temperature, 'max_tokens': 4096}, timeout=120)
+            resp.raise_for_status()
+            result = resp.json()
+            return ActionResult(success=True, message='AI分析完成（DeepSeek）', data={
+                'analysis': result['choices'][0]['message']['content'],
+                'model': model, 'source': 'deepseek',
+                'usage': result.get('usage', {})
+            })
+        except Exception as e:
+            return ActionResult(success=False, message=f'AI分析失败: {str(e)}', data={'error': str(e)})
+
+
 ACTIONS = {
     'block_ip': BlockIPAction,
     'unblock_ip': UnblockIPAction,
@@ -535,6 +841,7 @@ ACTIONS = {
     'update_event': UpdateEventAction,
     'add_tag': AddTagAction,
     'enrich_ip': EnrichIPAction,
+    'ai_analysis': AIAnalysisAction,
 }
 
 

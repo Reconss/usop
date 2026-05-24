@@ -14,6 +14,14 @@ import sys
 # 添加项目路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# 加载 .env 配置文件
+from dotenv import load_dotenv
+dotenv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '.env')
+if os.path.exists(dotenv_path):
+    load_dotenv(dotenv_path)
+elif os.path.exists('.env'):
+    load_dotenv('.env')
+
 
 def check_bigdata_services():
     """检查并等待大数据组件就绪"""

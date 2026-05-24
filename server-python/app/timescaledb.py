@@ -45,7 +45,7 @@ class TimescaleDB:
         """建立数据库连接"""
         user = os.getenv('TSDB_USER', 'postgres')
         password = os.getenv('TSDB_PASSWORD', 'postgres')  # TimescaleDB 默认密码
-        database = os.getenv('TSDB_NAME', 'postgres')    # 默认数据库
+        database = os.getenv('TSDB_NAME', 'usop_alert')    # 默认数据库
         
         env_host = os.getenv('TSDB_HOST')
         env_port = os.getenv('TSDB_PORT')
@@ -55,7 +55,7 @@ class TimescaleDB:
             port = int(env_port)
         elif os.path.exists('/.dockerenv') or os.getenv('DOCKER_CONTAINER', '').lower() == 'true':
             host = 'timescale'
-            port = 5432
+            port = int(os.getenv("TSDB_PORT", 5433))
         else:
             host = 'localhost'
             port = 5433  # TimescaleDB 实际端口 (docker映射)
@@ -735,8 +735,7 @@ def create_alerts_hypertable(session):
                     event_ids JSONB DEFAULT '[]'::jsonb,
                     assigned_to INTEGER,
                     raw_log TEXT,
-                    parsed_data JSONB DEFAULT '{}'::jsonb,
-                    extra_data JSONB DEFAULT '{}'::jsonb,
+                                        extra_data JSONB DEFAULT '{}'::jsonb,
                     first_seen TIMESTAMPTZ NOT NULL,
                     last_seen TIMESTAMPTZ NOT NULL,
                     created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -784,8 +783,7 @@ def create_alerts_hypertable(session):
                     event_ids JSONB DEFAULT '[]'::jsonb,
                     assigned_to INTEGER,
                     raw_log TEXT,
-                    parsed_data JSONB DEFAULT '{}'::jsonb,
-                    extra_data JSONB DEFAULT '{}'::jsonb,
+                                        extra_data JSONB DEFAULT '{}'::jsonb,
                     first_seen TIMESTAMPTZ NOT NULL,
                     last_seen TIMESTAMPTZ NOT NULL,
                     created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -884,20 +882,20 @@ def insert_alert(session, alert_data: dict) -> int:
             source, source_product, source_type, category, confidence,
             src_ip, src_port, dst_ip, dst_port, protocol,
             asset_id, asset_name, hostname, affected_assets,
-            event_ids, assigned_to, raw_log, parsed_data, extra_data,
+            event_ids, assigned_to, raw_log, extra_data,
             first_seen, last_seen, tags
         ) VALUES (
             :alert_code, :title, :description, :severity, :status,
             :source, :source_product, :source_type, :category, :confidence,
             :src_ip, :src_port, :dst_ip, :dst_port, :protocol,
             :asset_id, :asset_name, :hostname, :affected_assets,
-            :event_ids, :assigned_to, :raw_log, :parsed_data, :extra_data,
+            :event_ids, :assigned_to, :raw_log, :extra_data,
             :first_seen, :last_seen, :tags
         )
         RETURNING id
     """)
     
-    # 使用 psycopg2.extras.Json 处理 JSONB 字段
+    extra_data = alert_data.get('extra_data', {}) or {}
     params = {
         'alert_code': alert_data.get('alert_code'),
         'title': alert_data.get('title'),
@@ -921,8 +919,7 @@ def insert_alert(session, alert_data: dict) -> int:
         'event_ids': Json(alert_data.get('event_ids', [])),
         'assigned_to': alert_data.get('assigned_to'),
         'raw_log': alert_data.get('raw_log'),
-        'parsed_data': Json(alert_data.get('parsed_data', {})),
-        'extra_data': Json(alert_data.get('extra_data', {})),
+        'extra_data': Json(extra_data),
         'first_seen': alert_data.get('first_seen'),
         'last_seen': alert_data.get('last_seen'),
         'tags': Json(alert_data.get('tags', []))
@@ -990,8 +987,15 @@ def query_alerts(session, start_time=None, end_time=None,
         params['start_time'] = start_time
     
     if end_time:
-        conditions.append("first_seen <= :end_time")
-        params['end_time'] = end_time
+        conditions.append("first_seen < :end_time_next")
+        # 将结束日期加一天，确保包含结束日全天的数据
+        from datetime import datetime, timedelta
+        try:
+            end_dt = datetime.strptime(end_time, '%Y-%m-%d')
+            params['end_time_next'] = (end_dt + timedelta(days=1)).strftime('%Y-%m-%d')
+        except ValueError:
+            # 如果 end_time 不是纯日期格式，直接使用原始值
+            params['end_time_next'] = end_time
     
     if severity:
         conditions.append("severity = :severity")
@@ -1061,8 +1065,15 @@ def get_alert_stats(session, start_time=None, end_time=None) -> dict:
         params['start_time'] = start_time
     
     if end_time:
-        conditions.append("first_seen <= :end_time")
-        params['end_time'] = end_time
+        conditions.append("first_seen < :end_time_next")
+        # 将结束日期加一天，确保包含结束日全天的数据
+        from datetime import datetime, timedelta
+        try:
+            end_dt = datetime.strptime(end_time, '%Y-%m-%d')
+            params['end_time_next'] = (end_dt + timedelta(days=1)).strftime('%Y-%m-%d')
+        except ValueError:
+            # 如果 end_time 不是纯日期格式，直接使用原始值
+            params['end_time_next'] = end_time
     
     where_clause = " AND ".join(conditions) if conditions else "1=1"
     
@@ -1198,8 +1209,15 @@ def get_alert_trend(session, bucket: str = '1 hour',
         params['start_time'] = start_time
     
     if end_time:
-        conditions.append("first_seen <= :end_time")
-        params['end_time'] = end_time
+        conditions.append("first_seen < :end_time_next")
+        # 将结束日期加一天，确保包含结束日全天的数据
+        from datetime import datetime, timedelta
+        try:
+            end_dt = datetime.strptime(end_time, '%Y-%m-%d')
+            params['end_time_next'] = (end_dt + timedelta(days=1)).strftime('%Y-%m-%d')
+        except ValueError:
+            # 如果 end_time 不是纯日期格式，直接使用原始值
+            params['end_time_next'] = end_time
     
     where_clause = " AND ".join(conditions) if conditions else "1=1"
     

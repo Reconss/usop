@@ -123,13 +123,28 @@ def create_app():
                 {'name': 'protocol', 'label': '协议', 'type': 'string', 'category': '网络-主动存储', 'required': False, 'auto_generated': False},
                 {'name': 'hostname', 'label': '主机名', 'type': 'string', 'category': '资产-主动存储', 'required': False, 'auto_generated': False},
                 {'name': 'raw_log', 'label': '原始日志', 'type': 'string', 'category': '原始数据-主动存储', 'required': False, 'auto_generated': False},
-                {'name': 'parsed_data', 'label': '解析数据', 'type': 'json', 'category': '原始数据-主动存储', 'required': False, 'auto_generated': False},
-            ]
+                {'name': 'extra_data.parsed', 'label': '解析数据(extra)', 'type': 'json', 'category': '原始数据-主动存储', 'required': False, 'auto_generated': False},
+                            ]
+
+            # 清理重复创建的预置表
+            try:
+                duplicates = StorageTable.query.filter(
+                    StorageTable.name.in_(['alerts', 'security_alerts'])
+                ).all()
+                for dup in duplicates:
+                    db.session.delete(dup)
+                if duplicates:
+                    db.session.commit()
+                    print(f"✓ 已清理 {len(duplicates)} 个重复的预置存储表")
+            except Exception:
+                db.session.rollback()
 
             # 确保系统预置表存在（alert_logs 和 security_events）
+            from app.models import DataTable
             for table_name in ['alert_logs', 'security_events']:
-                if not StorageTable.query.filter_by(name=table_name).first():
-                    table = StorageTable(
+                st = StorageTable.query.filter_by(name=table_name).first()
+                if not st:
+                    st = StorageTable(
                         name=table_name,
                         display_name='安全告警表' if table_name == 'alert_logs' else '安全事件表',
                         data_source='系统',
@@ -141,10 +156,26 @@ def create_app():
                         row_count=0,
                         size='0 MB',
                         compression=True,
-                        auto_created=True,  # 标记为系统预置
+                        auto_created=True,
                         created_by_pipeline='system'
                     )
-                    db.session.add(table)
+                    db.session.add(st)
+                    db.session.flush()  # 获取 st.id
+                
+                # 同时在 data_tables 中创建对应记录（供 Pipeline 外键引用）
+                dt_id = f'tbl_{table_name}'
+                if not DataTable.query.get(dt_id):
+                    dt = DataTable(
+                        id=dt_id,
+                        name=table_name,
+                        code=table_name,
+                        description=f'系统预置{table_name}表',
+                        columns=SECURITY_ALERT_COLUMNS if table_name == 'alert_logs' else [],
+                        retention_days=90,
+                        status='active'
+                    )
+                    db.session.add(dt)
+            
             db.session.commit()
             print("✓ 系统预置存储表初始化完成")
         except Exception as e:
@@ -190,6 +221,8 @@ def create_app():
     from app.routes.hunting_api import hunting_api_bp
     from app.routes.users_api import users_api_bp
     from app.routes.ai_api import ai_api_bp
+    from app.routes.ai_gateway import ai_gateway_bp
+    from app.routes.ai_capabilities import ai_capabilities_bp
     from app.routes.vulnerabilities_api import vulnerabilities_api_bp
     from app.routes.playbooks_api import playbooks_api_bp
     from app.routes.audit_logs_api import audit_logs_api_bp
@@ -234,6 +267,8 @@ def create_app():
     app.register_blueprint(hunting_api_bp, url_prefix='/api/hunting-api')
     app.register_blueprint(users_api_bp, url_prefix='/api/users-api')
     app.register_blueprint(ai_api_bp, url_prefix='/api/ai-api')
+    app.register_blueprint(ai_gateway_bp, url_prefix='/api/ai-api')
+    app.register_blueprint(ai_capabilities_bp, url_prefix='/api/ai-api')
     app.register_blueprint(vulnerabilities_api_bp, url_prefix='/api/vulnerabilities-api')
     app.register_blueprint(playbooks_api_bp, url_prefix='/api/playbooks-api')
     app.register_blueprint(audit_logs_api_bp, url_prefix='/api/audit-logs-api')
