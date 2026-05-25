@@ -1284,6 +1284,20 @@ def orchestrate_approve():
     result = approve_action(action_id, approved)
     return jsonify(result)
 
+@ai_api_bp.route('/approval/rules', methods=['GET'])
+@login_required
+def get_approval_rules_api():
+    from app.ai_analysis.approval import get_approval_rules
+    rules = get_approval_rules()
+    return jsonify({'success': True, 'data': rules})
+
+@ai_api_bp.route('/approval/history', methods=['GET'])
+@login_required
+def get_approval_history():
+    from app.ai_analysis.approval import get_action_history
+    history = get_action_history(limit=50)
+    return jsonify({'success': True, 'data': history})
+
 @ai_api_bp.route('/workflows', methods=['GET'])
 @login_required
 def list_workflows():

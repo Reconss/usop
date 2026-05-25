@@ -94,6 +94,21 @@ def create_app():
             db.session.commit()
             print("Default admin user created: admin / admin123")
 
+        # 初始化默认角色（幂等）
+        from app.models.extensions import Role as RoleModel
+        default_roles = [
+            {'id': 'admin', 'name': '超级管理员', 'description': '系统最高权限，可审批所有操作', 'permissions': ['*'], 'approval_level': 3, 'can_approve': ['*'], 'max_auto_approve': 0, 'is_system': True},
+            {'id': 'senior_analyst', 'name': '安全主管', 'description': '高级安全分析师，可审批中高风险操作', 'permissions': ['alerts.read', 'alerts.write', 'events.read', 'events.write', 'approve.level2', 'approve.level3'], 'approval_level': 3, 'can_approve': ['block_ip', 'unblock_ip', 'isolate_host', 'quarantine_file', 'terminate_process', 'modify_firewall', 'whitelist_add'], 'max_auto_approve': 0, 'is_system': True},
+            {'id': 'analyst', 'name': '安全分析师', 'description': '日常安全运营，可审批中风险操作', 'permissions': ['alerts.read', 'alerts.write', 'events.read', 'approve.level2'], 'approval_level': 2, 'can_approve': ['block_ip', 'unblock_ip', 'quarantine_file', 'whitelist_add'], 'max_auto_approve': 3, 'is_system': True},
+            {'id': 'operator', 'name': '安全运维', 'description': '安全设备运维，仅可执行低风险操作', 'permissions': ['alerts.read', 'events.read'], 'approval_level': 1, 'can_approve': ['whitelist_add'], 'max_auto_approve': 5, 'is_system': True},
+            {'id': 'auditor', 'name': '审计员', 'description': '只读权限，审计所有操作记录', 'permissions': ['alerts.read', 'events.read', 'audit.read'], 'approval_level': 1, 'can_approve': [], 'max_auto_approve': 0, 'is_system': True},
+        ]
+        for rd in default_roles:
+            if not RoleModel.query.get(rd['id']):
+                role = RoleModel(**rd)
+                db.session.add(role)
+        db.session.commit()
+        
         # 运行存储表迁移（确保安全告警表存在）
         try:
             from app.routes.storage_tables import StorageTable
@@ -101,35 +116,30 @@ def create_app():
             import json
             
             # 安全告警表字段定义
-            SECURITY_ALERT_COLUMNS = [
-                # 自动生成的字段（系统管理，用户不可配置）
-                {'name': 'id', 'label': 'ID', 'type': 'number', 'category': '系统-自动生成', 'required': True, 'auto_generated': True},
-                {'name': 'alert_code', 'label': '告警编号', 'type': 'string', 'category': '系统-自动生成', 'required': True, 'auto_generated': True},
-                {'name': 'first_seen', 'label': '首次发现时间', 'type': 'datetime', 'category': '系统-自动生成', 'required': True, 'auto_generated': True},
-                {'name': 'last_seen', 'label': '最近发现时间', 'type': 'datetime', 'category': '系统-自动生成', 'required': True, 'auto_generated': True},
-                {'name': 'created_at', 'label': '创建时间', 'type': 'datetime', 'category': '系统-自动生成', 'required': True, 'auto_generated': True},
-                {'name': 'updated_at', 'label': '更新时间', 'type': 'datetime', 'category': '系统-自动生成', 'required': False, 'auto_generated': True},
-                # 主动存储的字段（用户可配置写入）
-                {'name': 'title', 'label': '告警标题', 'type': 'string', 'category': '告警属性-主动存储', 'required': True, 'auto_generated': False},
-                {'name': 'description', 'label': '告警描述', 'type': 'string', 'category': '告警属性-主动存储', 'required': False, 'auto_generated': False},
-                {'name': 'severity', 'label': '严重程度', 'type': 'string', 'category': '告警属性-主动存储', 'required': True, 'auto_generated': False},
-                {'name': 'status', 'label': '状态', 'type': 'string', 'category': '告警属性-主动存储', 'required': True, 'auto_generated': False},
-                {'name': 'source', 'label': '数据源', 'type': 'string', 'category': '数据源-主动存储', 'required': True, 'auto_generated': False},
-                {'name': 'source_product', 'label': '产品类型', 'type': 'string', 'category': '数据源-主动存储', 'required': False, 'auto_generated': False},
-                {'name': 'src_ip', 'label': '源地址', 'type': 'string', 'category': '网络-主动存储', 'required': False, 'auto_generated': False},
-                {'name': 'src_port', 'label': '源端口', 'type': 'number', 'category': '网络-主动存储', 'required': False, 'auto_generated': False},
-                {'name': 'dst_ip', 'label': '目标地址', 'type': 'string', 'category': '网络-主动存储', 'required': False, 'auto_generated': False},
-                {'name': 'dst_port', 'label': '目标端口', 'type': 'number', 'category': '网络-主动存储', 'required': False, 'auto_generated': False},
-                {'name': 'protocol', 'label': '协议', 'type': 'string', 'category': '网络-主动存储', 'required': False, 'auto_generated': False},
-                {'name': 'hostname', 'label': '主机名', 'type': 'string', 'category': '资产-主动存储', 'required': False, 'auto_generated': False},
-                {'name': 'raw_log', 'label': '原始日志', 'type': 'string', 'category': '原始数据-主动存储', 'required': False, 'auto_generated': False},
-                {'name': 'extra_data.parsed', 'label': '解析数据(extra)', 'type': 'json', 'category': '原始数据-主动存储', 'required': False, 'auto_generated': False},
-                            ]
+            ALERTS_TABLE_COLUMNS = [
+                {'name':'alert_code','label':'告警编号','type':'string','required':True},
+                {'name':'title','label':'告警标题','type':'string','required':True},
+                {'name':'description','label':'告警描述','type':'string','required':False},
+                {'name':'severity','label':'严重程度','type':'string','required':True},
+                {'name':'status','label':'状态','type':'string','required':True},
+                {'name':'source','label':'数据源','type':'string','required':False},
+                {'name':'source_product','label':'产品类型','type':'string','required':False},
+                {'name':'category','label':'分类','type':'string','required':False},
+                {'name':'src_ip','label':'源地址','type':'string','required':False},
+                {'name':'src_port','label':'源端口','type':'number','required':False},
+                {'name':'dst_ip','label':'目标地址','type':'string','required':False},
+                {'name':'dst_port','label':'目标端口','type':'number','required':False},
+                {'name':'protocol','label':'协议','type':'string','required':False},
+                {'name':'hostname','label':'主机名','type':'string','required':False},
+                {'name':'raw_log','label':'原始日志','type':'string','required':False},
+                {'name':'extra_data','label':'扩展数据','type':'json','required':False},
+            ]
+
 
             # 清理重复创建的预置表
             try:
                 duplicates = StorageTable.query.filter(
-                    StorageTable.name.in_(['alerts', 'security_alerts'])
+                    StorageTable.name.in_(['security_alerts'])
                 ).all()
                 for dup in duplicates:
                     db.session.delete(dup)
@@ -139,20 +149,20 @@ def create_app():
             except Exception:
                 db.session.rollback()
 
-            # 确保系统预置表存在（alert_logs 和 security_events）
+            # 确保系统预置表存在（alert_logs / security_events / alerts）
             from app.models import DataTable
-            for table_name in ['alert_logs', 'security_events']:
+            for table_name in ['security_events', 'alerts']:
                 st = StorageTable.query.filter_by(name=table_name).first()
                 if not st:
                     st = StorageTable(
                         name=table_name,
-                        display_name='安全告警表' if table_name == 'alert_logs' else '安全事件表',
+                        display_name='TimescaleDB告警表' if table_name == 'alerts' else '安全事件表',
                         data_source='系统',
-                        log_type='timescaledb' if table_name == 'alert_logs' else 'postgresql',
+                        log_type='timescaledb' if table_name == 'alerts' else 'postgresql',
                         retention_days=90,
                         partition_interval='1天',
-                        indexes=[{'field': 'alert_code', 'type': 'btree'}] if table_name == 'alert_logs' else [],
-                        columns=SECURITY_ALERT_COLUMNS if table_name == 'alert_logs' else [],
+                        indexes=[{'field': 'alert_code', 'type': 'btree'}] if table_name == 'alerts' else [],
+                        columns=ALERTS_TABLE_COLUMNS if table_name == 'alerts' else [],
                         row_count=0,
                         size='0 MB',
                         compression=True,
@@ -170,7 +180,7 @@ def create_app():
                         name=table_name,
                         code=table_name,
                         description=f'系统预置{table_name}表',
-                        columns=SECURITY_ALERT_COLUMNS if table_name == 'alert_logs' else [],
+                        columns=ALERTS_TABLE_COLUMNS if table_name == 'alerts' else [],
                         retention_days=90,
                         status='active'
                     )
@@ -336,6 +346,14 @@ def create_app():
         init_waf_consumer(app)
     except Exception as e:
         print(f"⚠ WAF 消费者初始化失败: {e}")
+
+    # 启动 APScheduler 定时任务
+    try:
+        from app.scheduler import start_scheduler
+        start_scheduler(app)
+        print('AI 告警自动分析调度器已启动 (60s 间隔)')
+    except Exception as e:
+        print(f'AI 调度器启动失败 (非致命): {e}')
 
     # 404 handler
     @app.errorhandler(404)

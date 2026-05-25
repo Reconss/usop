@@ -314,6 +314,9 @@ class Role(db.Model):
     name = db.Column(db.String(100), nullable=False)
     description = db.Column(db.Text)
     permissions = db.Column(db.JSON, default=list)
+    approval_level = db.Column(db.Integer, default=1)  # 1=普通, 2=主管, 3=高级管理
+    can_approve = db.Column(db.JSON, default=list)  # 可审批的操作类型列表
+    max_auto_approve = db.Column(db.Integer, default=0)
     is_system = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
@@ -323,6 +326,9 @@ class Role(db.Model):
             'name': self.name,
             'description': self.description,
             'permissions': self.permissions or [],
+            'approval_level': self.approval_level,
+            'can_approve': self.can_approve or [],
+            'max_auto_approve': self.max_auto_approve,
             'is_system': self.is_system,
             'created_at': self.created_at.isoformat() if self.created_at else None
         }

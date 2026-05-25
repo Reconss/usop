@@ -94,9 +94,9 @@ const severityConfig: Record<string, { color: string; bg: string; label: string 
 };
 
 const defaultPipelines: ParsePipeline[] = [
-  { id: 'p1', name: 'JSON标准解析', priority: 1, parser: 'json', isActive: true, description: '标准JSON格式日志解析', fieldMappings: [{ sourceField: 'timestamp', targetField: 'ts', type: 'datetime' }], logTypeId: 'lt-003', logTypeName: '应用日志', storageTableId: 'st-001', storageTableName: 'alert_logs', mode: 'single', formatTemplateId: 'tpl-json', formatTemplateName: '通用JSON' },
+  { id: 'p1', name: 'JSON标准解析', priority: 1, parser: 'json', isActive: true, description: '标准JSON格式日志解析', fieldMappings: [{ sourceField: 'timestamp', targetField: 'ts', type: 'datetime' }], logTypeId: 'lt-003', logTypeName: '应用日志', storageTableId: 'st-001', storageTableName: 'alerts', mode: 'single', formatTemplateId: 'tpl-json', formatTemplateName: '通用JSON' },
   { id: 'p2', name: 'Syslog RFC5424', priority: 2, parser: 'syslog', isActive: true, description: 'Syslog RFC5424格式', logTypeId: 'lt-002', logTypeName: '系统日志', storageTableId: 'st-002', storageTableName: 'security_events', mode: 'single', formatTemplateId: 'tpl-syslog', formatTemplateName: 'Syslog RFC5424' },
-  { id: 'p3', name: 'CEF安全事件', priority: 3, parser: 'cef', isActive: true, description: 'ArcSight CEF格式', logTypeId: 'lt-001', logTypeName: '安全日志', storageTableId: 'st-001', storageTableName: 'alert_logs', mode: 'single', formatTemplateId: 'tpl-cef', formatTemplateName: 'CEF标准格式' },
+  { id: 'p3', name: 'CEF安全事件', priority: 3, parser: 'cef', isActive: true, description: 'ArcSight CEF格式', logTypeId: 'lt-001', logTypeName: '安全日志', storageTableId: 'st-001', storageTableName: 'alerts', mode: 'single', formatTemplateId: 'tpl-cef', formatTemplateName: 'CEF标准格式' },
   { id: 'p4', name: 'Grok自定义', priority: 4, parser: 'grok', isActive: false, description: '自定义Grok模式', mode: 'single' },
   { id: 'p5', name: '智能识别', priority: 5, parser: 'auto', isActive: true, description: '自动识别格式', mode: 'multi', smartDetect: true }
 ];
@@ -338,7 +338,7 @@ const applySecurityFieldMapping = (
       };
     }
 
-    // 未映射的字段 → 归为额外数据（存入 parsedData / raw_log）
+    // 未映射的字段 → 归为额外数据（存入 extra_data）
     return {
       ...field,
       selected: false,
@@ -352,7 +352,7 @@ const applySecurityFieldMapping = (
 };
 
 // ==================== 简化字段类型 ====================
-// 只区分两种角色：标准告警字段（匹配后写入DB告警表）vs 额外字段（存入parsedData/raw_log）
+// 只区分两种角色：标准告警字段（匹配后写入DB告警表）vs 额外字段（存入extra_data）
 interface ParsedAlertField {
   name: string;
   type: string;
@@ -830,10 +830,9 @@ export default function SmartParser() {
     setShowTemplateSelector(false);
 
     if (hasSample) {
-      setTimeout(() => {
-        runTestParse(hasSample, template.parserType, template.parserConfig || {});
-        setActiveTab('parse');
-      }, 200);
+      // 直接调用，避免闭包问题
+      runTestParse(hasSample, template.parserType, template.parserConfig || {});
+      setActiveTab('parse');
     }
   }, [standardFields, initializeFieldMappings, runTestParse]);
 
@@ -904,7 +903,7 @@ export default function SmartParser() {
     setParsedFields(parsed);
     
     // 自动匹配：尝试将解析字段与标准字段进行匹配
-    const updatedMappings = fieldMappings.map(mapping => {
+    setFieldMappings(prev => prev.map(mapping => {
       // 查找是否有匹配的解析字段
       const matchedField = parsed.find(p => 
         p.name.toLowerCase() === mapping.targetField.toLowerCase() ||
@@ -922,10 +921,8 @@ export default function SmartParser() {
       }
       
       return mapping;
-    });
-    
-    setFieldMappings(updatedMappings);
-  }, [fieldMappings]);
+    }));
+  }, []); // 使用函数式更新，不再依赖 fieldMappings
 
   // 更新单个映射的源字段
   const updateMappingSourceField = useCallback((targetField: string, sourceField: string | null) => {
@@ -992,10 +989,10 @@ export default function SmartParser() {
     setSavingMappings(true);
     try {
       const mappings = fieldMappings
-        .filter(m => m.sourceField !== null)
+        .filter(m => m.sourceField !== null || m.defaultValue)
         .map((m, idx) => ({
           target_field: m.targetField,
-          source_field: m.sourceField!,
+          source_field: m.sourceField || '',
           field_type: m.fieldType,
           default_value: m.defaultValue,
           is_required: m.isRequired,
@@ -1107,8 +1104,8 @@ export default function SmartParser() {
 
     // 优先使用 fieldMappings（含目标表列定义），其次使用 configDetectedFields
     const selectedFields = fieldMappings.length > 0
-      ? fieldMappings.filter(m => m.sourceField !== null).map(m => ({
-          sourceField: m.sourceField!,
+      ? fieldMappings.filter(m => m.sourceField !== null || m.defaultValue).map(m => ({
+          sourceField: m.sourceField,  // null for unmapped fields with defaults
           targetField: m.targetField,
           type: m.fieldType,
           defaultValue: m.defaultValue,
@@ -1205,8 +1202,8 @@ export default function SmartParser() {
 
     // 优先使用 fieldMappings（含目标表列定义），其次使用 configDetectedFields
     const selectedFields = fieldMappings.length > 0
-      ? fieldMappings.filter(m => m.sourceField !== null).map(m => ({
-          sourceField: m.sourceField!,
+      ? fieldMappings.filter(m => m.sourceField !== null || m.defaultValue).map(m => ({
+          sourceField: m.sourceField,  // null for unmapped fields with defaults
           targetField: m.targetField,
           type: m.fieldType,
           defaultValue: m.defaultValue,
@@ -1391,9 +1388,8 @@ export default function SmartParser() {
     const parserType = pipeline.parser;
     const parserCfg = pipeline.parserConfig || {};
     if (sampleLog?.trim()) {
-      setTimeout(() => {
-        runTestParse(sampleLog, parserType, parserCfg);
-      }, 100);
+      // 直接调用，不再使用 setTimeout 避免闭包问题
+      runTestParse(sampleLog, parserType, parserCfg);
     }
 
     setShowAddModal(true);
@@ -2243,14 +2239,14 @@ export default function SmartParser() {
                     {renderParserConfig()}
 
                     {/* ========== 字段映射区域 ========== */}
-                    {parsedFields.length > 0 && (
+                    {(parsedFields.length > 0 || fieldMappings.length > 0) && (
                       <div className="space-y-6">
                         {/* ====== 头部统计 ====== */}
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-3">
                             <Sparkles className="w-5 h-5 text-primary" />
                             <span className="font-bold text-text-primary">字段映射</span>
-                            <span className="text-sm text-text-secondary">解析出 {parsedFields.length} 个字段</span>
+                            {parsedFields.length > 0 && <span className="text-sm text-text-secondary">解析出 {parsedFields.length} 个字段</span>}
                             <span className="text-xs px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded-full font-medium border border-emerald-200">
                               <CheckCircle className="w-3 h-3 inline mr-1" />
                               {fieldMappings.filter(m => m.sourceField !== null).length} / {fieldMappings.length} 已映射
@@ -2278,7 +2274,7 @@ export default function SmartParser() {
                               formData.storageTableId
                                 ? (storageTables.find(t => String(t.id) === String(formData.storageTableId))?.name || '目标表')
                                 : '标准告警'
-                            }</strong>的字段。已映射的字段会写入对应存储表，未映射的字段存入 parsedData JSON。
+                            }</strong>的字段。已映射的字段会写入对应存储表，未映射的字段存入 extra_data。
                           </span>
                         </div>
 
@@ -2363,29 +2359,24 @@ export default function SmartParser() {
                                         </select>
                                       </div>
                                       
-                                      {/* 样本值预览 */}
-                                      {mapping.sampleValue !== undefined && (
-                                        <div className="mt-2 text-xs text-text-secondary font-mono bg-page-bg p-2 rounded border border-border-color truncate">
-                                          样本值: {String(mapping.sampleValue).substring(0, 80)}{String(mapping.sampleValue).length > 80 ? '...' : ''}
-                                        </div>
-                                      )}
-                                      
-                                      {/* 默认值输入（当必填但未映射时） */}
-                                      {mapping.isRequired && !isMapped && (
-                                        <div className="flex items-center gap-2 mt-2">
-                                          <span className="text-xs text-amber-600 whitespace-nowrap">默认值:</span>
+                                      {/* 样本值 + 默认值 同一行 */}
+                                      <div className="flex items-center gap-3 mt-2">
+                                        {mapping.sampleValue !== undefined && (
+                                          <div className="flex-1 text-[11px] text-text-secondary font-mono bg-page-bg px-2 py-1.5 rounded border border-border-color truncate min-w-0">
+                                            <span className="text-text-muted font-sans">样本: </span>{String(mapping.sampleValue).substring(0, 60)}{String(mapping.sampleValue).length > 60 ? '...' : ''}
+                                          </div>
+                                        )}
+                                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                                          <span className="text-[11px] text-text-muted whitespace-nowrap">默认值:</span>
                                           <input
                                             type="text"
                                             value={mapping.defaultValue || ''}
                                             onChange={(e) => updateMappingDefaultValue(mapping.targetField, e.target.value)}
-                                            placeholder={mapping.defaultValue || '请输入默认值'}
-                                            className="flex-1 text-sm px-2 py-1 border border-amber-300 rounded-lg bg-amber-50 focus:outline-none focus:ring-2 focus:ring-amber-400"
+                                            placeholder={mapping.isRequired ? '必填字段' : '可选'}
+                                            className="w-28 text-[11px] px-2 py-1 border border-border-color rounded-lg bg-page-bg focus:outline-none focus:ring-2 focus:ring-primary/30"
                                           />
-                                          {mapping.defaultValue && !mapping.defaultValue && (
-                                            <span className="text-xs text-amber-500">使用预设: {mapping.defaultValue}</span>
-                                          )}
                                         </div>
-                                      )}
+                                      </div>
                                     </div>
                                   </div>
                                 </div>
@@ -2395,6 +2386,7 @@ export default function SmartParser() {
                         </div>
 
                         {/* ========== Section 2: 解析字段列表（可选择映射）========== */}
+                        {parsedFields.length > 0 && (
                         <div>
                           <div className="flex items-center gap-2 mb-3 pb-1.5 border-b-2 border-border-color-hover">
                             <FileJson className="w-5 h-5 text-text-secondary" />
@@ -2450,6 +2442,7 @@ export default function SmartParser() {
                             })}
                           </div>
                         </div>
+                        )}
 
                         {/* 统计信息 */}
                         <div className="p-4 bg-page-bg rounded-lg border border-border-color">
@@ -2463,7 +2456,7 @@ export default function SmartParser() {
                               <div className="text-xs text-text-secondary">缺少必填映射</div>
                             </div>
                             <div>
-                              <div className="text-2xl font-bold text-text-secondary">{parsedFields.length - fieldMappings.filter(m => m.sourceField !== null).length}</div>
+                              <div className="text-2xl font-bold text-text-secondary">{(parsedFields.length > 0 ? parsedFields.length : 0) - fieldMappings.filter(m => m.sourceField !== null).length}</div>
                               <div className="text-xs text-text-secondary">额外字段</div>
                             </div>
                           </div>
