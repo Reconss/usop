@@ -10,7 +10,7 @@ import {
   ArrowRight
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { dashboardApi, assetsApi } from '../services/api';
+import { dashboardApi, assetsApi, systemStatusApi } from '../services/api';
 import MetricCard from '../components/MetricCard';
 import EventTrendChart from '../components/EventTrendChart';
 import EventTypeChart from '../components/EventTypeChart';
@@ -62,16 +62,18 @@ const Dashboard: React.FC = () => {
   const [distribution, setDistribution] = useState(defaultDistribution);
   const [attackSources, setAttackSources] = useState(defaultAttackSources);
   const [riskAssets, setRiskAssets] = useState(defaultRiskAssets);
+  const [storageStatus, setStorageStatus] = useState<any>(null);
 
   const fetchData = async () => {
     try {
       // 并行获取多个API数据
-      const [metricsRes, trendRes, distributionRes, alertsRes, assetsRes] = await Promise.allSettled([
+      const [metricsRes, trendRes, distributionRes, alertsRes, assetsRes, storageRes] = await Promise.allSettled([
         dashboardApi.getMetrics(),
         dashboardApi.getAlertsTrend(7),
         dashboardApi.getEventDistribution(),
         dashboardApi.getTopAlerts(5),
-        assetsApi.getAssets({ page_size: 100 })
+        assetsApi.getAssets({ page_size: 100 }),
+        systemStatusApi.getStorageStatus()
       ]);
 
       // 处理指标数据
@@ -122,6 +124,11 @@ const Dashboard: React.FC = () => {
           }));
         if (riskyAssets.length > 0) setRiskAssets(riskyAssets);
       }
+
+      // 处理存储状态
+      if (storageRes.status === 'fulfilled' && storageRes.value.success) {
+        setStorageStatus(storageRes.value.data);
+      }
     } catch (error) {
       console.error('Dashboard API Error:', error);
     }
@@ -162,7 +169,8 @@ const Dashboard: React.FC = () => {
     { id: 'alerts', title: '今日告警数', value: (metrics.todayAlerts || 0).toLocaleString(), trend: metrics.alertsTrend || 0, icon: AlertCircle, color: '#6366f1', link: '/detection/investigation' },
     { id: 'events', title: '待处理事件', value: (metrics.pendingEvents || 0).toString(), trend: metrics.pendingTrend || 0, icon: Activity, color: '#f97316', link: '/detection/events' },
     { id: 'assets', title: '资产数量', value: (metrics.totalAssets || 0).toLocaleString(), trend: metrics.assetsTrend || 0, icon: Server, color: '#10b981', link: '/assets/inventory' },
-    { id: 'risk', title: '高危资产', value: (metrics.highRiskAssets || 0).toString(), trend: metrics.healthTrend || 0, icon: ShieldAlert, color: '#ef4444', link: '/assets/inventory' }
+    { id: 'risk', title: '高危资产', value: (metrics.highRiskAssets || 0).toString(), trend: metrics.healthTrend || 0, icon: ShieldAlert, color: '#ef4444', link: '/assets/inventory' },
+    { id: 'storage', title: '存储状态', value: storageStatus?.elasticsearch?.status === 'healthy' ? '正常' : '未知', trend: 0, icon: Server, color: '#8b5cf6', link: '/data/ingestion' }
   ];
 
   if (loading) {

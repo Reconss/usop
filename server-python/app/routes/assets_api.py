@@ -348,6 +348,151 @@ def get_stats():
     })
 
 
+@assets_api_bp.route('/assets/sync-scan/<int:task_id>', methods=['POST'])
+@login_required
+def sync_scan_results(task_id):
+    """将扫描任务结果同步到资产清单（端口、漏洞、HTTP指纹等）"""
+    from app.models import ScanResult, ScanTask
+    task = ScanTask.query.get(task_id)
+    if not task:
+        return jsonify({'success': False, 'error': '任务不存在'}), 404
+
+    results = ScanResult.query.filter_by(task_id=task_id).all()
+    imported = {"ports": 0, "vulns": 0, "web": 0, "subdomains": 0}
+    errors = []
+
+    for sr in results:
+        target = sr.target
+        data = sr.result_data or sr.data or {}
+        scan_type = sr.result_type or sr.type or ""
+
+        # 查找或创建资产
+        asset = Asset.query.filter(
+            db.or_(Asset.ip == target, Asset.name == target)
+        ).first()
+        if not asset:
+            # 自动创建资产
+            asset = Asset(
+                name=target,
+                type="ip" if target[0].isdigit() else "domain",
+                ip=target if target[0].isdigit() else None,
+                domain=target if not target[0].isdigit() else None,
+                status="online"
+            )
+            db.session.add(asset)
+            db.session.flush()
+
+        try:
+            if scan_type in ("port", "naabu", "masscan") and data.get("port"):
+                port_num = data["port"]
+                existing = AssetPort.query.filter_by(
+                    asset_id=asset.id, port=port_num
+                ).first()
+                if not existing:
+                    ap = AssetPort(
+                        asset_id=asset.id,
+                        port=port_num,
+                        protocol=data.get("protocol", "tcp"),
+                        service=data.get("service", ""),
+                        version=data.get("version", ""),
+                        state="open"
+                    )
+                    db.session.add(ap)
+                    imported["ports"] += 1
+
+            elif scan_type in ("web", "httpx") and data.get("url"):
+                # 保存 HTTP 指纹到 extra_data
+                web_info = {
+                    "url": data.get("url", ""),
+                    "status_code": data.get("status_code", 0),
+                    "title": data.get("title", ""),
+                    "tech": data.get("tech", []),
+                    "server": data.get("server", ""),
+                    "content_type": data.get("content_type", ""),
+                    "discovered_at": datetime.utcnow().isoformat()
+                }
+                web_results = asset.extra_data.get("web_results", []) if asset.extra_data else []
+                # 去重
+                existing_urls = {w.get("url") for w in web_results}
+                if web_info["url"] not in existing_urls:
+                    web_results.append(web_info)
+                extra = asset.extra_data or {}
+                extra["web_results"] = web_results[:50]
+                asset.extra_data = extra
+                imported["web"] += 1
+
+            elif scan_type in ("vuln", "nuclei") and data.get("name"):
+                # 创建漏洞关联
+                vuln_id = f"scan-{hash(data.get('template', data.get('name', ''))) % 10**8}"
+                vuln = Vulnerability.query.get(vuln_id)
+                if not vuln:
+                    vuln = Vulnerability(
+                        id=vuln_id,
+                        name=data.get("name", "Unknown"),
+                        severity=data.get("severity", "medium"),
+                        description=data.get("description", ""),
+                        category="scan"
+                    )
+                    db.session.add(vuln)
+                    db.session.flush()
+
+                existing_av = AssetVulnerability.query.filter_by(
+                    asset_id=asset.id, vuln_id=vuln_id
+                ).first()
+                if not existing_av:
+                    av = AssetVulnerability(
+                        asset_id=asset.id,
+                        vuln_id=vuln_id,
+                        vulnerability=vuln,
+                        severity=data.get("severity", "medium"),
+                        status="open",
+                        evidence=data.get("matched", ""),
+                        plugin_name=data.get("template", "")
+                    )
+                    db.session.add(av)
+                    imported["vulns"] += 1
+
+            elif scan_type in ("subdomain", "dns") and data.get("subdomain"):
+                sub = data["subdomain"]
+                ip = data.get("ip", "")
+                # 每个子域名创建独立资产
+                sub_asset = Asset.query.filter(
+                    db.or_(Asset.name == sub, Asset.ip == ip)
+                ).first()
+                if not sub_asset:
+                    sub_asset = Asset(
+                        name=sub,
+                        type="domain",
+                        ip=ip if ip else None,
+                        domain=sub,
+                        hostname=sub.split('.', 1)[1] if '.' in sub else sub,
+                        status="online"
+                    )
+                    db.session.add(sub_asset)
+                    db.session.flush()
+                # 同时记录到主资产的子域名列表
+                subs = asset.extra_data.get("subdomains", []) if asset.extra_data else []
+                if sub not in subs:
+                    subs.append(sub)
+                extra = asset.extra_data or {}
+                extra["subdomains"] = subs
+                asset.extra_data = extra
+                imported["subdomains"] += 1
+
+        except Exception as e:
+            errors.append({"target": target, "error": str(e)})
+
+    if any(imported.values()):
+        asset.last_scan_at = datetime.utcnow()
+        asset.last_scan_id = task_id
+        db.session.commit()
+
+    return jsonify({
+        "success": True,
+        "data": {"imported": imported, "errors": errors if errors else None}
+    })
+
+
 @assets_api_bp.route('/assets/export', methods=['GET'])
 @login_required
 def export_assets():

@@ -13,31 +13,29 @@ events_api_bp = Blueprint('events_api', __name__)
 
 
 def generate_event_code():
-    """生成事件ID，格式为：EVT-年月日-三位序号"""
+    """生成事件ID，格式为：EVT-年月日-序号（使用数据库数值最大避免字符串排序问题）"""
     today = datetime.utcnow().strftime('%Y%m%d')
+    prefix = f'EVT-{today}-'
     
-    # 查找今天已存在的最大序号
-    max_code = db.session.query(func.max(Event.event_code)).filter(
-        Event.event_code.like(f'EVT-{today}%')
+    # 使用数据库函数提取数字部分求最大值（避免1000 < 999的字符串排序问题）
+    from sqlalchemy import cast, Integer, func as _f
+    max_num = db.session.query(
+        _f.max(
+            cast(
+                _f.substring(Event.event_code, len(prefix) + 1),
+                Integer
+            )
+        )
+    ).filter(
+        Event.event_code.like(f'{prefix}%')
     ).scalar()
     
-    if max_code:
-        try:
-            # 提取序号部分并加1 (格式: EVT-20250115-001)
-            parts = max_code.split('-')
-            if len(parts) >= 3:
-                last_seq = int(parts[-1])
-                new_seq = last_seq + 1
-            else:
-                new_seq = 1
-        except (ValueError, IndexError):
-            new_seq = 1
+    if max_num:
+        new_seq = max_num + 1
     else:
         new_seq = 1
     
-    return f"EVT-{today}-{new_seq:03d}"
-
-
+    return f"{prefix}{new_seq:03d}"
 def create_action_record(event_id, action, user_id, user_name, content=None, 
                          previous_status=None, new_status=None,
                          previous_severity=None, new_severity=None,
@@ -316,7 +314,7 @@ def update_event_status(event_id):
     
     data = request.get_json()
     new_status = data.get('status')
-    valid_statuses = ['new', 'investigating', 'closed', 'false_positive', 'active', 'resolved']
+    valid_statuses = ['new', 'investigating', 'closed', 'false_positive', 'active', 'resolved', 'pending_approval', 'approval_rejected']
     
     if new_status not in valid_statuses:
         return jsonify({'success': False, 'error': '无效的状态'}), 400
@@ -783,4 +781,73 @@ def batch_delete():
     return jsonify({
         'success': True,
         'data': {'deleted_count': deleted}
+    })
+
+@events_api_bp.route('/approvals/trigger-event-action', methods=['POST'])
+@login_required
+def trigger_event_action_after_approval():
+    """审批通过后触发事件action记录"""
+    from app.models import PlaybookApproval, Event, EventAction
+    
+    data = request.get_json()
+    event_id = data.get('event_id')
+    approval_id = data.get('approval_id')
+    
+    if not event_id or not approval_id:
+        return jsonify({'success': False, 'error': '缺少必要参数'}), 400
+    
+    # 获取审批记录
+    approval = PlaybookApproval.query.get(approval_id)
+    if not approval:
+        return jsonify({'success': False, 'error': '审批记录不存在'}), 404
+    
+    if approval.status != 'approved':
+        return jsonify({'success': False, 'error': '审批未通过'}), 400
+    
+    # 获取事件
+    event = Event.query.filter_by(event_code=event_id).first()
+    if not event and event_id.isdigit():
+        event = Event.query.get(int(event_id))
+    
+    if not event:
+        return jsonify({'success': False, 'error': '事件不存在'}), 404
+    
+    # 映射action_type到EventActionType
+    action_type_map = {
+        'block_ip': 'playbook_triggered',
+        'isolate_host': 'playbook_triggered',
+        'reset_password': 'playbook_triggered',
+        'modify_firewall': 'playbook_triggered',
+        'delete_host': 'playbook_triggered'
+    }
+    
+    action_type = action_type_map.get(approval.approval_type, 'playbook_triggered')
+    
+    # 创建处置记录
+    action_label = approval.approval_type.replace('_', ' ').title()
+    
+    action_record = EventAction(
+        event_id=event.event_code,
+        action=action_type,
+        user_id=getattr(request, 'user_id', 1),
+        user_name=getattr(request, 'username', 'System'),
+        content=f'审批通过：{action_label} 操作 (审批ID: {approval_id})',
+        extra_data={
+            'approval_id': approval_id,
+            'approval_type': approval.approval_type,
+            'params': approval.params,
+            'approvers': approval.approver_name
+        }
+    )
+    
+    db.session.add(action_record)
+    db.session.commit()
+    
+    return jsonify({
+        'success': True,
+        'data': {
+            'event_id': event_id,
+            'action_id': action_record.id,
+            'action_type': action_type
+        }
     })

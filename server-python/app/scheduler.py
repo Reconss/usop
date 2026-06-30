@@ -17,6 +17,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 logger = logging.getLogger(__name__)
 
 _scheduler: Optional[BackgroundScheduler] = None
+_app_instance = None  # Flask app reference for background thread
 _LOCK_FILE = os.path.join(os.path.dirname(__file__), '..', 'data', 'scheduler.lock')
 
 
@@ -48,12 +49,89 @@ def _release_lock():
         pass
 
 
+
+
+def _run_playbook_scheduled():
+    """执行定时触发的剧本"""
+    try:
+        global _app_instance
+        if _app_instance is None:
+            logger.warning("[调度器] 应用未初始化，跳过剧本执行")
+            return
+        with _app_instance.app_context():
+            from app.models import Playbook
+            from app.engine.playbook_engine import playbook_engine as engine
+            from datetime import datetime
+            
+            # 查找已发布且配置了定时触发的剧本
+            playbooks = Playbook.query.filter(
+                Playbook.status.in_(['published', 'enabled'])
+            ).all()
+            
+            executed = 0
+            for playbook in playbooks:
+                trigger_config = playbook.trigger_config or {}
+                if trigger_config.get('trigger_type') == 'schedule':
+                    schedule = trigger_config.get('schedule')
+                    if not schedule:
+                        continue
+                    
+                    # 检查是否应该执行 (简化: 每隔指定分钟执行)
+                    last_run = trigger_config.get('last_run')
+                    interval_minutes = trigger_config.get('interval_minutes', 60)
+                    
+                    should_run = True
+                    if last_run:
+                        try:
+                            last_time = datetime.fromisoformat(last_run)
+                            minutes_since = (datetime.utcnow() - last_time).total_seconds() / 60
+                            if minutes_since < interval_minutes:
+                                should_run = False
+                        except:
+                            pass
+                    
+                    if should_run:
+                        try:
+                            result = engine.execute(
+                                playbook=playbook,
+                                trigger_type='schedule',
+                                event={},
+                                alert={},
+                                params={'trigger': 'scheduled', 'skip_approval': True},
+                                executor='scheduler',
+                                request_info={'user_id': 0, 'username': 'scheduler', 'ip': '127.0.0.1'}
+                            )
+                            # 更新最后执行时间
+                            trigger_config['last_run'] = datetime.utcnow().isoformat()
+                            playbook.trigger_config = trigger_config
+                            from app.database import db
+                            db.session.commit()
+                            executed += 1
+                            logger.info(f"[调度器] 定时执行剧本: {playbook.name}")
+                        except Exception as e:
+                            logger.error(f"[调度器] 剧本执行失败: {playbook.name}, {e}")
+            
+            if executed > 0:
+                logger.info(f"[调度器] 定时剧本执行完成: {executed} 个剧本")
+    except Exception as e:
+        logger.error(f"[调度器] 定时剧本执行异常: {e}")
+
+
 def _run_analysis():
     """执行 AI 告警分析（供 APScheduler 调用）"""
     try:
-        from app.ai_analysis.alert_analyzer import analyze_alert_batch
-        logger.info("[调度器] 开始 AI 告警自动分析...")
-        result = analyze_alert_batch(limit=50)
+        import os
+        if os.getenv('AI_ANALYSIS_ENABLED', 'false').lower() != 'true':
+            logger.info("[调度器] AI分析已禁用，跳过")
+            return
+        global _app_instance
+        if _app_instance is None:
+            logger.warning("[调度器] 应用未初始化，跳过分析")
+            return
+        with _app_instance.app_context():
+            from app.ai_analysis.alert_analyzer import analyze_alert_batch
+            logger.info("[调度器] 开始 AI 告警自动分析...")
+            result = analyze_alert_batch(limit=50)
         analyzed = result.get('analyzed', 0)
         events = result.get('events_created', 0)
         if analyzed > 0:
@@ -67,7 +145,9 @@ def start_scheduler(app=None):
     启动 APScheduler（仅在获取到文件锁的进程中运行）
     在 Flask create_app() 中调用
     """
-    global _scheduler
+    global _scheduler, _app_instance
+    
+    _app_instance = app
 
     if _scheduler is not None and _scheduler.running:
         return  # 已经启动
@@ -94,6 +174,15 @@ def start_scheduler(app=None):
             trigger=IntervalTrigger(seconds=60),
             id='ai_alert_analysis',
             name='AI告警自动分析',
+            replace_existing=True,
+        )
+        
+        # 每 60 秒检查并执行定时触发的剧本
+        _scheduler.add_job(
+            func=_run_playbook_scheduled,
+            trigger=IntervalTrigger(seconds=60),
+            id='playbook_scheduled',
+            name='定时剧本执行',
             replace_existing=True,
         )
 

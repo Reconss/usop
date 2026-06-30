@@ -813,6 +813,9 @@ class RuleEngine:
             db.session.add(event)
             db.session.flush()
 
+            # 自动触发剧本 (跳过审批)
+            _trigger_playbook_for_event(event, rule)
+
             # 记录审计日志
             audit = AuditLog(
                 user_id=1,

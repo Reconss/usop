@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Plus, Play, Pause, RotateCcw, FileText, MoreHorizontal, X, Search, Filter, Download, Clock, Globe, Shield, Server, Target, Check, ChevronRight, Trash2, Edit2, Eye, Copy, RefreshCw } from 'lucide-react';
 import type { ScanTask } from '../types';
-import { scansApi } from '../services/api';
+import { scansApi, assetsApi, request } from '../services/api';
 
 const getStatusBadge = (status: string) => {
   const styles: Record<string, string> = {
@@ -22,6 +22,8 @@ const getStatusText = (status: string) => {
 const scanTypes = [
   { value: 'port', label: '端口扫描', icon: Server, desc: '扫描目标开放端口' },
   { value: 'web', label: 'Web指纹', icon: Globe, desc: '识别Web应用指纹' },
+  { value: 'subdomain', label: '域名收集', icon: Globe, desc: '发现子域名和DNS记录' },
+  { value: 'full', label: '全量扫描', icon: Shield, desc: '端口+Web+漏洞+子域名' },
   { value: 'service', label: '服务识别', icon: Target, desc: '识别运行服务版本' },
   { value: 'vuln', label: '漏洞扫描', icon: Shield, desc: '检测安全漏洞' },
   { value: 'weakpass', label: '弱口令检测', icon: Shield, desc: '检测弱密码' }
@@ -30,6 +32,8 @@ const scanTypes = [
 export default function ScanTasks() {
   const [tasks, setTasks] = useState<ScanTask[]>([]);
   const [loading, setLoading] = useState(true);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [showNewTask, setShowNewTask] = useState(false);
   const [showDetail, setShowDetail] = useState(false);
   const [editingTask, setEditingTask] = useState<ScanTask | null>(null);
@@ -46,13 +50,28 @@ export default function ScanTasks() {
     timeout: 5
   });
 
+  const typeLabels: Record<string, string> = {
+    port: '端口扫描', web: 'Web指纹', subdomain: '域名收集',
+    full: '全量扫描', service: '服务识别', vuln: '漏洞扫描', weakpass: '弱口令检测'
+  };
+
   const fetchTasks = async () => {
     setLoading(true);
     try {
       const res = await scansApi.getScans({ page_size: 100 });
       if (res.success && res.data) {
         const items = Array.isArray(res.data) ? res.data : res.data.items || [];
-        setTasks(items);
+        const mapped = items.map((t: any) => ({
+          id: String(t.id),
+          target: t.target || t.name || '',
+          type: typeLabels[t.type] || t.type || '端口扫描',
+          status: t.status || 'queued',
+          progress: t.progress ?? 0,
+          createdAt: t.created_at || t.createdAt || new Date().toISOString(),
+          completedAt: t.completed_at || null,
+          agent: t.agent || t.location || ''
+        }));
+        setTasks(mapped);
       } else {
         setTasks([]);
       }
@@ -64,28 +83,90 @@ export default function ScanTasks() {
     }
   };
 
+  const showToast = (message: string, type: 'success' | 'error' = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
+  };
+
   useEffect(() => {
     fetchTasks();
+    const iv = setInterval(() => {
+      fetchTasks();
+    }, 5000);
+    return () => clearInterval(iv);
   }, []);
 
-  const handleCreateTask = () => {
+  const handleCreateTask = async () => {
     if (!formData.target) return;
-    const typeLabel = scanTypes.find(t => t.value === formData.type)?.label || '端口扫描';
-    const newTask: ScanTask = {
-      id: `SCAN-${new Date().getFullYear()}-${String(tasks.length + 1).padStart(3, '0')}`,
-      target: formData.target,
-      type: typeLabel,
-      status: 'queued',
-      agent: 'agent-beijing-01',
-      createdAt: new Date().toISOString()
-    };
-    setTasks([...tasks, newTask]);
+    try {
+      const res = await scansApi.createScan({
+        name: formData.name || formData.target,
+        type: formData.type,
+        target: formData.target,
+        results: { ports: formData.ports },
+        config: { threads: formData.threads, timeout: formData.timeout, schedule: formData.schedule }
+      });
+      if (res.success && res.data) {
+        // 创建成功后自动启动
+        const taskId = res.data.id;
+        await scansApi.startScan(taskId);
+        fetchTasks();
+        showToast('任务已创建并启动', 'success');
+      }
+    } catch (error) {
+      showToast('创建任务失败', 'error');
+    }
     setShowNewTask(false);
     setFormData({ target: '', type: 'port', name: '', description: '', schedule: 'once', cron: '', ports: '1-65535', threads: 100, timeout: 5 });
   };
 
-  const handleDeleteTask = (id: string) => {
-    setTasks(tasks.filter(t => t.id !== id));
+  const handleStartTask = async (id: number) => {
+    try {
+      await scansApi.startScan(id);
+      fetchTasks();
+      showToast('任务已启动', 'success');
+    } catch (error) {
+      showToast('启动失败', 'error');
+    }
+  };
+
+  const handleStopTask = async (id: number) => {
+    try {
+      await scansApi.stopScan(id);
+      fetchTasks();
+      showToast('任务已停止', 'success');
+    } catch (error) {
+      showToast('停止失败', 'error');
+    }
+  };
+
+  const handleDeleteTask = async (id: string) => {
+    try {
+      setDeleteConfirm(null);
+      await request(`/scans-api/tasks/${id}`, { method: 'DELETE' });
+      setTasks(tasks.filter(t => t.id !== id));
+      showToast('任务已删除', 'success');
+    } catch (error) {
+      showToast('删除失败', 'error');
+    }
+  };
+
+  const handleSyncToAssets = async (taskId: number) => {
+    try {
+      const res = await request(`/assets-api/assets/sync-scan/${taskId}`, { method: 'POST' });
+      if (res.success) {
+        const d = res.data?.imported || {};
+        const parts = [];
+        if (d.ports) parts.push(`${d.ports} 个端口`);
+        if (d.vulns) parts.push(`${d.vulns} 个漏洞`);
+        if (d.web) parts.push(`${d.web} 个Web服务`);
+        if (d.subdomains) parts.push(`${d.subdomains} 个子域名`);
+        showToast(`同步完成: ${parts.join(', ') || '无新数据'}`, 'success');
+        fetchTasks();
+      }
+    } catch (error) {
+      showToast('同步失败', 'error');
+    }
   };
 
   const openDetail = (task: ScanTask) => {
@@ -122,7 +203,7 @@ export default function ScanTasks() {
                   </div>
                   <div>
                     <label className="block text-text-secondary text-sm mb-2">扫描目标 <span className="text-critical">*</span></label>
-                    <input type="text" placeholder="IP、CIDR或域名，多个用逗号分隔" value={formData.target} onChange={(e) => setFormData({ ...formData, target: e.target.value })} className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary focus:border-primary focus:outline-none" />
+                    <input type="text" placeholder="IP、CIDR或域名（域名收集需输入主域名），多个用逗号分隔" value={formData.target} onChange={(e) => setFormData({ ...formData, target: e.target.value })} className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary focus:border-primary focus:outline-none" />
                     <p className="text-text-muted text-xs mt-1">支持: 192.168.1.1, 192.168.1.0/24, example.com</p>
                   </div>
                   <div>
@@ -195,7 +276,7 @@ export default function ScanTasks() {
               <th className="text-left py-4 px-6 text-text-secondary font-medium text-sm">类型</th>
               <th className="text-left py-4 px-6 text-text-secondary font-medium text-sm">状态</th>
               <th className="text-left py-4 px-6 text-text-secondary font-medium text-sm">进度</th>
-              <th className="text-left py-4 px-6 text-text-secondary font-medium text-sm">Agent</th>
+
               <th className="text-left py-4 px-6 text-text-secondary font-medium text-sm">创建时间</th>
               <th className="text-left py-4 px-6 text-text-secondary font-medium text-sm">操作</th>
             </tr>
@@ -215,14 +296,13 @@ export default function ScanTasks() {
                     </div>
                   ) : <span className="text-text-muted text-xs">-</span>}
                 </td>
-                <td className="py-4 px-6 text-text-secondary">{task.agent}</td>
+
                 <td className="py-4 px-6 text-text-secondary text-sm">{new Date(task.createdAt).toLocaleString()}</td>
                 <td className="py-4 px-6">
                   <div className="flex items-center gap-2">
                     <button onClick={() => openDetail(task)} className="p-1.5 hover:bg-primary/10 text-text-secondary hover:text-primary rounded transition-colors"><Eye className="w-4 h-4" /></button>
-                    {task.status === 'running' ? <button className="p-1.5 hover:bg-yellow-500/20 text-yellow-400 rounded transition-colors"><Pause className="w-4 h-4" /></button> : task.status === 'queued' ? <button className="p-1.5 hover:bg-blue-500/20 text-blue-400 rounded transition-colors"><Play className="w-4 h-4" /></button> : <button className="p-1.5 hover:bg-primary/20 text-primary rounded transition-colors"><RotateCcw className="w-4 h-4" /></button>}
-                    {task.status === 'completed' && <button className="p-1.5 hover:bg-green-500/20 text-green-400 rounded transition-colors"><FileText className="w-4 h-4" /></button>}
-                    <button onClick={() => handleDeleteTask(task.id)} className="p-1.5 hover:bg-red-500/20 text-text-secondary hover:text-red-400 rounded transition-colors"><Trash2 className="w-4 h-4" /></button>
+                    {task.status === 'running' ? <button onClick={() => handleStopTask(Number(task.id))} className="p-1.5 hover:bg-yellow-500/20 text-yellow-400 rounded transition-colors" title="停止"><Pause className="w-4 h-4" /></button> : task.status === 'queued' ? <button onClick={() => handleStartTask(Number(task.id))} className="p-1.5 hover:bg-blue-500/20 text-blue-400 rounded transition-colors" title="启动"><Play className="w-4 h-4" /></button> : task.status === 'completed' ? <button onClick={() => handleSyncToAssets(Number(task.id))} className="p-1.5 hover:bg-green-500/20 text-green-400 rounded transition-colors" title="同步到资产"><FileText className="w-4 h-4" /></button> : <button className="p-1.5 hover:bg-primary/20 text-primary rounded transition-colors" title="重试"><RotateCcw className="w-4 h-4" /></button>}
+                    <button onClick={() => setDeleteConfirm(task.id)} className="p-1.5 hover:bg-red-500/20 text-text-secondary hover:text-red-400 rounded transition-colors" title="删除"><Trash2 className="w-4 h-4" /></button>
                   </div>
                 </td>
               </motion.tr>
@@ -283,6 +363,30 @@ export default function ScanTasks() {
           </>
         )}
       </AnimatePresence>
+
+      {toast && (
+        <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }}
+          className={`fixed top-4 right-4 z-50 px-4 py-3 rounded-lg shadow-lg flex items-center gap-2 ${toast.type === 'success' ? 'bg-emerald-500 text-white' : 'bg-rose-500 text-white'}`}>
+          {toast.type === 'success' ? <Check className="w-5 h-5" /> : <X className="w-5 h-5" />}
+          <span className="text-sm font-medium">{toast.message}</span>
+        </motion.div>
+      )}
+
+      {/* 删除确认弹窗 */}
+      {deleteConfirm && (
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+          className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center" onClick={() => setDeleteConfirm(null)}>
+          <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }}
+            className="bg-card-bg border border-border-color rounded-xl p-6 max-w-sm w-full mx-4 shadow-xl" onClick={e => e.stopPropagation()}>
+            <h3 className="text-base font-semibold text-text-primary mb-2">确认删除</h3>
+            <p className="text-sm text-text-secondary mb-5">确定要删除该扫描任务吗？此操作不可撤销。</p>
+            <div className="flex justify-end gap-3">
+              <button onClick={() => setDeleteConfirm(null)} className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary rounded-lg hover:bg-card-bg-hover transition-colors">取消</button>
+              <button onClick={() => handleDeleteTask(deleteConfirm)} className="px-4 py-2 text-sm bg-rose-600 text-white rounded-lg hover:bg-rose-500 transition-colors">删除</button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
     </div>
   );
 }

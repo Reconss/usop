@@ -13,3 +13,5 @@ requests==2.31.0
 pydantic==2.10.0
 docker
 apscheduler==3.11.2
+elasticsearch==8.11.0
+flask-socketio

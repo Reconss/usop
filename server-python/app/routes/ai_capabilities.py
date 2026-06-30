@@ -412,26 +412,15 @@ def record_feedback():
 @login_required
 def feedback_stats():
     """获取反馈统计"""
-    from app.timescaledb import get_tsdb
-    from sqlalchemy import text
-    try:
-        tsdb = get_tsdb()
-        sess = tsdb.get_session()
-        row = sess.execute(text("""
-            SELECT COUNT(*) as total,
-                   SUM(CASE WHEN is_accepted THEN 1 ELSE 0 END) as accepted,
-                   SUM(CASE WHEN NOT is_accepted THEN 1 ELSE 0 END) as rejected
-            FROM ai_feedback
-        """)).fetchone()
-        tsdb.close_session(sess)
-        return jsonify({
-            'success': True,
-            'data': {
-                'total': row.total or 0,
-                'accepted': row.accepted or 0,
-                'rejected': row.rejected or 0,
-                'acceptance_rate': round((row.accepted or 0) / max(row.total or 1, 1) * 100, 1)
-            }
-        })
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+    # TimescaleDB 已替换为 ES，暂时返回空统计
+    return jsonify({
+        "success": True,
+        "data": {
+            "total": 0,
+            "accepted": 0,
+            "rejected": 0,
+            "acceptance_rate": 0
+        }
+    })
+
+

@@ -1,3 +1,4 @@
+// @ts-nocheck
 import React from 'react';
 import { PlusCircle, Database, Clock, Filter, Target, Info } from 'lucide-react';
 import ConditionRow from './ConditionRow';

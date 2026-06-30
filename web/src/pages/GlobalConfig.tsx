@@ -59,8 +59,13 @@ const defaultConfigs: ConfigItem[] = [
   { key: 'audit.retention_days', section: 'security', label: '审计日志保留(天)', description: '操作审计日志保留天数', type: 'number', value: 90 },
   { key: 'alert.retention_days', section: 'security', label: '告警数据保留(天)', description: '历史告警数据保留天数', type: 'number', value: 365 },
 
-  // 存储配置 - 匹配实际架构 TimescaleDB + PostgreSQL
-  { key: 'tsdb.host', section: 'storage', label: 'TimescaleDB地址', description: '时序数据库主机地址', type: 'text', value: 'localhost', placeholder: 'localhost' },
+  // 存储配置 - 匹配实际架构
+  { key: 'tsdb.host', section: 'storage', label: 'TimescaleDB地址', description: '时序数据库主机地址', type: 'text', value: 'timescale', placeholder: 'localhost' },
+  { key: 'es.host', section: 'storage', label: 'Elasticsearch地址', description: '日志搜索引擎地址', type: 'text', value: 'elasticsearch', placeholder: 'http://localhost:9200' },
+  { key: 'es.index_prefix', section: 'storage', label: 'ES索引前缀', description: '日志索引前缀', type: 'text', value: 'usop-' },
+  { key: 'openobserve.enabled', section: 'storage', label: '启用OpenObserve', description: '使用OpenObserve作为日志存储底座', type: 'boolean', value: false },
+  { key: 'openobserve.url', section: 'storage', label: 'OpenObserve地址', description: 'OpenObserve API地址', type: 'text', value: 'http://localhost:19080', placeholder: 'http://localhost:19080' },
+  { key: 'openobserve.org', section: 'storage', label: 'OpenObserve组织', description: '组织标识符', type: 'text', value: 'default' },
   { key: 'tsdb.port', section: 'storage', label: 'TimescaleDB端口', description: '时序数据库端口', type: 'number', value: 5433 },
   { key: 'tsdb.database', section: 'storage', label: 'TimescaleDB数据库', description: '时序数据库名称', type: 'text', value: 'postgres' },
   { key: 'pg.host', section: 'storage', label: 'PostgreSQL地址', description: '业务数据库主机地址', type: 'text', value: 'localhost', placeholder: 'localhost' },

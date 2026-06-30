@@ -274,8 +274,43 @@ export default function DetectionRules() {
     }
   };
 
+  // 规则统计
+  const ruleStats = useMemo(() => {
+    const total = rules.length;
+    const enabled = rules.filter(r => r.status === 'enabled').length;
+    const highSeverity = rules.filter(r => r.severity === 'critical' || r.severity === 'high').length;
+    const totalHits = rules.reduce((sum, r) => sum + (r.hitCount || 0), 0);
+    return { total, enabled, disabled: total - enabled, highSeverity, totalHits };
+  }, [rules]);
+
   return (
     <div className="space-y-6">
+      {/* 统计栏 */}
+      <div className="grid grid-cols-5 gap-4">
+        <div className="glass-card rounded-card p-4">
+          <p className="text-sm text-text-muted">总规则</p>
+          <p className="text-2xl font-bold text-text-primary">{ruleStats.total}</p>
+        </div>
+        <div className="glass-card rounded-card p-4">
+          <p className="text-sm text-text-muted">已启用</p>
+          <p className="text-2xl font-bold text-emerald-500">{ruleStats.enabled}</p>
+        </div>
+        <div className="glass-card rounded-card p-4">
+          <p className="text-sm text-text-muted">高危规则</p>
+          <p className="text-2xl font-bold text-rose-500">{ruleStats.highSeverity}</p>
+        </div>
+        <div className="glass-card rounded-card p-4">
+          <p className="text-sm text-text-muted">总命中</p>
+          <p className="text-2xl font-bold text-blue-500">{ruleStats.totalHits}</p>
+        </div>
+        <div className="glass-card rounded-card p-4">
+          <p className="text-sm text-text-muted">命中率</p>
+          <p className="text-2xl font-bold text-purple-500">
+            {ruleStats.total > 0 ? Math.round((ruleStats.enabled / ruleStats.total) * 100) : 0}%
+          </p>
+        </div>
+      </div>
+
       {/* Toast */}
       <AnimatePresence>
         {toast && (

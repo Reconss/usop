@@ -114,6 +114,27 @@ services:
     - 6379:6379
     volumes:
     - ./data/redis:/data
+  elasticsearch:
+    container_name: elasticsearch
+    image: elasticsearch:8.11.0
+    environment:
+    - discovery.type=single-node
+    - xpack.security.enabled=false
+    - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+    - 9200:9200
+    networks:
+    - log-platform
+    volumes:
+    - ./data/elasticsearch:/usr/share/elasticsearch/data
+    restart: unless-stopped
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - curl -f http://localhost:9200/_cluster/health || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 5
   timescale:
     container_name: timescale
     environment:
@@ -145,6 +166,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
       timescale:
         condition: service_healthy
     environment:
@@ -161,6 +184,8 @@ services:
     - REDIS_PORT=6379
     - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
     - FLINK_REST_API=http://flink-jobmanager:8081
+    - ES_HOSTS=http://elasticsearch:9200
+    - ES_INDEX_PREFIX=usop-alerts
     networks:
     - log-platform
     ports:

@@ -240,6 +240,8 @@ def create_app():
     from app.routes.data_sources_api import data_sources_api_bp
     from app.routes.log_types_api import log_types_api_bp
     from app.routes.log_search import log_search_bp
+    from app.routes.openobserve_api import openobserve_bp
+    from app.routes.system_status_api import system_status_bp
     from app.routes.events_api import events_api_bp
     from app.routes.roles_api import roles_api_bp
 
@@ -286,6 +288,8 @@ def create_app():
     app.register_blueprint(data_sources_api_bp, url_prefix='/api/datasources-api')
     app.register_blueprint(log_types_api_bp, url_prefix='/api/log-types-api')
     app.register_blueprint(log_search_bp, url_prefix='/api/log-search')
+    app.register_blueprint(openobserve_bp, url_prefix='/api/openobserve')
+    app.register_blueprint(system_status_bp, url_prefix='/api/system-status')
     app.register_blueprint(events_api_bp, url_prefix='/api/event-actions-api')
     app.register_blueprint(roles_api_bp, url_prefix='/api/roles-api')
 

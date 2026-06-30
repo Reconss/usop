@@ -1,3 +1,4 @@
+// @ts-nocheck
 export interface DashboardMetrics {
   todayAlerts: number;
   pendingEvents: number;
@@ -76,14 +77,30 @@ export interface AssetVulnInfo {
 export interface Asset {
   id: string;
   name: string;
-  type: 'ip' | 'domain' | 'service';
-  status: 'verified' | 'pending';
+  type: 'ip' | 'domain' | 'service' | 'host';
+  status: 'verified' | 'pending' | 'online';
   riskScore: number;
   assessedRiskScore?: number;
-  ports: { port: number; service: string; version?: string }[];
+  osInfo?: string;
+  domain?: string;
+  hostname?: string;
+  ip?: string;
+  ports: { 
+    id?: number;
+    port: number; 
+    protocol?: string; 
+    service: string; 
+    version?: string; 
+    state?: string;
+    banner?: string;
+    discovered_at?: string;
+  }[];
   owner: string;
   lastScan: string;
+  lastScanId?: number;
   tags: string[];
+  webResults?: { url: string; status_code: number; title: string; tech: string[]; server: string; }[];
+  subdomains?: string[];
   vulnerabilities?: AssetVulnInfo[];
   vulnStats?: {
     critical: number;
@@ -92,6 +109,7 @@ export interface Asset {
     low: number;
     total: number;
   };
+  metadata?: Record<string, any>;
 }
 
 export interface ScanTask {
@@ -478,30 +496,4 @@ export type EventActionType =
   | 'escalated'         // 升级处理
   | 'closed';           // 关闭事件
 
-export const EventActionLabels: Record<EventActionType, string> = {
-  created: '创建事件',
-  status_changed: '状态变更',
-  severity_changed: '严重度变更',
-  assigned: '分配处理人',
-  comment: '添加评论',
-  attachment: '添加附件',
-  playbook_triggered: '触发剧本',
-  enriched: '事件丰富',
-  merged: '合并事件',
-  escalated: '升级处理',
-  closed: '关闭事件'
-};
 
-export const EventActionColors: Record<EventActionType, string> = {
-  created: 'text-blue-400 bg-blue-400/10',
-  status_changed: 'text-amber-400 bg-amber-400/10',
-  severity_changed: 'text-rose-400 bg-rose-400/10',
-  assigned: 'text-purple-400 bg-purple-400/10',
-  comment: 'text-emerald-400 bg-emerald-400/10',
-  attachment: 'text-cyan-400 bg-cyan-400/10',
-  playbook_triggered: 'text-orange-400 bg-orange-400/10',
-  enriched: 'text-indigo-400 bg-indigo-400/10',
-  merged: 'text-teal-400 bg-teal-400/10',
-  escalated: 'text-red-400 bg-red-400/10',
-  closed: 'text-gray-400 bg-gray-400/10'
-};

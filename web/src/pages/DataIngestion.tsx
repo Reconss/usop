@@ -10,7 +10,8 @@ import SmartParser from '../components/SmartParser';
 import LogTypeManager from '../components/LogTypeManager';
 import FormatTemplate from '../components/FormatTemplate';
 import StorageConfig from '../components/StorageConfig';
-import { dataSourcesApi } from '../services/api';
+import { dataSourcesApi, systemStatusApi } from '../services/api';
+import { openobserveApi } from '../services/openobserve';
 
 interface SectionConfig {
   title: string;
@@ -82,6 +83,10 @@ export default function DataIngestion() {
   const [activeSection, setActiveSection] = useState('sources');
   const [dataSources, setDataSources] = useState<any[]>([]);
   const [currentMapping, setCurrentMapping] = useState<any>(null);
+  const [storageStatus, setStorageStatus] = useState<any>(null);
+  const [ooStreams, setOoStreams] = useState<any[]>([]);
+  const [ooLoading, setOoLoading] = useState(false);
+  const [ooConnected, setOoConnected] = useState(false);
 
   const handleMappingUpdate = useCallback((mapping: any) => {
     setCurrentMapping(mapping);

@@ -57,6 +57,9 @@ def login():
 
     token = generate_token(user.id, user.username)
 
+    # Update last login time
+    user.last_login_at = datetime.utcnow()
+    
     # Log the login
     log = AuditLog(
         user_id=user.id,

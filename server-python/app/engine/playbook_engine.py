@@ -4,6 +4,7 @@
 import json
 import uuid
 from datetime import datetime
+import requests
 from typing import Any, Dict, List, Optional
 
 from app.database import db
@@ -196,6 +197,22 @@ class PlaybookEngine:
 
         elif node_type == 'api':
             return self._execute_api_call(node_data, context)
+
+        elif node_type == 'approval':
+            from app.engine.playbook_engine import execute_approval_node
+            return execute_approval_node(node_data, context, self.execution_id)
+
+        elif node_type == 'loop':
+            from app.engine.playbook_engine import execute_loop_node
+            return execute_loop_node(node_data, context)
+
+        elif node_type == 'switch':
+            from app.engine.playbook_engine import execute_switch_node
+            return execute_switch_node(node_data, context)
+
+        elif node_type == 'parallel':
+            from app.engine.playbook_engine import execute_parallel_node
+            return execute_parallel_node(node_data, context)
 
         return {'success': False, 'message': f'未知节点类型: {node_type}', 'data': {}}
 
@@ -426,3 +443,270 @@ def _is_numeric(a, b):
 
 # 全局引擎实例
 playbook_engine = PlaybookEngine()
+
+
+class ApprovalError(Exception):
+    """需要审批的异常"""
+    def __init__(self, approval_id: str, message: str = "需要审批"):
+        self.approval_id = approval_id
+        self.message = message
+        super().__init__(self.message)
+
+
+# 审批规则映射
+APPROVAL_RULES = {
+    'block_ip': {'level': 2, 'label': 'IP封禁'},
+    'unblock_ip': {'level': 2, 'label': 'IP解禁'},
+    'isolate_host': {'level': 3, 'label': '主机隔离'},
+    'quarantine_host': {'level': 3, 'label': '主机隔离'},
+    'reset_password': {'level': 2, 'label': '密码重置'},
+    'modify_firewall': {'level': 3, 'label': '防火墙修改'},
+}
+
+
+def check_and_create_approval(playbook_id: int, action_type: str, params: Dict,
+                               requester_id: int, requester_name: str, execution_id: str,
+                               skip_approval: bool = False) -> Optional[Dict]:
+    """
+    检查是否需要审批，如需要则创建审批请求
+    skip_approval: True 表示自动触发场景，跳过审批直接执行
+    返回 None 表示不需要审批可直接执行，返回审批对象表示需要等待审批
+    """
+    # 自动触发场景跳过审批
+    if skip_approval:
+        return None
+    
+    rule = APPROVAL_RULES.get(action_type)
+    if not rule:
+        return None  # 不需要审批
+    
+    import uuid
+    from app.models import PlaybookApproval, Notification, User
+    
+    approval = PlaybookApproval(
+        id=f"apr_{uuid.uuid4().hex[:8]}",
+        playbook_id=playbook_id,
+        execution_id=execution_id,
+        approval_type=action_type,
+        approval_level=rule['level'],
+        status='pending',
+        requester_id=requester_id,
+        requester_name=requester_name,
+        params=params,
+        reason=params.get('reason', f'{rule["label"]}操作')
+    )
+    
+    db.session.add(approval)
+    
+    # 创建通知给相应审批级别的用户
+    approvers = User.query.filter(
+        User.role.in_(['admin', 'approver_l2', 'approver_l3']),
+        User.status == 'active'
+    ).all()
+    
+    for approver in approvers:
+        # 根据审批级别筛选
+        should_notify = False
+        if rule['level'] == 3 and approver.role in ['admin', 'approver_l3']:
+            should_notify = True
+        elif rule['level'] == 2 and approver.role in ['admin', 'approver_l2', 'approver_l3']:
+            should_notify = True
+        
+        if should_notify:
+            notif = Notification(
+                user_id=approver.id,
+                type='approval_request',
+                title=f'待审批: {rule["label"]}',
+                content=f'用户 {requester_name} 请求执行 {rule["label"]} 操作，请及时审批',
+                data={
+                    'approval_id': approval.id,
+                    'playbook_id': playbook_id,
+                    'action_type': action_type,
+                    'params': params
+                },
+                priority='high' if rule['level'] == 3 else 'normal'
+            )
+            db.session.add(notif)
+    
+    db.session.commit()
+    
+    return {
+        'approval_id': approval.id,
+        'approval_level': rule['level'],
+        'label': rule['label'],
+        'status': 'pending'
+    }
+
+
+def process_approval_result(approval_id: str, approved: bool, 
+                            approver_id: int, approver_name: str) -> Dict:
+    """处理审批结果"""
+    from app.models import PlaybookApproval, Notification
+    
+    approval = PlaybookApproval.query.get(approval_id)
+    if not approval:
+        return {'success': False, 'error': '审批请求不存在'}
+    
+    approval.status = 'approved' if approved else 'rejected'
+    approval.approver_id = approver_id
+    approval.approver_name = approver_name
+    approval.approved_at = datetime.utcnow()
+    
+    # 创建结果通知
+    notif = Notification(
+        user_id=approval.requester_id,
+        type='approval_result',
+        title=f'审批{"通过" if approved else "拒绝"}: {approval.reason}',
+        content=f'您的{approval.reason}请求已被{"通过" if approved else "拒绝"}',
+        data={'approval_id': approval_id, 'approved': approved}
+    )
+    db.session.add(notif)
+    db.session.commit()
+    
+    if approved:
+        # 执行实际动作
+        action_type = approval.approval_type
+        params = approval.params
+        handler = get_action(action_type)
+        if handler:
+            result = handler.execute(params, None)
+            approval.result = result.to_dict() if hasattr(result, 'to_dict') else result
+        
+
+        # 记录到事件
+        if approval.related_event_id:
+            try:
+                response = requests.post(
+                    'http://localhost:5000/events-api/approvals/trigger-event-action',
+                    json={
+                        'event_id': approval.related_event_id,
+                        'approval_id': approval.id
+                    },
+                    headers={'Authorization': f'Bearer {getattr(request, 'user_id', 1)}'},
+                    timeout=5
+                )
+                if response.status_code != 200:
+                    print(f'Warning: Failed to trigger event action: {response.text}')
+            except Exception as e:
+                print(f'Warning: Could not trigger event action after approval: {e}')
+    
+    db.session.commit()
+    return approval.to_dict()
+
+
+
+# ========== 新增节点类型执行器 ==========
+
+def execute_approval_node(node_data: Dict, context: 'ActionContext', execution_id: str) -> Dict:
+    """执行审批节点 - 暂停并等待审批"""
+    approval_type = node_data.get('approval_type', node_data.get('approvalType', ''))
+    reason = node_data.get('reason', '剧本执行审批')
+    
+    # 映射审批类型
+    action_map = {
+        'IP封禁': 'block_ip',
+        '主机隔离': 'isolate_host',
+        '密码重置': 'reset_password',
+        '防火墙修改': 'modify_firewall'
+    }
+    action_type = action_map.get(approval_type, 'block_ip')
+    
+    # 创建审批请求
+    from app.models import User
+    user = User.query.first()
+    requester_id = user.id if user else 1
+    requester_name = user.username if user else 'system'
+    
+    from app.engine.playbook_engine import check_and_create_approval
+    approval = check_and_create_approval(
+        playbook_id=0,  # 动态获取
+        action_type=action_type,
+        params=context.params,
+        requester_id=requester_id,
+        requester_name=requester_name,
+        execution_id=execution_id
+    )
+    
+    if approval:
+        return {
+            'success': True,
+            'message': f'已创建审批请求，等待审批...',
+            'data': {
+                'waiting_approval': True,
+                'approval_id': approval.get('approval_id'),
+                'approval_type': approval_type
+            }
+        }
+    
+    return {'success': True, 'message': '无需审批，直接执行', 'data': {}}
+
+
+def execute_loop_node(node_data: Dict, context: 'ActionContext') -> Dict:
+    """执行循环节点"""
+    iterable_var = node_data.get('iterable', node_data.get('iterable', ''))
+    max_iterations = int(node_data.get('maxIterations', node_data.get('max_iterations', 10)))
+    
+    # 解析遍历对象
+    items = context.resolve(iterable_var)
+    if isinstance(items, str):
+        items = [i.strip() for i in items.split(',')]
+    elif not isinstance(items, list):
+        items = [items]
+    
+    items = items[:max_iterations]  # 限制最大次数
+    
+    return {
+        'success': True,
+        'message': f'循环执行 {len(items)} 次',
+        'data': {
+            'loop_count': len(items),
+            'items': items,
+            'max_iterations': max_iterations
+        }
+    }
+
+
+def execute_switch_node(node_data: Dict, context: 'ActionContext') -> Dict:
+    """执行多分支节点"""
+    field = node_data.get('field', '')
+    cases_config = node_data.get('cases', '')
+    
+    # 解析 cases: "critical:高危处理\nhigh:中危处理\ndefault:默认处理"
+    cases = {}
+    default_case = None
+    for line in cases_config.split('\n'):
+        if ':' in line:
+            key, value = line.split(':', 1)
+            key = key.strip()
+            if key == 'default':
+                default_case = value.strip()
+            else:
+                cases[key.strip()] = value.strip()
+    
+    # 获取字段值并匹配分支
+    field_value = str(context.get(field, '')).lower()
+    matched_branch = cases.get(field_value, default_case)
+    
+    return {
+        'success': True,
+        'message': f'分支匹配: {field}={field_value} -> {matched_branch}',
+        'data': {
+            'branch': matched_branch,
+            'matched_value': field_value,
+            'cases': cases
+        }
+    }
+
+
+def execute_parallel_node(node_data: Dict, context: 'ActionContext') -> Dict:
+    """执行并行分支节点"""
+    branches = int(node_data.get('branches', 2))
+    
+    return {
+        'success': True,
+        'message': f'并行执行 {branches} 个分支',
+        'data': {
+            'parallel_branches': branches,
+            'execution_mode': 'concurrent'
+        }
+    }

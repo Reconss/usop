@@ -48,6 +48,9 @@ def create_role():
         name=data['name'],
         description=data.get('description', ''),
         permissions=data.get('permissions', []),
+        approval_level=data.get('approval_level', 1),
+        can_approve=data.get('can_approve', []),
+        max_auto_approve=data.get('max_auto_approve', 0),
         is_system=False
     )
     
@@ -79,6 +82,12 @@ def update_role(role_id):
         role.description = data['description']
     if 'permissions' in data:
         role.permissions = data['permissions']
+    if 'approval_level' in data:
+        role.approval_level = data['approval_level']
+    if 'can_approve' in data:
+        role.can_approve = data['can_approve']
+    if 'max_auto_approve' in data:
+        role.max_auto_approve = data['max_auto_approve']
     
     db.session.commit()
     

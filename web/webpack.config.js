@@ -168,6 +168,7 @@ module.exports = (env, argv) => {
           secure: false,
           pathRewrite: { '^/rules-api': '/api/rules-api' }
         },
+
         '/hunting-api': {
           target: 'http://localhost:5001',
           changeOrigin: true,

@@ -4,7 +4,7 @@ import {
   Search, Filter, Plus, Download, Scan, MoreHorizontal, X, Globe, Server, Shield, Tag, User, Clock, Edit2, Trash2, Check, Copy, Eye, EyeOff, ChevronRight, ChevronDown, FileText, Activity, MapPin, Cpu, Database, Layers, AlertCircle, Loader2, CheckCircle2
 } from 'lucide-react';
 import type { Asset } from '../types';
-import { assetsApi } from '../services/api';
+import { assetsApi, scansApi } from '../services/api';
 
 const RiskRing = ({ score, assessedScore }: { score: number; assessedScore?: number }) => {
   const radius = 16;
@@ -88,7 +88,41 @@ export default function AssetInventory() {
         const response = await assetsApi.getAssets({ page_size: 100 });
         if (response.success && response.data) {
           const items = Array.isArray(response.data) ? response.data : response.data.items || [];
-          setAssets(items);
+          const mapped = items.map((a: any) => ({
+            id: String(a.id),
+            name: a.name || '',
+            type: a.type || 'ip',
+            status: a.status || 'pending',
+            riskScore: a.assessed_risk_score ?? a.risk_score ?? 0,
+            assessedRiskScore: a.assessed_risk_score,
+            osInfo: a.os_info,
+            domain: a.domain,
+            hostname: a.hostname,
+            ip: a.ip,
+            ports: (a.ports || []).map((p: any) => ({
+              id: p.id, port: p.port, protocol: p.protocol || 'tcp',
+              service: p.service || '', version: p.version || '',
+              state: p.state || 'open', banner: p.banner || '',
+              discovered_at: p.discovered_at
+            })),
+            owner: a.owner || '未分配',
+            lastScan: a.last_scan_at || a.updated_at || '',
+            tags: a.tags || [],
+            vulnStats: a.vulnStats || { critical:0, high:0, medium:0, low:0, total:0 },
+            vulnerabilities: (a.vulnerabilities || []).map((v: any) => ({
+              vulnId: v.vuln_id || v.id,
+              name: v.vuln_name || v.plugin_name || '',
+              severity: v.assessed_severity || v.severity || 'medium',
+              cvssScore: v.assessed_score ?? v.cvss_score ?? 0,
+              assessedScore: v.assessed_score,
+              status: v.status || 'open',
+              discoveredAt: v.discovered_at || ''
+            })),
+            webResults: a.metadata?.web_results || [],
+            subdomains: a.metadata?.subdomains || [],
+            metadata: a.metadata || {}
+          }));
+          setAssets(mapped);
         }
       } catch (error) {
         console.error('获取资产列表失败:', error);
@@ -98,11 +132,21 @@ export default function AssetInventory() {
     };
     fetchAssets();
   }, []);
-  const [activeTab, setActiveTab] = useState<'basic' | 'ports' | 'vulnerabilities' | 'history'>('basic');
+  const [activeTab, setActiveTab] = useState<'basic' | 'ports' | 'vulnerabilities' | 'web' | 'subdomains' | 'history'>('basic');
   const [selectedAssets, setSelectedAssets] = useState<string[]>([]);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  
+  // 资产统计
+  const assetStats = useMemo(() => {
+    const total = assets.length;
+    const active = assets.filter(a => a.status === 'active').length;
+    const highRisk = assets.filter(a => (a.riskScore || 0) >= 80).length;
+    const withVulns = assets.filter(a => (a.vulnStats?.total || 0) > 0).length;
+    const totalVulns = assets.reduce((sum, a) => sum + (a.vulnStats?.total || 0), 0);
+    return { total, active, highRisk, withVulns, totalVulns };
+  }, [assets]);
   const [formErrors, setFormErrors] = useState<{ name?: string }>({});
-  const [formData, setFormData] = useState({ name: '', type: 'ip' as 'ip' | 'domain' | 'service', owner: '', tags: '', description: '', location: '', department: '' });
+  const [formData, setFormData] = useState<{ name: string; type: 'ip' | 'domain' | 'service' | 'host'; owner: string; tags: string; description: string; location: string; department: string }>({ name: '', type: 'ip', owner: '', tags: '', description: '', location: '', department: '' });
 
   const filteredAssets = useMemo(() => {
     return assets.filter(a =>
@@ -359,7 +403,7 @@ export default function AssetInventory() {
                 </div>
 
                 <div className="flex border-b border-border-color">
-                  {[{ id: 'basic', label: '基本信息', icon: FileText }, { id: 'ports', label: '端口服务', icon: Activity }, { id: 'vulnerabilities', label: `漏洞信息${selectedAsset.vulnStats ? ` (${selectedAsset.vulnStats.total})` : ''}`, icon: Shield }, { id: 'history', label: '扫描历史', icon: Clock }].map(tab => (
+                  {[{ id: 'basic', label: '基本信息', icon: FileText }, { id: 'ports', label: '端口服务', icon: Activity }, { id: 'vulnerabilities', label: `漏洞信息${selectedAsset.vulnStats ? ` (${selectedAsset.vulnStats.total})` : ''}`, icon: Shield }, { id: 'web', label: 'Web指纹', icon: Globe }, { id: 'history', label: '扫描历史', icon: Clock }, { id: 'subdomains', label: '域名', icon: Globe }].map(tab => (
                     <button key={tab.id} onClick={() => setActiveTab(tab.id as any)} className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors ${activeTab === tab.id ? 'text-primary border-b-2 border-primary' : 'text-text-secondary hover:text-text-primary'}`}>
                       <tab.icon className="w-4 h-4" />{tab.label}
                     </button>
@@ -429,7 +473,59 @@ export default function AssetInventory() {
                   </div>
                 )}
 
-                {activeTab === 'history' && (
+
+              {activeTab === 'subdomains' && selectedAsset && (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-sm font-medium text-text-secondary">发现的子域名</h4>
+                    <button onClick={async()=>{try{const r=await scansApi.startScan(selectedAsset.lastScanId||0);}catch{}}} className="text-xs text-primary hover:underline">刷新</button>
+                  </div>
+                  {selectedAsset.subdomains && selectedAsset.subdomains.length > 0 ? (
+                    <div className="space-y-1">
+                      {selectedAsset.subdomains.map((s, i) => (
+                        <div key={i} className="flex items-center justify-between p-2 bg-page-bg rounded-lg border border-border-color">
+                          <span className="text-sm font-mono text-text-primary">{s}</span>
+                          <span className="text-xs text-text-muted">子域名</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center py-8 text-text-muted text-sm">
+                      <Globe className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                      <p>暂无子域名数据</p>
+                      <p className="text-xs mt-1">请创建域名收集扫描任务</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+                {activeTab === 'web' && selectedAsset?.webResults && selectedAsset.webResults.length > 0 && (
+                <div className="space-y-2">
+                  <h4 className="text-sm font-medium text-text-secondary mb-2">Web 服务指纹</h4>
+                  {selectedAsset.webResults.map((w, i) => (
+                    <div key={i} className="flex items-center justify-between p-3 bg-page-bg rounded-lg border border-border-color text-sm">
+                      <div className="flex-1 min-w-0">
+                        <div className="font-mono text-xs text-primary truncate">{w.url}</div>
+                        <div className="flex items-center gap-2 mt-1">
+                          <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${
+                            w.status_code >= 200 && w.status_code < 300 ? 'bg-emerald-500/10 text-emerald-400' :
+                            w.status_code >= 300 && w.status_code < 400 ? 'bg-blue-500/10 text-blue-400' :
+                            'bg-orange-500/10 text-orange-400'
+                          }`}>{w.status_code}</span>
+                          {w.title && <span className="text-text-primary text-xs truncate">{w.title}</span>}
+                          {w.server && <span className="text-text-muted text-xs">{w.server}</span>}
+                        </div>
+                        {w.tech && w.tech.length > 0 && (
+                          <div className="flex flex-wrap gap-1 mt-1">
+                            {w.tech.map((t, j) => <span key={j} className="px-1.5 py-0.5 bg-indigo-500/10 text-indigo-400 rounded text-[10px]">{t}</span>)}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {activeTab === 'history' && (
                   <div className="space-y-3">
                     {['2026-04-27 10:00:00', '2026-04-26 10:00:00', '2026-04-25 10:00:00'].map((time, i) => (
                       <div key={i} className="glass-card rounded-xl p-4 flex items-center gap-4">

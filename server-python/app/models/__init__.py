@@ -3,6 +3,8 @@ from app.database import db
 
 # 导入扩展模型
 from app.models.extensions import (
+    Playbook,
+    PlaybookApproval,
     Vulnerability,
     AssetVulnerability,
     ScanProfile,
@@ -16,7 +18,7 @@ from app.models.extensions import (
     AssetPort,
     ScanResult,
     DetectionRuleExtended,
-    PlaybookExecution
+    PlaybookExecution,
 )
 
 # 导入事件处置记录模型
@@ -35,6 +37,7 @@ class User(db.Model):
     password_hash = db.Column(db.String(255), nullable=False)
     role = db.Column(db.String(20), default='analyst')
     status = db.Column(db.String(20), default='active')
+    last_login_at = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -45,6 +48,7 @@ class User(db.Model):
             'email': self.email,
             'role': self.role,
             'status': self.status,
+            'last_login_at': self.last_login_at.isoformat() if self.last_login_at else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }
@@ -100,9 +104,32 @@ class Alert(db.Model):
     severity = db.Column(db.String(20), default='medium')
     status = db.Column(db.String(20), default='new')
     source = db.Column(db.String(100))
+    source_product = db.Column(db.String(100))
+    source_type = db.Column(db.String(50))
+    category = db.Column(db.String(100))
+    confidence = db.Column(db.Float, default=100.0)
+
+    # 网络五元组
+    src_ip = db.Column(db.String(50))
+    src_port = db.Column(db.Integer)
+    dst_ip = db.Column(db.String(50))
+    dst_port = db.Column(db.Integer)
+    protocol = db.Column(db.String(20))
+    hostname = db.Column(db.String(200))
+
+    # 时间
+    first_seen = db.Column(db.DateTime)
+    last_seen = db.Column(db.DateTime)
+
+    # JSON 数据（完整解析信息）
+    raw_log = db.Column(db.Text)
+    parsed_data = db.Column(db.JSON, default=dict)
+    extra_data = db.Column(db.JSON, default=dict)
+    tags = db.Column(db.JSON, default=list)
+
+    # 关联
     assigned_to = db.Column(db.Integer, db.ForeignKey('users.id'))
     event_ids = db.Column(db.JSON, default=list)
-    extra_data = db.Column(db.JSON, default=dict)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -115,11 +142,26 @@ class Alert(db.Model):
             'severity': self.severity,
             'status': self.status,
             'source': self.source,
+            'source_product': self.source_product,
+            'source_type': self.source_type,
+            'category': self.category,
+            'confidence': self.confidence,
+            'src_ip': self.src_ip,
+            'src_port': self.src_port,
+            'dst_ip': self.dst_ip,
+            'dst_port': self.dst_port,
+            'protocol': self.protocol,
+            'hostname': self.hostname,
+            'first_seen': self.first_seen.isoformat() if self.first_seen else None,
+            'last_seen': self.last_seen.isoformat() if self.last_seen else None,
+            'raw_log': self.raw_log,
+            'parsed_data': self.parsed_data or {},
+            'extra_data': self.extra_data or {},
+            'tags': self.tags or [],
             'assigned_to': self.assigned_to,
             'event_ids': self.event_ids or [],
-            'metadata': self.extra_data or {},
             'created_at': self.created_at.isoformat() if self.created_at else None,
-            'updated_at': self.updated_at.isoformat() if self.updated_at else None
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
         }
 
 
@@ -128,12 +170,18 @@ class Asset(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
-    type = db.Column(db.String(50))
+    type = db.Column(db.String(50))          # ip / domain / service / host
     ip = db.Column(db.String(50))
+    domain = db.Column(db.String(200))       # 主域名
+    hostname = db.Column(db.String(200))
     status = db.Column(db.String(20), default='online')
-    risk_score = db.Column(db.Integer, default=0)
+    risk_score = db.Column(db.Integer, default=0)      # 原始风险分
+    assessed_risk_score = db.Column(db.Integer)         # 评级重算风险分
+    os_info = db.Column(db.String(100))                # OS 信息（来自 nmap/naabu）
     tags = db.Column(db.JSON, default=list)
-    extra_data = db.Column(db.JSON, default=dict)
+    extra_data = db.Column(db.JSON, default=dict)      # 扩展数据（扫描结果、HTTP指纹等）
+    last_scan_at = db.Column(db.DateTime)              # 最后一次扫描时间
+    last_scan_id = db.Column(db.Integer)               # 最后一次扫描任务ID
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -143,10 +191,16 @@ class Asset(db.Model):
             'name': self.name,
             'type': self.type,
             'ip': self.ip,
+            'domain': self.domain,
+            'hostname': self.hostname,
             'status': self.status,
             'risk_score': self.risk_score,
+            'assessed_risk_score': self.assessed_risk_score,
+            'os_info': self.os_info,
             'tags': self.tags or [],
             'metadata': self.extra_data or {},
+            'last_scan_at': self.last_scan_at.isoformat() if self.last_scan_at else None,
+            'last_scan_id': self.last_scan_id,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }
@@ -203,33 +257,6 @@ class Rule(db.Model):
             'status': self.status,
             'severity': self.severity,
             'tags': self.tags or [],
-            'created_at': self.created_at.isoformat() if self.created_at else None,
-            'updated_at': self.updated_at.isoformat() if self.updated_at else None
-        }
-
-
-class Playbook(db.Model):
-    __tablename__ = 'playbooks'
-
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100), nullable=False)
-    description = db.Column(db.Text)
-    nodes = db.Column(db.JSON, default=list)
-    edges = db.Column(db.JSON, default=list)
-    status = db.Column(db.String(20), default='draft')
-    version = db.Column(db.String(20), default='1.0')
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'name': self.name,
-            'description': self.description,
-            'nodes': self.nodes or [],
-            'edges': self.edges or [],
-            'status': self.status,
-            'version': self.version,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }
@@ -361,6 +388,8 @@ class DataSource(db.Model):
     name = db.Column(db.String(100), nullable=False)
     protocol = db.Column(db.String(50))  # kafka, syslog, es, jdbc, file, webhook, s3, api, snmp, sftp
     source_type = db.Column(db.String(20))  # pull, push
+    product_type = db.Column(db.String(50))  # suricata, wazuh, imperva, crowdstrike, modsecurity
+    kafka_topic = db.Column(db.String(100))  # Kafka topic name
     description = db.Column(db.Text)
     status = db.Column(db.String(20), default='inactive')  # active, inactive, connected, error
     message_count = db.Column(db.Integer, default=0)

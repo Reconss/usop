@@ -23,6 +23,15 @@ data_sources_api_bp = Blueprint('data_sources_api', __name__)
 # Flink REST API 配置（支持远程连接）
 FLINK_REST_API = os.getenv('FLINK_REST_API', 'http://localhost:8081')
 
+# 产品类型 → Flink SQL 文件映射
+PRODUCT_SQL_MAP = {
+    'suricata': 'suricata_pipeline.sql',
+    'wazuh': 'wazuh_pipeline.sql',
+    'crowdstrike': 'crowdstrike_pipeline.sql',
+    'modsecurity': 'modsec_pipeline.sql',
+    'imperva': 'imperva_pipeline.sql',
+}
+
 # Kafka 配置
 KAFKA_BOOTSTRAP_SERVERS = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'kafka:29092')
 
@@ -201,11 +210,19 @@ def list_datasources():
                 'storage_table_name': s.storage_table_name,
                 'storage_retention_days': s.storage_retention_days,
                 # Flink
+                'product_type': s.product_type,
+                'kafka_topic': s.kafka_topic,
                 'flink_job_status': s.flink_job_status,
                 'flink_job_id': s.flink_job_id,
             }
             result.append(item)
         
+        # 批量提交状态变更
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+
         # 检查 Flink 连接状态
         flink_ok, flink_msg = _check_flink_connection()
         
@@ -275,6 +292,8 @@ def create_datasource():
         host=data.get('host'),
         port=data.get('port'),
         status=data.get('status', 'inactive'),
+        product_type=data.get('product_type'),
+        kafka_topic=data.get('kafka_topic'),
         config=data.get('config', {}),
     )
     
@@ -309,6 +328,10 @@ def update_datasource(id):
         source.port = data['port']
     if 'status' in data:
         source.status = data['status']
+    if 'product_type' in data:
+        source.product_type = data['product_type']
+    if 'kafka_topic' in data:
+        source.kafka_topic = data['kafka_topic']
     if 'config' in data:
         source.config = data['config']
     
@@ -345,16 +368,18 @@ def delete_datasource(id):
 @data_sources_api_bp.route('/datasources/<int:id>/start-flink', methods=['POST'])
 @login_required
 def start_flink_job(id):
-    """启动 Flink 作业"""
+    """启动 Flink 解析作业"""
     source = DataSource.query.get_or_404(id)
     
     # 检查是否已经有运行中的作业
     if source.flink_job_id and source.flink_job_status == 'running':
-        return jsonify({
-            'success': True,
-            'data': {'flink_job_id': source.flink_job_id, 'flink_job_status': 'running'},
-            'message': f'作业已在运行 (JobID={source.flink_job_id})'
-        })
+        flink_status, _ = _get_flink_job_status(source.flink_job_id)
+        if flink_status == 'RUNNING':
+            return jsonify({
+                'success': True,
+                'data': {'flink_job_id': source.flink_job_id, 'flink_job_status': 'running'},
+                'message': f'作业已在运行 (JobID={source.flink_job_id})'
+            })
     
     # 检查 Flink 连接
     flink_ok, flink_msg = _check_flink_connection()
@@ -365,25 +390,58 @@ def start_flink_job(id):
         }), 503
     
     try:
-        # 创建模拟的长期运行任务ID
-        # 实际生产环境需要部署专门的日志采集JAR
-        import uuid
-        mock_job_id = f"usop-job-{source.id}-{uuid.uuid4().hex[:8]}"
+        import subprocess, os, time
         
-        # 更新数据库状态
-        source.flink_job_id = mock_job_id
+        product_type = source.product_type
+        if not product_type:
+            return jsonify({'success': False, 'error': '数据源未配置产品类型，请先编辑数据源选择安全产品'}), 400
+        
+        sql_file = PRODUCT_SQL_MAP.get(product_type)
+        if not sql_file:
+            return jsonify({'success': False, 'error': f'产品类型 {product_type} 暂不支持 Flink 解析'}), 400
+        
+        # 通过 docker exec 提交 Flink SQL 作业
+        container = 'flink-jobmanager'
+        sql_path = f'/opt/flink/jobs/{sql_file}'
+        
+        # 确保 SQL 文件存在于容器中
+        host_sql = f'/Users/codes/usop/flink-jobs/{sql_file}'
+        if os.path.exists(host_sql):
+            subprocess.run(['docker', 'cp', host_sql, f'{container}:{sql_path}'], capture_output=True, timeout=10)
+        
+        result = subprocess.run(
+            ['docker', 'exec', container, '/opt/flink/bin/sql-client.sh', '-f', sql_path],
+            capture_output=True, text=True, timeout=30
+        )
+        
+        # 解析 Job ID
+        job_id = None
+        for line in result.stdout.split('\n'):
+            if 'Job ID:' in line:
+                job_id = line.split('Job ID:')[-1].strip()
+                break
+        
+        if not job_id:
+            err = result.stderr or result.stdout
+            error_msg = ''
+            for line in err.split('\n'):
+                if 'ERROR' in line:
+                    error_msg = line
+                    break
+            return jsonify({'success': False, 'error': f'Flink SQL 提交失败: {error_msg or err[:200]}'}), 500
+        
+        source.flink_job_id = job_id
         source.flink_job_status = 'running'
         db.session.commit()
         
         return jsonify({
             'success': True,
-            'data': {
-                'flink_job_id': mock_job_id, 
-                'flink_job_status': 'running'
-            },
-            'message': f'数据采集任务已启动 (ID={mock_job_id})'
+            'data': {'flink_job_id': job_id, 'flink_job_status': 'running'},
+            'message': f'Flink 解析作业已启动 ({source.name} → PostgreSQL)'
         })
             
+    except subprocess.TimeoutExpired:
+        return jsonify({'success': False, 'error': 'Flink 提交超时'}), 500
     except Exception as e:
         logger.error(f"启动 Flink 作业失败: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500

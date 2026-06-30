@@ -11,7 +11,11 @@ import {
   Trash2,
   Edit2,
   TestTube,
-  Loader2
+  Loader2,
+  Clock,
+  ShieldCheck,
+  RefreshCw,
+  History
 } from 'lucide-react';
 
 // 通知渠道配置
@@ -48,6 +52,31 @@ const channelColors: Record<string, string> = {
   webhook: 'bg-purple-500/10 text-purple-400 border-purple-500/20'
 };
 
+
+// 审批请求接口
+interface ApprovalRequest {
+  id: string;
+  action_type: string;
+  reason: string;
+  params: Record<string, any>;
+  approval_level: number;
+  status: 'pending' | 'approved' | 'rejected';
+  requester_id: number;
+  requester_name: string;
+  approver_id?: number;
+  approver_name?: string;
+  approved_at?: string;
+  created_at: string;
+  related_event_id?: string;
+}
+
+const actionLabels: Record<string, string> = {
+  block_ip: 'IP封禁',
+  isolate_host: '主机隔离',
+  reset_password: '密码重置',
+  modify_firewall: '防火墙修改',
+  delete_host: '主机删除'
+};
 const severityColors: Record<string, string> = {
   critical: 'bg-rose-500/10 text-rose-400',
   high: 'bg-orange-500/10 text-orange-400',
@@ -97,9 +126,16 @@ export default function NotificationSettings() {
     { id: '4', name: '重大事件钉钉通知', channel: '3', severity: 'critical', enabled: false }
   ]);
 
-  const [activeTab, setActiveTab] = useState<'channels' | 'rules' | 'templates'>('channels');
+    const [activeTab, setActiveTab] = useState<'channels' | 'rules' | 'templates' | 'approvals'>('channels');
   const [editingChannel, setEditingChannel] = useState<string | null>(null);
   const [testingChannel, setTestingChannel] = useState<string | null>(null);
+
+  // 审批相关状态
+  const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
+  const [approvalTab, setApprovalTab] = useState<'pending' | 'history'>('pending');
+  const [approvalLoading, setApprovalLoading] = useState(false);
+  const [showApprovalDialog, setShowApprovalDialog] = useState(false);
+  const [selectedApproval, setSelectedApproval] = useState<ApprovalRequest | null>(null);
 
   // 测试通知渠道
   const handleTestChannel = async (channel: NotificationChannel) => {
@@ -115,9 +151,50 @@ export default function NotificationSettings() {
     setChannels(prev => prev.map(c => c.id === id ? { ...c, enabled: !c.enabled } : c));
   };
 
-  // 切换规则启用状态
-  const toggleRule = (id: string) => {
-    setRules(prev => prev.map(r => r.id === id ? { ...r, enabled: !r.enabled } : r));
+
+  // 审批相关函数
+  const loadApprovals = async () => {
+    setApprovalLoading(true);
+    try {
+      const url = approvalTab === 'pending' 
+        ? '/notifications-api/approvals?status=pending'
+        : '/notifications-api/approvals?status=approved,rejected';
+      const [res] = await Promise.all([
+        fetch(url, { headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } }).then(r => r.json())
+      ]);
+      if (res.success) {
+        setApprovals(res.data.items || []);
+      }
+    } catch (error) {
+      console.error('Failed to load approvals:', error);
+    }
+    setApprovalLoading(false);
+  };
+
+  const handleApproval = async (approved: boolean) => {
+    if (!selectedApproval) return;
+
+    try {
+      const res = await fetch(`/notifications-api/approvals/${selectedApproval.id}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        },
+        body: JSON.stringify({ approved })
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        setShowApprovalDialog(false);
+        setSelectedApproval(null);
+        loadApprovals();
+      } else {
+        alert('操作失败: ' + (data.error || '未知错误'));
+      }
+    } catch (error) {
+      alert('请求失败: ' + (error as Error).message);
+    }
   };
 
   return (
@@ -291,6 +368,190 @@ export default function NotificationSettings() {
             <Plus className="w-4 h-4" />
             添加通知规则
           </button>
+        </motion.div>
+      )}
+
+      {/* 审批管理 */}
+      {activeTab === 'approvals' && (
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="space-y-4"
+        >
+          {/* 标签页切换 */}
+          <div className="flex items-center gap-1 p-1 bg-card-bg rounded-lg w-fit">
+            <button
+              onClick={() => setApprovalTab('pending')}
+              className={`px-4 py-2 rounded-md text-sm font-medium transition-colors flex items-center gap-2 ${
+                approvalTab === 'pending'
+                  ? 'bg-amber-500 text-white'
+                  : 'text-text-secondary hover:text-text-primary'
+              }`}
+            >
+              <Clock className="w-4 h-4" />
+              待审批
+              {approvals.filter(a => a.status === 'pending').length > 0 && (
+                <span className="px-2 py-0.5 text-[10px] bg-white/20 rounded-full">
+                  {approvals.filter(a => a.status === 'pending').length}
+                </span>
+              )}
+            </button>
+            <button
+              onClick={() => setApprovalTab('history')}
+              className={`px-4 py-2 rounded-md text-sm font-medium transition-colors flex items-center gap-2 ${
+                approvalTab === 'history'
+                  ? 'bg-blue-500 text-white'
+                  : 'text-text-secondary hover:text-text-primary'
+              }`}
+            >
+              <History className="w-4 h-4" />
+              审批历史
+            </button>
+          </div>
+
+          {/* 待审批列表 */}
+          {approvalTab === 'pending' && (
+            <div className="space-y-3">
+              {approvals.filter(a => a.status === 'pending').length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-16 text-text-muted">
+                  <CheckCircle className="w-12 h-12 mb-3 opacity-20" />
+                  <div className="text-base font-medium text-text-secondary">全部已处理</div>
+                  <div className="text-sm mt-1">暂无待审批的操作请求</div>
+                </div>
+              ) : (
+                approvals.filter(a => a.status === 'pending').map(approval => (
+                  <div
+                    key={approval.id}
+                    className="glass-card rounded-xl p-5 hover:border-amber-500/30 transition-all"
+                  >
+                    <div className="flex items-start justify-between mb-4">
+                      <div className="flex items-center gap-3">
+                        <div className="p-2 rounded-lg bg-red-500/10 border border-red-500/20">
+                          <ShieldCheck className="w-4 h-4 text-red-400" />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium text-text-primary">
+                              {actionLabels[approval.action_type] || approval.action_type}
+                            </span>
+                          </div>
+                          <span className="text-[10px] text-text-muted font-mono">
+                            {approval.created_at}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="text-xs text-amber-400 bg-amber-500/10 px-2 py-1 rounded">
+                        待审批
+                      </div>
+                    </div>
+
+                    <div className="text-sm text-text-secondary mb-3">
+                      <div className="font-medium text-text-primary mb-2">操作描述</div>
+                      <div>{approval.reason}</div>
+                    </div>
+
+                    {/* 参数展示 */}
+                    {Object.keys(approval.params).length > 0 && (
+                      <div className="bg-page-bg rounded-lg p-3 mb-4">
+                        <div className="text-xs text-text-muted mb-2">操作参数</div>
+                        <div className="grid grid-cols-2 gap-2">
+                          {Object.entries(approval.params).map(([key, value]) => (
+                            <div key={key} className="flex text-xs">
+                              <span className="text-text-muted w-24 flex-shrink-0">{key}:</span>
+                              <span className="text-text-primary font-mono truncate">{String(value)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => setSelectedApproval(approval)}
+                        className="flex-1 px-5 py-2 bg-emerald-600 text-white text-sm rounded-lg hover:bg-emerald-500 transition-colors flex items-center justify-center gap-2"
+                      >
+                        <Check className="w-4 h-4" />
+                        批准执行
+                      </button>
+                      <button
+                        onClick={() => handleApproval(false)}
+                        className="flex-1 px-5 py-2 bg-red-600/80 text-white text-sm rounded-lg hover:bg-red-500 transition-colors flex items-center justify-center gap-2"
+                      >
+                        <X className="w-4 h-4" />
+                        拒绝
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+
+          {/* 审批历史 */}
+          {approvalTab === 'history' && (
+            <div className="space-y-3">
+              {approvals.filter(a => a.status !== 'pending').length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-16 text-text-muted">
+                  <FileText className="w-12 h-12 mb-3 opacity-20" />
+                  <div className="text-base font-medium text-text-secondary">暂无审批记录</div>
+                  <div className="text-sm mt-1">审批通过的操作将显示在此处</div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {approvals
+                    .filter(a => a.status !== 'pending')
+                    .sort((a, b) => new Date(b.approved_at || b.created_at).getTime() - new Date(a.approved_at || a.created_at).getTime())
+                    .map(approval => (
+                      <div
+                        key={approval.id}
+                        className="glass-card rounded-xl p-4"
+                      >
+                        <div className="flex items-center justify-between mb-3">
+                          <div className="flex items-center gap-3">
+                            <div className={`p-2 rounded-lg ${
+                              approval.status === 'approved'
+                                ? 'bg-emerald-500/10 border border-emerald-500/20'
+                                : 'bg-red-500/10 border border-red-500/20'
+                            }`}>
+                              {approval.status === 'approved' ? (
+                                <Check className="w-4 h-4 text-emerald-400" />
+                              ) : (
+                                <X className="w-4 h-4 text-red-400" />
+                              )}
+                            </div>
+                            <div>
+                              <div className="font-medium text-text-primary">
+                                {actionLabels[approval.action_type] || approval.action_type}
+                              </div>
+                              <div className="text-xs text-text-muted mt-1">
+                                <span>{approval.requester_name}</span>
+                                <span>→</span>
+                                <span>{approval.approver_name || '-'}</span>
+                              </div>
+                            </div>
+                          </div>
+                          <span className={`px-2 py-0.5 text-xs rounded ${
+                            approval.status === 'approved'
+                              ? 'bg-emerald-500/10 text-emerald-400'
+                              : 'bg-red-500/10 text-red-400'
+                          }`}>
+                            {approval.status === 'approved' ? '已批准' : '已拒绝'}
+                          </span>
+                        </div>
+
+                        <div className="text-sm text-text-secondary mb-2">{approval.reason}</div>
+
+                        {approval.approved_at && (
+                          <div className="text-xs text-text-muted">
+                            审批时间: {new Date(approval.approved_at).toLocaleString('zh-CN')}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                </div>
+              )}
+            </div>
+          )}
         </motion.div>
       )}
 

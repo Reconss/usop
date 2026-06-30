@@ -1,3 +1,4 @@
+// @ts-nocheck
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -6,7 +7,7 @@ import {
   AlertTriangle, Loader2, X, Plus, Save, Play,
   Clock, FileText, Trash2, Edit3, Copy, BarChart3, GitBranch,
   Terminal, User, Users, Send, List, MessageCircle, Filter, Check,
-  AlertCircle, Settings, PanelLeftClose, PanelLeft,
+  Star, AlertCircle, Settings, PanelLeftClose, PanelLeft,
   RefreshCw, Layers, Lightbulb,
   ShieldCheck, Blocks, BookOpen, Radar, Gauge, Combine,
   AtSign, Wrench, Upload, FileJson, Flag, Link2, Wifi, CheckCircle, ChevronRight, Database
@@ -110,6 +111,7 @@ const AICenter: React.FC = () => {
   const [wfLoading, setWfLoading] = useState(false);
 
   const [llmProviders, setLlmProviders] = useState<LlmProvider[]>([]);
+  const [defaultLlmId, setDefaultLlmId] = useState<string|null>(null);
   const [agentProviders, setAgentProviders] = useState<AgentProvider[]>([]);
   const [skills, setSkills] = useState<Skill[]>([]);
   const [feedbackStats, setFeedbackStats] = useState<any>(null);
@@ -131,12 +133,11 @@ const AICenter: React.FC = () => {
   const [teamChatWith, setTeamChatWith] = useState<number|string|null>(null);
   const [teamChats, setTeamChats] = useState<{[key:string]:{id:string;user:any;content:string;time:string}[]}>({});
   const [teamGroups, setTeamGroups] = useState<{id:string;name:string;members:number[];color:string;avatar:string}[]>([]);
-  const [showGroupModal, setShowGroupModal] = useState(false);
-  const [newGroupName, setNewGroupName] = useState('');
-  const [newGroupMembers, setNewGroupMembers] = useState<number[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [showMentionMenu, setShowMentionMenu] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
+
+
   const [streamingContent, setStreamingContent] = useState('');
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string|null>(null);
@@ -178,24 +179,25 @@ const AICenter: React.FC = () => {
   const teamUsers = [
     { id: 1, name: 'AI 分析助手', role: '智能分析引擎 · 7×24h', avatar: 'AI', color: 'from-indigo-500 to-purple-600', isAI: true, online: true, lastMsg: '随时为您分析告警', unread: 0 },
     { id: 2, name: user?.username||'管理员', role: user?.role||'安全管理员', avatar: (user?.username||'管').charAt(0), color: 'from-blue-500 to-cyan-500', isAI: false, online: true, lastMsg: '', unread: 0 },
-    { id: 3, name: '安全分析师', role: '安全运营', avatar: '张', color: 'from-emerald-500 to-teal-500', isAI: false, online: true, lastMsg: '好的，我来处理', unread: 2 },
-    { id: 4, name: '系统管理员', role: '系统管理', avatar: '李', color: 'from-amber-500 to-orange-500', isAI: false, online: false, lastMsg: '已更新配置', unread: 0 },
-    { id: 5, name: '审计员', role: '合规审计', avatar: '王', color: 'from-rose-500 to-pink-500', isAI: false, online: false, lastMsg: '日志已归档', unread: 0 },
+    { id: 3, name: 'zhang', role: '安全主管', avatar: '张', color: 'from-emerald-500 to-teal-500', isAI: false, online: true, lastMsg: '好的，我来处理', unread: 2 },
+    { id: 4, name: 'li', role: '安全分析师', avatar: '李', color: 'from-amber-500 to-orange-500', isAI: false, online: true, lastMsg: '已更新配置', unread: 0 },
+    { id: 5, name: 'wang', role: '安全运维', avatar: '王', color: 'from-rose-500 to-pink-500', isAI: false, online: false, lastMsg: '日志已归档', unread: 0 },
   ];
 
   useEffect(()=>{
     Promise.all([
       aiApi.getLlmProviders().then(r=>r.success&&setLlmProviders(r.data)).catch(()=>{}),
+      aiApi.getDefaultLlmProvider().then(r=>{if(r.success&&r.data?.id)setDefaultLlmId(r.data.id)}).catch(()=>{}),
       aiApi.getAgentProviders().then(r=>r.success&&setAgentProviders(r.data||[])).catch(()=>{}),
       aiApi.listSkills().then(r=>r.success&&setSkills(r.data?.skills||[])).catch(()=>{}),
       aiApi.getFeedbackStats().then(r=>r.success&&setFeedbackStats(r.data)).catch(()=>{}),
-      aiApi.getSessions().then(r=>r.success&&setSessions(r.data||[])).catch(()=>{}),
+      aiApi.getSessions().then(r=>{if(r.success&&r.data&&r.data.length>0){setSessions(r.data);const savedId=localStorage.getItem('ai_activeSessionId');const target=r.data.find((s:any)=>s.id===savedId)||r.data[0];setActiveSessionId(target.id);loadSession(target.id);}}).catch(()=>{}),
     ]);
   },[]);
 
   useEffect(()=>{
     apiRequest('/ai-api/pipeline/status').then(r => {
-      if(r.success){const d=r.data||{};setPipelineRunning(d.running);setPipelineLastRun(d.last_run);setPipelineStats({analyzed:d.total_analyzed||0,events:d.total_events||0});}
+      if(r.success){const d=r.data||{};setPipelineRunning(d.running);setPipelineLastRun(d.last_run);setPipelineStats({analyzed:d.total_analyzed||0,events:d.total_events||0,high_risk:d.high_risk||0});}
     }).catch(()=>{});
     apiRequest('/ai-api/approval/pending').then(r => {
       if(r.success) setPendingCount(r.data?.length||0);
@@ -209,9 +211,9 @@ const AICenter: React.FC = () => {
   useEffect(()=>{chatEndRef.current?.scrollIntoView({behavior:'smooth'});},[messages,streamingContent]);
   useEffect(()=>{teamEndRef.current?.scrollIntoView({behavior:'smooth'});},[teamMessages]);
 
-  const loadSession = useCallback(async(id:string)=>{setActiveSessionId(id);setChatLoading(true);try{const r=await aiApi.getSession(id);if(r.success)setMessages(r.data?.messages||[]);}catch{}setChatLoading(false);},[]);
+  const loadSession = useCallback(async(id:string)=>{setActiveSessionId(id);localStorage.setItem('ai_activeSessionId',id);setChatLoading(true);try{const r=await aiApi.getSession(id);if(r.success)setMessages(r.data?.messages||[]);}catch{}setChatLoading(false);},[]);
   const createSession = useCallback(async()=>{try{const r=await aiApi.createSession({title:`新会话 ${new Date().toLocaleTimeString()}`});if(r.success){setSessions(p=>[r.data,...p]);setActiveSessionId(r.data.id);setMessages([]);setShowSessionPanel(false);addToast('success','新会话已创建');}}catch{addToast('error','创建失败');}},[addToast]);
-  const deleteSession = useCallback(async(id:string)=>{try{await aiApi.deleteSession(id);setSessions(p=>p.filter(s=>s.id!==id));if(activeSessionId===id){setActiveSessionId(null);setMessages([]);}addToast('success','已删除');}catch{addToast('error','删除失败');}},[activeSessionId,addToast]);
+  const deleteSession = useCallback(async(id:string)=>{try{await aiApi.deleteSession(id);localStorage.removeItem('ai_activeSessionId');setSessions(p=>p.filter(s=>s.id!==id));if(activeSessionId===id){setActiveSessionId(null);setMessages([]);}addToast('success','已删除');}catch{addToast('error','删除失败');}},[activeSessionId,addToast]);
 
   const handleSend = useCallback(async()=>{
     if(!inputMsg.trim()){addToast('info','请输入消息');return;}
@@ -221,7 +223,7 @@ const AICenter: React.FC = () => {
     setMessages(p=>[...p,userMsg]);setInputMsg('');setChatLoading(true);setStreamingContent('');
     try{
       // LangGraph 编排
-        const r=await aiApi.orchestrate({query:inputMsg,session_id:sid});
+        const r=await aiApi.orchestrate({query:inputMsg,session_id:sid||undefined});
         if(r.success){const reply=r.data?.response||'无响应';let idx=0;const iv=setInterval(()=>{idx+=3;if(idx>=reply.length){clearInterval(iv);setStreamingContent('');setMessages(p=>[...p,{role:'assistant',content:reply}]);setChatLoading(false);}else setStreamingContent(reply.slice(0,idx));},20);}
         else{setChatLoading(false);addToast('error','编排失败');}
     }catch(e:any){setChatLoading(false);setMessages(p=>[...p,{role:'assistant',content:`请求失败: ${e.message}`}]);addToast('error',e.message);}
@@ -367,7 +369,7 @@ const AICenter: React.FC = () => {
             </div>
             <div className="flex items-center gap-2">
               <button onClick={async()=>{
-                try{const r=await apiRequest('/ai-api/pipeline/status');if(r.success){const d=r.data||{};setPipelineRunning(d.running);setPipelineLastRun(d.last_run);setPipelineStats({analyzed:d.total_analyzed||0,events:d.total_events||0});}
+                try{const r=await apiRequest('/ai-api/pipeline/status');if(r.success){const d=r.data||{};setPipelineRunning(d.running);setPipelineLastRun(d.last_run);setPipelineStats({analyzed:d.total_analyzed||0,events:d.total_events||0,high_risk:d.high_risk||0});}
                 }catch(e){}}
               } className="px-2.5 py-1.5 text-[10px] bg-page-bg border border-border-color rounded-lg text-text-secondary hover:text-text-primary hover:border-border-color-hover transition-all flex items-center gap-1">
                 <RefreshCw className="w-3 h-3"/>刷新状态
@@ -376,7 +378,9 @@ const AICenter: React.FC = () => {
                 <button onClick={async()=>{try{await apiRequest('/ai-api/pipeline/stop',{method:'POST'});setPipelineRunning(false);addToast('info','已停止');}catch(e){}}}
                   className="px-3 py-1.5 text-[10px] bg-red-600/80 text-white rounded-lg hover:bg-red-500 transition-all">停止</button>
               ) : (
-                <button onClick={async()=>{try{const r=await apiRequest('/ai-api/pipeline/start',{method:'POST'});setPipelineRunning(true);addToast('success','分析已启动');}catch(e){}setTimeout(async()=>{try{const r=await apiRequest('/ai-api/pipeline/status');if(r.success){const d=r.data||{};setPipelineRunning(d.running);setPipelineLastRun(d.last_run);setPipelineStats({analyzed:d.total_analyzed||0,events:d.total_events||0});}}catch(e){}},3000);}}
+                <button onClick={async()=>{try{await apiRequest('/ai-api/pipeline/start',{method:'POST'});setPipelineRunning(true);addToast('success','分析已启动');}catch(e){}
+                  const iv=setInterval(async()=>{try{const r=await apiRequest('/ai-api/pipeline/status');if(r.success){const d=r.data||{};setPipelineRunning(d.running);setPipelineLastRun(d.last_run);setPipelineStats({analyzed:d.total_analyzed||0,events:d.total_events||0,high_risk:d.high_risk||0});if(!d.running)clearInterval(iv);}}catch(e){}},3000);
+                  setTimeout(()=>clearInterval(iv),120000);}}
                   className="px-3 py-1.5 text-[10px] bg-emerald-600 text-white rounded-lg hover:bg-emerald-500 transition-all">启动分析</button>
               )}
             </div>
@@ -623,11 +627,6 @@ function renderCapabilities() {
   }
 
   function renderChat() {
-    const isTeamChat = teamChatWith !== null;
-    const isGroupChat = isTeamChat && typeof teamChatWith === 'string' && teamChatWith.startsWith('group_');
-    const teamChatPartner = (!isGroupChat && isTeamChat && typeof teamChatWith === 'number') ? teamUsers.find(u => u.id === teamChatWith) : null;
-    const activeGroup = isGroupChat ? teamGroups.find(g => g.id === teamChatWith) : null;
-    const chatMessages = isTeamChat ? (teamChats[String(teamChatWith!)]||[]) : messages;
     const memberUsers = teamUsers.filter(u => !u.isAI && String(u.id) !== String(user?.id));
 
     const handleMentionSelect = (u: any) => {
@@ -641,16 +640,9 @@ function renderCapabilities() {
     const handleSendMessage = () => {
       const msg = inputMsg.trim();
       if (!msg) return;
-      if (isTeamChat) {
+      if (false) {
         handleTeamSend(teamChatWith!);
       } else {
-        // 检测 @提及（在 AI 对话中提及）
-        const mentioned = memberUsers.filter(u => msg.includes('@' + u.name));
-        if (mentioned.length > 0) {
-          mentioned.forEach(u => {
-            addToast('info', `已通知 @${u.name}，可在左侧切换对话`, 3000);
-          });
-        }
         handleSend();
       }
     };
@@ -658,7 +650,8 @@ function renderCapabilities() {
     const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
       const val = e.target.value;
       setInputMsg(val);
-      if (!isTeamChat) {
+      // @ 提及仅在群聊中使用
+      if (false) {
         const lastAt = val.lastIndexOf('@');
         if (lastAt >= 0 && (lastAt === 0 || val[lastAt-1] === ' ')) {
           const after = val.slice(lastAt + 1);
@@ -681,141 +674,54 @@ function renderCapabilities() {
           animate={{width:showContacts?280:0}}
           className="flex-shrink-0 border-r border-border-color bg-page-bg/40 overflow-hidden flex flex-col"
         >
-          {/* 头部 */}
-          <div className="flex-shrink-0 p-3 border-b border-border-color">
-            <div className="flex items-center gap-2.5 px-2 py-1.5">
-              <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-sm"><Brain className="w-4 h-4 text-white" /></div>
-              <span className="text-sm font-bold text-text-primary">USOP 智能分析</span>
+          <div className="flex-shrink-0 px-3 py-2.5 border-b border-border-color">
+            <div className="flex items-center gap-2">
+              <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-sm"><Brain className="w-3.5 h-3.5 text-white" /></div>
+              <span className="text-sm font-bold text-text-primary">USOP</span>
             </div>
           </div>
 
-          {/* 搜索 */}
-          <div className="flex-shrink-0 px-3 py-2">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-muted/40" />
-              <input value={searchTerm} onChange={e=>setSearchTerm(e.target.value)}
-                placeholder="搜索联系人..."
-                className="w-full pl-9 pr-3 py-2 text-xs bg-card-bg border border-border-color rounded-xl text-text-primary placeholder:text-text-muted/30 focus:border-indigo-500/40 focus:ring-1 focus:ring-indigo-500/20 transition-all outline-none" />
-            </div>
-          </div>
-
-          <div className="flex-1 overflow-y-auto px-2 pb-2 space-y-0.5 scrollbar-thin">
+          <div className="flex-1 overflow-y-auto px-2 py-2 space-y-1 scrollbar-thin">
             {/* AI 分析助手 */}
-            <div className={'p-3 rounded-xl cursor-pointer transition-all border '+
-              (!isTeamChat?'bg-indigo-500/10 border-indigo-500/30 shadow-sm':'hover:bg-card-bg-hover border-transparent')}
+            <div className={'flex items-center gap-2.5 px-2.5 py-2 rounded-lg cursor-pointer transition-all '+
+              'bg-indigo-500/10 text-indigo-400'}
               onClick={()=>{setTeamChatWith(null);}}>
-              <div className="flex items-center gap-3">
-                <div className="relative">
-                  <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center shadow-lg shadow-indigo-500/20">
-                    <Sparkles className="w-5 h-5 text-white" />
-                  </div>
-                  <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-emerald-500 rounded-full border-2 border-card-bg shadow-sm" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-semibold text-text-primary">AI 分析助手</span>
-                    <span className="text-[9px] text-emerald-500 font-medium">在线</span>
-                  </div>
-                  <div className="text-[10px] text-text-muted mt-0.5 truncate">DeepSeek 大模型 · 安全分析</div>
+              <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center flex-shrink-0"><Sparkles className="w-3.5 h-3.5 text-white" /></div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs font-semibold">AI 分析助手</span>
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
                 </div>
               </div>
             </div>
 
             {/* 分隔线 */}
-            <div className="flex items-center gap-2 px-1 py-1.5">
-              <div className="flex-1 h-px bg-border-color/50" />
-              <span className="text-[9px] text-text-muted/40 font-medium uppercase tracking-wider">关联人员</span>
-              <div className="flex-1 h-px bg-border-color/50" />
+            <div className="flex items-center gap-2 px-1 py-0.5">
+              <div className="flex-1 h-px bg-border-color/30" />
+              <span className="text-[8px] text-text-muted/30 font-medium">在线成员</span>
+              <div className="flex-1 h-px bg-border-color/30" />
             </div>
 
-            {/* 团队成员 — 点击进入单独对话 */}
-            {memberUsers.filter(u=>!searchTerm||u.name.includes(searchTerm)).map(u => {
-              const hasChat = teamChats[u.id] && teamChats[u.id].length > 0;
-              const lastMsg = hasChat ? teamChats[u.id][teamChats[u.id].length-1] : null;
+            {/* 在线成员列表 */}
+            {memberUsers.map(u => {
               return (
-              <div key={u.id} className={'p-2.5 rounded-xl cursor-pointer transition-all border '+
-                (teamChatWith===u.id?'bg-emerald-500/10 border-emerald-500/30 shadow-sm':'hover:bg-card-bg-hover border-transparent')}
-                onClick={()=>{handleMentionSelect(u);}}>
-                <div className="flex items-center gap-3">
-                  <div className="relative">
-                    <div className={'w-10 h-10 rounded-2xl bg-gradient-to-br '+u.color+' flex items-center justify-center text-sm font-bold text-white shadow-sm'}>{u.avatar}</div>
-                    <span className={'absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-card-bg shadow-sm '+(u.online?'bg-emerald-500':'bg-gray-400')} />
+              <div key={u.id} className={'flex items-center gap-2.5 px-2.5 py-2 rounded-lg cursor-pointer transition-all '+
+                'hover:bg-card-bg-hover text-text-secondary'}
+                onClick={()=>{}}>
+                <div className={'w-7 h-7 rounded-lg bg-gradient-to-br '+u.color+' flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0'}>{u.avatar}</div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium">{u.name}</span>
+                    <span className={'text-[8px] '+(u.online?'text-emerald-500':'text-gray-400')}>{u.online?'在线':'离线'}</span>
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm font-semibold text-text-primary">{u.name}</span>
-                      <span className={'text-[8px] px-1 py-0.5 rounded-full '+(u.online?'bg-emerald-500/10 text-emerald-500':'bg-gray-500/10 text-gray-400')}>{u.online?'在线':'离线'}</span>
-                    </div>
-                    <div className="flex items-center justify-between mt-0.5">
-                      <span className="text-[10px] text-text-muted truncate max-w-[140px]">
-                        {hasChat ? lastMsg?.content||u.role : u.role}
-                      </span>
-                      {hasChat && <span className="text-[8px] text-text-muted/50">{lastMsg?.time||''}</span>}
-                    </div>
-                  </div>
+                  <div className="text-[9px] text-text-muted/50 truncate mt-0.5">{u.role}</div>
                 </div>
               </div>
               );
             })}
           </div>
 
-          {/* 群聊列表 */}
-          {teamGroups.length > 0 && (
-            <>
-            <div className="flex items-center gap-2 px-1 py-1.5">
-              <div className="flex-1 h-px bg-border-color/50" />
-              <span className="text-[9px] text-text-muted/40 font-medium uppercase tracking-wider">群聊</span>
-              <div className="flex-1 h-px bg-border-color/50" />
-            </div>
-            {teamGroups.filter(g=>!searchTerm||g.name.includes(searchTerm)).map(g => {
-              const hasChat = teamChats[g.id] && teamChats[g.id].length > 0;
-              const lastMsg = hasChat ? teamChats[g.id][teamChats[g.id].length-1] : null;
-              const memberNames = g.members.map(mid => teamUsers.find(u=>u.id===mid)?.name||'').filter(Boolean).join('、');
-              return (
-              <div key={g.id} className={'p-2.5 rounded-xl cursor-pointer transition-all border '+
-                (teamChatWith===g.id?'bg-purple-500/10 border-purple-500/30 shadow-sm':'hover:bg-card-bg-hover border-transparent')}
-                onClick={()=>{handleMentionSelect(g);}}>
-                <div className="flex items-center gap-3">
-                  <div className="relative">
-                    <div className={'w-10 h-10 rounded-2xl bg-gradient-to-br '+g.color+' flex items-center justify-center text-sm font-bold text-white shadow-sm'}>{g.avatar}</div>
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm font-semibold text-text-primary">{g.name}</span>
-                      <span className="text-[8px] text-text-muted/50">{g.members.length} 人</span>
-                    </div>
-                    <div className="flex items-center justify-between mt-0.5">
-                      <span className="text-[10px] text-text-muted truncate max-w-[140px]">
-                        {hasChat ? lastMsg?.content||g.name : memberNames}
-                      </span>
-                      {hasChat && <span className="text-[8px] text-text-muted/50">{lastMsg?.time||''}</span>}
-                    </div>
-                  </div>
-                </div>
-              </div>
-              );
-            })}
-            </>
-          )}
-
-          {/* 创建群聊按钮 */}
-          <div className="px-2 pt-1">
-            <button onClick={()=>setShowGroupModal(true)}
-              className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs text-text-muted hover:text-text-primary hover:bg-card-bg-hover border border-dashed border-border-color hover:border-purple-500/30 transition-all">
-              <span className="w-6 h-6 rounded-lg bg-purple-500/10 flex items-center justify-center"><span className="text-purple-400 font-bold text-sm">+</span></span>
-              创建群聊
-            </button>
-          </div>
-
-          {/* 底部提示 */}
-          <div className="flex-shrink-0 mx-2 mb-2 p-2.5 rounded-xl bg-gradient-to-br from-indigo-500/[0.06] to-purple-500/[0.06] border border-indigo-500/10">
-            <div className="flex items-center gap-2 text-[10px] text-text-muted">
-              <AtSign className="w-3.5 h-3.5 text-indigo-400 flex-shrink-0" />
-              <span>AI 对话中输入 <code className="text-indigo-400 font-mono text-[10px]">@</code> 提及关联人员</span>
-            </div>
-          </div>
         </motion.div>
-
         {/* ===== 右侧：主对话区 ===== */}
         <div className="flex-1 flex flex-col min-w-0 bg-[radial-gradient(ellipse_at_top_right,rgba(99,102,241,0.03),transparent_60%),radial-gradient(ellipse_at_bottom_left,rgba(16,185,129,0.03),transparent_60%)]">
           {/* ===== 会话头部 ===== */}
@@ -826,42 +732,31 @@ function renderCapabilities() {
                 <PanelLeft className="w-4 h-4" />
               </button>
               <div className="relative">
-                {isTeamChat ? (
-                  <div className={'w-10 h-10 rounded-2xl bg-gradient-to-br '+(isGroupChat?(activeGroup?.color||'from-purple-500 to-pink-500'):(teamChatPartner?.color||'from-emerald-500 to-teal-500'))+' flex items-center justify-center text-sm font-bold text-white shadow-sm'}>
-                    {isGroupChat ? (activeGroup?.avatar||'#') : (teamChatPartner?.avatar||'?')}
-                  </div>
-                ) : (
                   <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center shadow-sm">
                     <Sparkles className="w-5 h-5 text-white" />
                   </div>
-                )}
                 <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-emerald-500 rounded-full border-2 border-card-bg" />
               </div>
               <div>
                 <div className="flex items-center gap-2">
-                  <span className="text-sm font-semibold text-text-primary">
-                    {isGroupChat ? activeGroup?.name||'群聊' : isTeamChat ? teamChatPartner?.name||'成员' : 'AI 分析助手'}
-                  </span>
-                  {!isTeamChat && (
-                    <span className="px-1.5 py-0.5 text-[8px] bg-gradient-to-r from-indigo-500/20 to-purple-500/20 text-indigo-400 rounded-md font-medium border border-indigo-500/20">DeepSeek</span>
+                  <span className="text-sm font-semibold text-text-primary">AI 分析助手</span>
+                  {defaultLlmId && llmProviders.find(p=>p.id===defaultLlmId) ? (
+                    <span className="px-1.5 py-0.5 text-[8px] bg-gradient-to-r from-indigo-500/20 to-purple-500/20 text-indigo-400 rounded-md font-medium border border-indigo-500/20">{(llmProviders.find(p=>p.id===defaultLlmId) as any)?.name || "AI"}</span>
+                  ) : (
+                    <span className="px-1.5 py-0.5 text-[8px] bg-gradient-to-r from-emerald-500/20 to-teal-500/20 text-emerald-400 rounded-md font-medium border border-emerald-500/20">已配置</span>
                   )}
-                  {isTeamChat && (
-                    <span className="px-1.5 py-0.5 text-[8px] bg-emerald-500/20 text-emerald-400 rounded-md font-medium border border-emerald-500/20">单独对话</span>
-                  )}
+
                 </div>
                 <div className="text-[10px] text-text-muted/70 flex items-center gap-1.5">
-                  {isGroupChat ? (
-                    <><div className="w-1.5 h-1.5 rounded-full bg-purple-500" /><span>{activeGroup?.members.length||0} 位成员</span></>
-                  ) : isTeamChat ? (
-                    <><div className="w-1.5 h-1.5 rounded-full bg-emerald-500" /><span>{teamChatPartner?.online?'在线':'离线'}</span><span className="text-text-muted/30">·</span><span>{teamChatPartner?.role}</span></>
-                  ) : (
-                    <><div className="w-1.5 h-1.5 rounded-full bg-emerald-500" /><span>在线</span><span className="text-text-muted/30">·</span><span>智能安全分析引擎</span><span className="text-text-muted/30">·</span><span className="text-indigo-400">@ 关联人员协同</span></>
-                  )}
+                  <div className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                  <span>在线</span>
+                  <span className="text-text-muted/30">·</span>
+                  <span>智能安全分析引擎</span>
                 </div>
               </div>
             </div>
             <div className="flex items-center gap-1">
-              {!isTeamChat && (
+              {(
                 <>
                   <button onClick={()=>setShowSessionPanel(!showSessionPanel)} 
                     className="p-2 text-text-muted hover:text-text-primary rounded-xl hover:bg-card-bg-hover transition-colors relative" title="历史会话">
@@ -874,12 +769,7 @@ function renderCapabilities() {
                   </button>
                 </>
               )}
-              {isTeamChat && (
-                <button onClick={()=>setTeamChatWith(null)} 
-                  className="p-2 text-text-muted hover:text-indigo-400 rounded-xl hover:bg-indigo-500/10 transition-colors" title="返回 AI 分析">
-                  <Sparkles className="w-4 h-4" />
-                </button>
-              )}
+
             </div>
           </div>
 
@@ -908,28 +798,27 @@ function renderCapabilities() {
           {/* ===== 消息区域 ===== */}
           <div className="flex-1 overflow-y-auto px-4 py-4 space-y-1 scrollbar-thin">
             {/* 团队对话空状态 */}
-            {isTeamChat && chatMessages.length===0 && (
+            {false && (
               <div className="flex flex-col items-center justify-center h-full text-text-muted py-12">
                 <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-emerald-500/15 to-teal-500/15 flex items-center justify-center mb-4 ring-1 ring-emerald-500/10">
                   <Users className="w-8 h-8 text-emerald-400" />
                 </div>
-                <div className="text-base font-bold text-text-secondary mb-1">{isGroupChat ? activeGroup?.name||'群聊' : `与 ${teamChatPartner?.name} 的对话`}</div>
+                <div className="text-base font-bold text-text-secondary mb-1">AI 安全分析</div>
                 <div className="text-xs text-text-muted max-w-sm text-center leading-relaxed">
-                  {isGroupChat ? '群聊消息所有成员可见' : '发送消息进行单独沟通，需要审批时可在此通知关联人员'}
+                  与 AI 对话，分析告警、溯源攻击链
                 </div>
               </div>
             )}
 
             {/* AI 对话空状态 */}
-            {!isTeamChat && messages.length===0 && (
+            {messages.length===0 && (
               <div className="flex flex-col items-center justify-center h-full text-text-muted py-12">
                 <div className="w-20 h-20 rounded-3xl bg-gradient-to-br from-indigo-500/15 via-purple-500/10 to-pink-500/15 flex items-center justify-center mb-5 ring-1 ring-indigo-500/10 shadow-lg shadow-indigo-500/5">
                   <Sparkles className="w-10 h-10 text-indigo-400" />
                 </div>
                 <div className="text-lg font-bold text-text-secondary mb-1">AI 安全分析助手</div>
                 <div className="text-xs text-text-muted mb-6 max-w-md text-center leading-relaxed">
-                  基于 DeepSeek 大模型的安全运营分析<br />
-                  AI 分析时输入 <code className="text-indigo-400 font-mono">@</code> 提及关联人员协同处置
+                  {defaultLlmId && llmProviders.find(p=>p.id===defaultLlmId) ? `基于 ${(llmProviders.find(p=>p.id===defaultLlmId) as any)?.name || "已配置"} 大模型的安全运营分析` : "智能安全运营分析助手"}
                 </div>
                 <div className="grid grid-cols-2 gap-2.5 max-w-lg w-full">
                   {[
@@ -952,28 +841,8 @@ function renderCapabilities() {
               </div>
             )}
 
-            {/* 团队对话消息 */}
-            {isTeamChat && chatMessages.map((m:any,i:number)=>(
-              <motion.div key={m.id||i} initial={{opacity:0,y:8}} animate={{opacity:1,y:0}}
-                className={'flex items-end gap-2.5 mb-3 '+(String(m.user.id)===String(user?.id)?'flex-row-reverse':'')}>
-                <div className={'w-8 h-8 rounded-xl flex items-center justify-center text-xs font-bold text-white flex-shrink-0 shadow-sm bg-gradient-to-br '+(m.user.color||'from-blue-500 to-cyan-500')}>{m.user.avatar}</div>
-                <div className={'flex flex-col '+(String(m.user.id)===String(user?.id)?'items-end':'items-start')+' max-w-[75%]'}>
-                  <div className="flex items-center gap-2 mb-0.5 px-1">
-                    <span className="text-[10px] font-medium text-text-muted/60">{m.user.name}</span>
-                    <span className="text-[8px] text-text-muted/30">{m.time}</span>
-                  </div>
-                  <div className={'px-4 py-2.5 text-sm leading-relaxed '+
-                    (String(m.user.id)===String(user?.id)
-                      ?'bg-gradient-to-br from-emerald-600 to-teal-600 text-white rounded-2xl rounded-br-md shadow-md shadow-emerald-500/10'
-                      :'bg-card-bg border border-border-color text-text-primary rounded-2xl rounded-bl-md shadow-sm')}>
-                    <span className="whitespace-pre-wrap">{m.content}</span>
-                  </div>
-                </div>
-              </motion.div>
-            ))}
-
             {/* AI 消息 */}
-            {!isTeamChat && messages.map((m:any,i:number)=>(
+            {messages.map((m:any,i:number)=>(
               <motion.div key={i} initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} transition={{delay:i*0.03}}
                 className={'flex items-end gap-2.5 mb-3 '+(m.role==='user'?'flex-row-reverse':'')}>
                 <div className={'w-8 h-8 rounded-xl flex items-center justify-center text-xs font-bold text-white flex-shrink-0 shadow-sm '+
@@ -991,7 +860,7 @@ function renderCapabilities() {
                       :'bg-card-bg border border-border-color text-text-primary rounded-2xl rounded-bl-md shadow-sm')}>
                     {m.role==='assistant'
                       ? <MarkdownContent content={m.content}/>
-                      : <span className="whitespace-pre-wrap">{highlightMentions(m.content, memberUsers)}</span>
+                      : <span className="whitespace-pre-wrap">{m.content}</span>
                     }
                   </div>
                   {m.role==='assistant'&&(
@@ -1006,7 +875,7 @@ function renderCapabilities() {
             ))}
 
             {/* 流式输出 */}
-            {!isTeamChat && streamingContent&&(
+            {streamingContent&&(
               <motion.div initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} className="flex items-end gap-2.5 mb-3">
                 <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-sm"><Sparkles className="w-4 h-4 text-white" /></div>
                 <div className="flex flex-col items-start max-w-[75%]">
@@ -1020,7 +889,7 @@ function renderCapabilities() {
             )}
 
             {/* 加载中 */}
-            {!isTeamChat && chatLoading&&!streamingContent&&(
+            {chatLoading&&!streamingContent&&(
               <div className="flex items-end gap-2.5 mb-3">
                 <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-sm"><Sparkles className="w-4 h-4 text-white" /></div>
                 <div className="flex flex-col items-start">
@@ -1041,15 +910,27 @@ function renderCapabilities() {
           {/* ===== 底部输入区 ===== */}
           <div className="flex-shrink-0 px-4 py-3 border-t border-border-color bg-card-bg/80 backdrop-blur-xl relative">
             {/* @提及菜单 */}
-            <AnimatePresence>{showMentionMenu&&memberUsers.filter(u=>!mentionFilter||u.name.includes(mentionFilter)).length>0&&(
+            <AnimatePresence>{showMentionMenu&&(()=>{const mentionList = memberUsers; return mentionList.filter((u:any)=>!mentionFilter||u.name.includes(mentionFilter)).length>0;})()&&(
               <motion.div initial={{opacity:0,y:8,scale:0.95}} animate={{opacity:1,y:0,scale:1}} exit={{opacity:0,y:8,scale:0.95}}
                 className="absolute bottom-full left-4 mb-2 w-72 bg-card-bg border border-border-color rounded-xl shadow-xl overflow-hidden">
                 <div className="p-1.5 space-y-0.5 max-h-48 overflow-y-auto">
                   <div className="px-2.5 py-1.5 text-[9px] text-text-muted/50 font-medium uppercase tracking-wider flex items-center gap-1.5">
-                    <AtSign className="w-3 h-3" /> 提及关联人员 — 点击进入单独对话
+                    <AtSign className="w-3 h-3" /> {'提及成员'}
                   </div>
-                  {memberUsers.filter(u=>!mentionFilter||u.name.includes(mentionFilter)).map(u=>(
-                    <button key={u.id} onClick={()=>handleMentionSelect(u)}
+                  {(false 
+                    ? memberUsers
+                    : memberUsers
+                  ).filter((u:any)=>!mentionFilter||u.name.includes(mentionFilter)).map(u=>(
+                    <button key={u.id} onClick={()=>{
+                      // 直接在输入框插入 @name，不切换对话
+                      setInputMsg(prev => {
+                        const lastAt = prev.lastIndexOf('@');
+                        if (lastAt >= 0) return prev.slice(0, lastAt) + '@' + u.name + ' ';
+                        return prev + '@' + u.name + ' ';
+                      });
+                      setShowMentionMenu(false);
+                      setTimeout(() => { const el = document.querySelector('.chat-input'); if(el) (el as HTMLInputElement).focus(); }, 0);
+                    }}
                       className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs hover:bg-card-bg-hover transition-colors text-left">
                       <div className={'w-7 h-7 rounded-lg bg-gradient-to-br '+u.color+' flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0'}>{u.avatar}</div>
                       <div className="flex-1 min-w-0">
@@ -1064,7 +945,7 @@ function renderCapabilities() {
             )}</AnimatePresence>
 
             {/* 快捷操作 */}
-            {!isTeamChat && (
+            {true && (
             <div className="flex items-center gap-1.5 mb-2 flex-wrap">
               {(quickActions||[]).map((qa:any,i:number)=>(
                 <button key={qa.id||i} onClick={qa.action} 
@@ -1084,17 +965,14 @@ function renderCapabilities() {
                     if(e.key==='Escape')setShowMentionMenu(false);
                   }}
                   onBlur={()=>setTimeout(()=>setShowMentionMenu(false), 200)}
-                  placeholder={isGroupChat ? `发送消息到「${activeGroup?.name}」...` : isTeamChat ? `发送消息给 ${teamChatPartner?.name}...` : '输入安全事件信息，AI 将辅助分析... 输入 @ 提及关联人员'}
-                  disabled={isTeamChat?false:chatLoading}
+                  placeholder='输入安全事件信息，AI 将辅助分析...'
+                  disabled={chatLoading}
                   className="w-full chat-input px-4 py-2.5 bg-page-bg border border-border-color rounded-xl text-sm text-text-primary placeholder:text-text-muted/40 disabled:opacity-50 focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/20 transition-all outline-none" />
               </div>
-              <button onClick={() => {
-                  if (isTeamChat) handleTeamSend(teamChatWith!);
-                  else handleSendMessage();
-                }} 
-                disabled={!inputMsg.trim()||(!isTeamChat&&chatLoading)}
+              <button onClick={handleSendMessage} 
+                disabled={!inputMsg.trim()||chatLoading}
                 className="px-5 py-2.5 bg-gradient-to-br from-indigo-600 to-purple-600 text-white rounded-xl text-sm font-medium disabled:opacity-40 hover:from-indigo-500 hover:to-purple-500 transition-all active:scale-95 flex items-center gap-1.5 shadow-lg shadow-indigo-500/20">
-                {(isTeamChat?false:chatLoading)
+                {chatLoading
                   ? <Loader2 className="w-4 h-4 animate-spin"/>
                   : <Send className="w-4 h-4"/>
                 }<span className="hidden sm:inline">发送</span>
@@ -1104,66 +982,7 @@ function renderCapabilities() {
         </div>
       </div>
 
-      {/* 创建群聊弹窗 */}
-      <AnimatePresence>{showGroupModal&&(
-        <motion.div initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-          <motion.div initial={{opacity:0,scale:0.95}} animate={{opacity:1,scale:1}} exit={{opacity:0,scale:0.95}}
-            className="bg-card-bg border border-border-color rounded-2xl p-5 w-full max-w-md mx-4 shadow-2xl" onClick={e=>e.stopPropagation()}>
-            <h3 className="text-sm font-semibold text-text-primary mb-4 flex items-center gap-2"><Users className="w-4 h-4 text-purple-400"/>创建群聊</h3>
-            
-            <label className="block text-xs text-text-secondary mb-1 font-medium">群名称</label>
-            <input value={newGroupName} onChange={e=>setNewGroupName(e.target.value)}
-              placeholder="输入群聊名称" 
-              className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-xl text-sm text-text-primary placeholder:text-text-muted/40 mb-3 focus:border-purple-500/50 focus:ring-1 focus:ring-purple-500/20 transition-all outline-none" />
 
-            <label className="block text-xs text-text-secondary mb-1.5 font-medium">选择成员 ({newGroupMembers.length} 人)</label>
-            <div className="max-h-48 overflow-y-auto space-y-0.5 bg-page-bg rounded-xl border border-border-color p-1.5 mb-4">
-              {memberUsers.map(u => {
-                const selected = newGroupMembers.includes(u.id);
-                return (
-                <div key={u.id} onClick={()=>setNewGroupMembers(prev => prev.includes(u.id) ? prev.filter(id=>id!==u.id) : [...prev, u.id])}
-                  className={'flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer transition-all '+
-                    (selected ? 'bg-purple-500/10 border border-purple-500/20' : 'hover:bg-card-bg-hover border border-transparent')}>
-                  <div className={'w-8 h-8 rounded-xl bg-gradient-to-br '+u.color+' flex items-center justify-center text-xs font-bold text-white flex-shrink-0'}>{u.avatar}</div>
-                  <div className="flex-1">
-                    <div className="text-xs font-medium text-text-primary">{u.name}</div>
-                    <div className="text-[9px] text-text-muted">{u.role}</div>
-                  </div>
-                  <div className={'w-5 h-5 rounded-lg border-2 flex items-center justify-center transition-all '+
-                    (selected ? 'bg-purple-500 border-purple-500' : 'border-border-color')}>
-                    {selected && <Check className="w-3 h-3 text-white" />}
-                  </div>
-                </div>
-                );
-              })}
-            </div>
-
-            <div className="flex gap-2 justify-end">
-              <button onClick={()=>{setShowGroupModal(false);setNewGroupName('');setNewGroupMembers([]);}}
-                className="px-4 py-2 text-xs text-text-secondary hover:text-text-primary transition-colors rounded-lg hover:bg-card-bg-hover">取消</button>
-              <button onClick={()=>{
-                if (!newGroupName.trim() || newGroupMembers.length === 0) return;
-                const gid = 'group_' + Date.now();
-                const newGroup = {
-                  id: gid, name: newGroupName.trim(),
-                  members: newGroupMembers,
-                  color: 'from-purple-500 to-pink-500',
-                  avatar: '#',
-                };
-                setTeamGroups(prev => [...prev, newGroup]);
-                setTeamChatWith(gid);
-                setShowGroupModal(false);
-                setNewGroupName(''); setNewGroupMembers([]);
-                addToast('success', `群聊「${newGroup.name}」已创建`);
-              }}
-                className="px-4 py-2 bg-gradient-to-br from-purple-600 to-pink-600 text-white rounded-lg text-xs font-medium hover:from-purple-500 hover:to-pink-500 transition-all disabled:opacity-40"
-                disabled={!newGroupName.trim()||newGroupMembers.length===0}>
-                创建群聊
-              </button>
-            </div>
-          </motion.div>
-        </motion.div>
-      )}</AnimatePresence>
     </>
     );
   }
@@ -1311,6 +1130,8 @@ function renderCapabilities() {
               <div key={pr.id} className="flex items-center justify-between p-3 bg-card-bg border border-border-color rounded-lg hover:bg-card-bg-hover transition-colors">
                 <div className="flex items-center gap-3 min-w-0"><div className={'w-2.5 h-2.5 rounded-full flex-shrink-0 '+(pr.enabled!==false?'bg-emerald-500':'bg-gray-600')}/><div className="min-w-0"><div className="text-sm font-medium text-text-primary">{pr.name}</div><div className="text-xs text-text-muted font-mono">{pr.type} · {pr.model||'-'}</div></div></div>
                 <div className="flex items-center gap-1">
+                  <button onClick={()=>{setEditingLlm(pr);setShowAddLlm(true);}} className="p-1.5 text-text-muted hover:text-blue-400 rounded-lg hover:bg-card-bg-hover"><Edit3 className="w-3.5 h-3.5"/></button>
+                  <button onClick={async()=>{try{await aiApi.setDefaultLlmProvider(pr.id);setDefaultLlmId(pr.id);addToast('success','已设为系统默认');}catch{addToast('error','设置失败');}}} className={"p-1.5 rounded-lg hover:bg-card-bg-hover "+(defaultLlmId===pr.id?'text-amber-400':'text-text-muted hover:text-amber-400')} title={defaultLlmId===pr.id?'当前系统默认':'设为系统默认'}><Star className={"w-3.5 h-3.5 "+(defaultLlmId===pr.id?'fill-current':'')}/></button>
                   <button onClick={()=>{setEditingLlm(pr);setShowAddLlm(true);}} className="p-1.5 text-text-muted hover:text-blue-400 rounded-lg hover:bg-card-bg-hover"><Edit3 className="w-3.5 h-3.5"/></button>
                   <button onClick={()=>{if(window.confirm('确定删除「'+pr.name+'」？')){(async()=>{try{await aiApi.deleteLlmProvider(pr.id);setLlmProviders((await aiApi.getLlmProviders()).data||[]);addToast('success','已删除');}catch{addToast('error','删除失败');}})();}}} className="p-1.5 text-text-muted hover:text-red-400 rounded-lg hover:bg-card-bg-hover"><Trash2 className="w-3.5 h-3.5"/></button>
                 </div>

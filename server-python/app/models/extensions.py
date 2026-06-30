@@ -469,3 +469,46 @@ class PlaybookExecution(db.Model):
             'result_summary': self.result_summary or {},
             'error_message': self.error_message
         }
+
+
+# 存根类 - Playbook（待实现完整功能）
+class Playbook(db.Model):
+    """剧本（存根类）"""
+    __tablename__ = 'playbooks'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    description = db.Column(db.Text)
+    enabled = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'description': self.description,
+            'enabled': self.enabled,
+            'created_at': self.created_at.isoformat() if self.created_at else None
+        }
+
+
+# 存根类 - PlaybookApproval
+class PlaybookApproval(db.Model):
+    """审批记录（存根类）"""
+    __tablename__ = 'playbook_approvals'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    playbook_id = db.Column(db.Integer)
+    status = db.Column(db.String(20), default='pending')
+    approver_id = db.Column(db.Integer)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'playbook_id': self.playbook_id,
+            'status': self.status,
+            'approver_id': self.approver_id,
+            'created_at': self.created_at.isoformat() if self.created_at else None
+        }

@@ -528,3 +528,96 @@ def preview_rule_data(rule_id):
             'sources': results
         }
     })
+
+
+# ========== 自动触发剧本相关 API ==========
+
+@rules_api_bp.route('/rules/<rule_id>/trigger-playbook', methods=['POST'])
+@login_required
+def trigger_playbook_from_rule(rule_id):
+    """从规则触发关联的剧本 (自动触发入口)"""
+    from app.engine.playbook_engine import playbook_engine as engine
+    from app.models import Playbook, Alert
+    
+    rule = DetectionRuleExtended.query.get(rule_id)
+    if not rule:
+        return jsonify({'success': False, 'error': '规则不存在'}), 404
+    
+    if not rule.playbook_id:
+        return jsonify({'success': False, 'error': '该规则未关联剧本'}), 400
+    
+    playbook = Playbook.query.get(rule.playbook_id)
+    if not playbook:
+        return jsonify({'success': False, 'error': '关联的剧本不存在'}), 404
+    
+    if playbook.status not in ('published', 'enabled'):
+        return jsonify({'success': False, 'error': '剧本未启用'}), 400
+    
+    data = request.get_json() or {}
+    alert_data = data.get('alert', {})
+    event_data = data.get('event', {})
+    
+    # 执行剧本
+    result = engine.execute(
+        playbook=playbook,
+        trigger_type='rule',
+        event=event_data,
+        alert=alert_data,
+        params={'rule_id': rule_id},
+        executor='system',
+        request_info={'user_id': 0, 'username': 'rule_engine', 'ip': '0.0.0.0'}
+    )
+    
+    return jsonify({
+        'success': True,
+        'data': result
+    })
+
+
+@rules_api_bp.route('/rules/<rule_id>/auto-trigger', methods=['POST'])
+@login_required
+def configure_auto_trigger(rule_id):
+    """配置规则的自动触发"""
+    rule = DetectionRuleExtended.query.get(rule_id)
+    if not rule:
+        return jsonify({'success': False, 'error': '规则不存在'}), 404
+    
+    data = request.get_json()
+    enabled = data.get('enabled', True)
+    trigger_mode = data.get('trigger_mode', 'immediate')  # immediate, delayed, manual
+    
+    # 更新规则的触发配置
+    trigger_config = rule.extra_data or {}
+    trigger_config['auto_trigger'] = {
+        'enabled': enabled,
+        'trigger_mode': trigger_mode,
+        'playbook_id': rule.playbook_id,
+        'configured_at': datetime.utcnow().isoformat()
+    }
+    rule.extra_data = trigger_config
+    db.session.commit()
+    
+    return jsonify({
+        'success': True,
+        'data': trigger_config['auto_trigger']
+    })
+
+
+@rules_api_bp.route('/rules/<rule_id>/auto-trigger', methods=['GET'])
+@login_required
+def get_auto_trigger_config(rule_id):
+    """获取规则的自动触发配置"""
+    rule = DetectionRuleExtended.query.get(rule_id)
+    if not rule:
+        return jsonify({'success': False, 'error': '规则不存在'}), 404
+    
+    trigger_config = (rule.extra_data or {}).get('auto_trigger', {
+        'enabled': False,
+        'trigger_mode': 'manual',
+        'playbook_id': rule.playbook_id
+    })
+    
+    return jsonify({
+        'success': True,
+        'data': trigger_config
+    })

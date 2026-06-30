@@ -77,7 +77,7 @@ def _local_ai_request(messages: list, **kwargs) -> dict:
                     'temperature': kwargs.get('temperature', 0.7),
                 }
             },
-            timeout=kwargs.get('timeout', 120),
+            timeout=kwargs.get('timeout', 60),
         )
         resp.raise_for_status()
         result = resp.json()
@@ -106,33 +106,62 @@ def _local_ai_request(messages: list, **kwargs) -> dict:
                 'max_tokens': kwargs.get('max_tokens', 4096),
                 'stream': False,
             },
-            timeout=kwargs.get('timeout', 120),
+            timeout=kwargs.get('timeout', 60),
         )
         resp.raise_for_status()
         return resp.json()
 
 
-def _deepseek_request(messages: list, **kwargs) -> dict:
-    """调用 LLM API（优先使用用户配置的提供商，否则 DeepSeek）"""
-    # 尝试从 DB 获取用户配置的 LLM
+
+def _get_system_llm_config() -> tuple:
+    """从 DB 获取系统默认 LLM 配置，返回 (api_base, api_key, model)"""
     try:
         from app.models import SystemConfig
+        import json as _j
+        
+        # 1) 查找系统默认 LLM 提供商
+        default_cfg = SystemConfig.query.filter_by(key='ai_llm_default').first()
+        default_id = None
+        if default_cfg and default_cfg.value:
+            try: default_id = _j.loads(default_cfg.value).get('provider_id') if default_cfg.value else None
+            except: pass
+        
+        # 2) 获取所有 LLM 提供商配置
         configs = SystemConfig.query.filter(SystemConfig.key.like('ai_llm_%')).all()
+        
+        selected_val = None
         for c in configs:
-            import json as _j
             try: val = _j.loads(c.value) if c.value else {}
             except: val = {}
-            if val.get('enabled', True) and val.get('base_url') and val.get('api_key'):
-                api_base = val['base_url']
-                api_key = val['api_key']
-                model = kwargs.get('model', val.get('model', 'deepseek-chat'))
+            if not val.get('enabled', True) or not val.get('base_url') or not val.get('api_key'):
+                continue
+            provider_id = c.key.replace('ai_llm_', '')
+            if selected_val is None:
+                selected_val = val
+            if default_id and provider_id == default_id:
+                selected_val = val
                 break
-        else:
-            raise StopIteration
-    except (StopIteration, Exception):
+            scope = val.get('scope', '')
+            if scope in ('all', 'analysis'):
+                selected_val = val
+        
+        if selected_val:
+            return (selected_val['base_url'], selected_val['api_key'], selected_val.get('model', 'deepseek-chat'))
+    except Exception:
+        pass
+    return (None, None, None)
+
+
+def _deepseek_request(messages: list, **kwargs) -> dict:
+    """调用 LLM API（优先使用用户配置的提供商，否则 DeepSeek）"""
+    # 尝试从 DB 获取用户配置的 LLM（优先使用系统默认提供商）
+    api_base, api_key, model = _get_system_llm_config()
+    if not api_base:
         api_base = _get_api_base()
         api_key = DEEPSEEK_API_KEY
         model = kwargs.get('model', DEEPSEEK_MODEL)
+    else:
+        model = kwargs.get('model', model)
 
     resp = http_requests.post(
         f"{api_base}/chat/completions",
@@ -152,23 +181,28 @@ def _deepseek_request(messages: list, **kwargs) -> dict:
 
 
 def _deepseek_stream(messages: list, **kwargs):
-    """调用 DeepSeek 兼容 API（流式），返回 response 迭代器"""
-    api_base = _get_api_base()
+    """调用 DeepSeek 兼容 API（流式），返回 response 迭代器
+    优先使用系统配置的 LLM 提供商，否则使用 DeepSeek / 环境变量"""
+    api_base, api_key, model = _get_system_llm_config()
+    if not api_base:
+        api_base = _get_api_base()
+        api_key = DEEPSEEK_API_KEY
+    model = kwargs.get('model', model if model else DEEPSEEK_MODEL)
     resp = http_requests.post(
         f"{api_base}/chat/completions",
         headers={
-            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         },
         json={
-            "model": kwargs.get('model', DEEPSEEK_MODEL),
+            "model": model,
             "messages": messages,
             "temperature": kwargs.get('temperature', 0.7),
             "max_tokens": kwargs.get('max_tokens', 4096),
             "stream": True,
         },
         stream=True,
-        timeout=kwargs.get('timeout', 120),
+        timeout=kwargs.get('timeout', 60),
     )
     resp.raise_for_status()
     return resp.iter_lines(decode_unicode=True)
@@ -601,6 +635,48 @@ def delete_llm_provider(provider_id):
     db.session.commit()
     return jsonify({'success': True, 'message': 'LLM 提供商已删除'})
 
+@ai_api_bp.route('/llm-providers/default', methods=['GET'])
+@login_required
+def get_default_llm_provider():
+    """获取默认 LLM 提供商"""
+    from app.models import SystemConfig
+    try:
+        cfg = SystemConfig.query.filter_by(key='ai_llm_default').first()
+        if cfg and cfg.value:
+            try: val = json.loads(cfg.value) if cfg.value else {}
+            except: val = {}
+            default_id = val.get('provider_id', '')
+            # 查找对应的提供商详情
+            provider_cfg = SystemConfig.query.filter_by(key=f'ai_llm_{default_id}').first()
+            if provider_cfg:
+                try: provider_val = json.loads(provider_cfg.value) if provider_cfg.value else {}
+                except: provider_val = {}
+                provider_val['id'] = default_id
+                return jsonify({'success': True, 'data': provider_val})
+        return jsonify({'success': True, 'data': None})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@ai_api_bp.route('/llm-providers/<provider_id>/set-default', methods=['POST'])
+@login_required
+def set_default_llm_provider(provider_id):
+    """设置默认 LLM 提供商"""
+    from app.models import SystemConfig
+    # 验证提供商存在
+    config = SystemConfig.query.filter_by(key=f'ai_llm_{provider_id}').first()
+    if not config:
+        return jsonify({'success': False, 'error': '提供商不存在'}), 404
+    # 保存默认配置
+    cfg = SystemConfig.query.filter_by(key='ai_llm_default').first()
+    if not cfg:
+        cfg = SystemConfig(key='ai_llm_default', value='{}', category='ai_llm')
+        db.session.add(cfg)
+    cfg.value = json.dumps({'provider_id': provider_id}, ensure_ascii=False)
+    db.session.commit()
+    return jsonify({'success': True, 'message': '已设为默认'})
+
+
 
 @ai_api_bp.route('/agent-providers', methods=['GET'])
 @login_required
@@ -1012,6 +1088,18 @@ def orchestrate():
     if not query:
         return jsonify({'success': False, 'error': '缺少 query'}), 400
 
+    # 保存用户消息到会话
+    if session_id:
+        try:
+            from app.models import AIChatSession as ChatSess
+            sess = ChatSess.query.get(session_id)
+            if sess:
+                msgs = sess.messages or []
+                msgs.append({'role': 'user', 'content': query, 'time': datetime.utcnow().isoformat()})
+                sess.messages = msgs
+                db.session.commit()
+        except: pass
+
     q = query.lower().strip()
 
     # 从原始查询中提取事件编号（保持原始大小写）
@@ -1026,16 +1114,23 @@ def orchestrate():
 
     # ===== 动作型指令：直接执行实际功能 =====
     # 定时分析告警
-    if any(k in q for k in ['定时分析','批量分析','分析告警','运行分析']):
+    if any(k in q for k in ['定时分析','批量分析','分析告警','运行分析','安全告警','告警分析','分析最近','分析告警数据','查看告警','查看安全告警']):
         from app.ai_analysis.alert_analyzer import analyze_alert_batch
         result = analyze_alert_batch(limit=50)
         if result.get('success'):
+            reply = f"✅ 分析完成！\n- 已分析: {result.get('analyzed',0)} 条\n- 创建事件: {result.get('events_created',0)} 个\n- 标记误报: {result.get('false_positives',0)} 条\n- {result.get('message','')}"
+            if session_id:
+                try:
+                    from app.models import AIChatSession as ChatSess
+                    sess = ChatSess.query.get(session_id)
+                    if sess:
+                        msgs = sess.messages or []
+                        msgs.append({'role': 'assistant', 'content': reply, 'time': datetime.utcnow().isoformat()})
+                        sess.messages = msgs
+                        db.session.commit()
+                except: pass
             return jsonify({'success': True, 'data': {
-                'response': f"✅ 分析完成！\n"
-                           f"- 已分析: {result.get('analyzed',0)} 条\n"
-                           f"- 创建事件: {result.get('events_created',0)} 个\n"
-                           f"- 标记误报: {result.get('false_positives',0)} 条\n"
-                           f"- {result.get('message','')}",
+                'response': reply,
                 'session_id': session_id, 'intent': 'batch_analysis', 'orchestrator': 'action'
             }})
         return jsonify({'success': False, 'error': result.get('error','分析失败')}), 500
@@ -1187,22 +1282,74 @@ def orchestrate():
     elif any(k in q for k in ['查询','最近','过去','列出','搜索']): intent = 'nl_query'
 
     system_prompts = {
-        'alert_analysis': '你是一个安全告警分析师。评估风险等级，判断是否为真实攻击，给出处置建议。',
-        'triage': '你是一个告警分诊专家。分析误报概率和优先级，给出研判依据。',
-        'threat_intel': '你是一个威胁情报分析师。提供IP/域名的威胁情报分析。',
-        'respond': '你是一个安全响应专家。根据风险等级决定处置动作。',
-        'nl_query': '你是一个安全数据查询专家。回答用户的安全数据查询。',
-        'general': '你是一个安全分析助手，专业简洁地回答安全相关问题。'
+        'alert_analysis': '''你是USOP安全运营平台的专业安全告警分析师。
+你的职责是根据用户提供的告警信息或数据库中的告警数据进行分析：
+1. 评估每条告警的风险等级（CRITICAL/HIGH/MEDIUM/LOW）
+2. 判断是否为真实攻击还是误报
+3. 给出详细的处置建议（封禁IP、隔离主机、忽略等）
+4. 如有多条告警，进行关联分析，判断是否为同一攻击链
+5. 参考MITRE ATT&CK框架识别攻击技术
+
+回复格式建议：先给出总体评估，然后逐条分析告警。''',
+
+        'triage': '''你是USOP安全运营平台的告警分诊专家。
+你的职责是对告警进行优先级排序和误报分析：
+1. 评估误报概率（high/medium/low）
+2. 基于告警类型、来源IP信誉、历史行为等综合判断
+3. 给出优先级排序建议（P0紧急/P1高/P2中/P3低）
+4. 提供分诊依据和研判理由
+
+注意：如果用户请求「批量分析告警」或「分诊告警」，系统会自动调用数据库分析函数，不需要你处理。''',
+
+        'threat_intel': '''你是USOP安全运营平台的威胁情报分析师。
+你的职责是分析IP地址、域名、URL等威胁指标：
+1. 查询IP/域名的威胁情报信息
+2. 分析关联的攻击事件和历史行为
+3. 评估威胁等级的置信度
+4. 给出威胁处置建议（封禁、监控、忽略等）
+
+你可以分析的指标类型：IP地址、域名、URL、文件哈希、邮箱地址。''',
+
+        'respond': '''你是USOP安全运营平台的自动化响应专家。
+你的职责是根据安全事件的风险等级自动决定处置动作：
+1. CRITICAL级别：建议立即封禁IP、隔离主机
+2. HIGH级别：建议封禁IP、终止进程
+3. MEDIUM级别：建议加入监控、进一步调查
+4. LOW级别：建议记录、定期回顾
+
+注意：封禁IP和隔离主机等高风险操作需要创建审批流程等待审批。安全等级较低的操作可以自动执行。''',
+
+        'nl_query': '''你是USOP安全运营平台的数据查询专家。
+你可以帮助用户查询和理解安全数据：
+1. 解释安全事件和告警的含义
+2. 说明安全术语和攻击技术
+3. 提供安全运营的最佳实践建议
+4. 引导用户使用平台的各项功能
+
+注意：如果你需要查询数据库但无法直接连接，请引导用户使用具体功能。''',
+
+        'general': '''你是USOP安全运营平台的AI安全分析助手。
+你可以帮助安全运营团队完成以下工作：
+1. 🚨 告警分析：评估风险、识别误报、给出处置建议
+2. 🔍 事件调查：分析安全事件、追溯攻击链
+3. 🛡️ 威胁情报：查询IP/域名威胁信息
+4. 📊 安全咨询：回答安全运营相关问题
+5. ⚡ 自动化响应：封禁IP、隔离主机等操作（需审批）
+6. 📝 白名单管理：管理误报规则
+
+回复要求：
+- 专业、简洁、条理清晰
+- 使用Markdown格式美化回复
+- 给出可操作的结论和建议
+- 不确定的信息请明确说明'''
     }
 
-    # LLM 调用
+    # LLM 调用（优先使用系统配置的默认 LLM 提供商）
     llm_config = None
     try:
-        from app.models import SystemConfig
-        for c in SystemConfig.query.filter(SystemConfig.key.like('ai_llm_%')).all():
-            try: val = json.loads(c.value) if c.value else {}
-            except: val = {}
-            if val.get('enabled', True): llm_config = val; break
+        api_base, api_key, model = _get_system_llm_config()
+        if api_base:
+            llm_config = {'base_url': api_base, 'api_key': api_key, 'model': model}
     except: pass
 
     try:
@@ -1214,7 +1361,7 @@ def orchestrate():
             import requests as http_requests
             resp = http_requests.post(f'{llm_config.get("base_url", "")}/chat/completions',
                 headers={'Authorization': f'Bearer {llm_config.get("api_key", "")}', 'Content-Type': 'application/json'},
-                json={'model': llm_config.get('model', 'gpt-4o'), 'messages': [
+                json={'model': llm_config.get('model', 'deepseek-chat'), 'messages': [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": query}
                 ], 'temperature': 0.3}, timeout=60)
@@ -1226,6 +1373,17 @@ def orchestrate():
                 {"role": "user", "content": query}
             ], temperature=0.3)
         reply = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+        # 保存 AI 回复到会话
+        if session_id:
+            try:
+                from app.models import AIChatSession as ChatSess
+                sess = ChatSess.query.get(session_id)
+                if sess:
+                    msgs = sess.messages or []
+                    msgs.append({'role': 'assistant', 'content': reply, 'time': datetime.utcnow().isoformat()})
+                    sess.messages = msgs
+                    db.session.commit()
+            except: pass
         return jsonify({'success': True, 'data': {
             'response': reply, 'session_id': session_id,
             'intent': intent, 'orchestrator': 'llm'
@@ -1330,6 +1488,22 @@ def pipeline_status():
     return jsonify({'success': True, 'data': status})
 
 
+# 模块启动时自动清理上一次遗留的状态
+import os as _pipeline_os
+_status_file = _pipeline_os.path.join(_pipeline_os.path.dirname(__file__), '..', '..', 'data', 'pipeline_status.json')
+if _pipeline_os.path.exists(_status_file):
+    try:
+        import json as _pipeline_json
+        with open(_status_file) as _pf:
+            _ps = _pipeline_json.load(_pf)
+        if _ps.get('running'):
+            _ps['running'] = False
+            _ps['error'] = '服务重启，上次分析中断'
+            with open(_status_file, 'w') as _pf:
+                _pipeline_json.dump(_ps, _pf)
+    except Exception:
+        pass
+
 @ai_api_bp.route('/pipeline/start', methods=['POST'])
 @login_required
 def pipeline_start():
@@ -1343,8 +1517,20 @@ def pipeline_start():
             from app.ai_analysis.alert_analyzer import analyze_alert_batch
             try:
                 result = analyze_alert_batch(limit=50)
+                # 累计当日统计（每次运行累加）
+                import json as _rj
+                _prev = {"total_analyzed": 0, "total_events": 0, "high_risk": 0}
+                if os.path.exists(status_file):
+                    try:
+                        with open(status_file) as _pf:
+                            _prev_data = _rj.load(_pf)
+                        if _prev_data.get('last_run'):
+                            _prev = _prev_data
+                    except: pass
                 status = {"running": False, "last_run": __import__('datetime').datetime.utcnow().isoformat(),
-                          "total_analyzed": result.get('analyzed', 0), "total_events": result.get('events_created', 0),
+                          "total_analyzed": _prev.get('total_analyzed', 0) + result.get('analyzed', 0),
+                          "total_events": _prev.get('total_events', 0) + result.get('events_created', 0),
+                          "high_risk": _prev.get('high_risk', 0) + max(0, result.get('analyzed', 0) - result.get('false_positives', 0)),
                           "error": result.get('error')}
             except Exception as e:
                 status = {"running": False, "error": str(e)}

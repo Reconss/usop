@@ -1,24 +1,45 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+/**
+ * SecurityAlerts — 安全告警中心
+ *
+ * 布局：
+ *   ┌──────────────────────────────────────────────┐
+ *   │ SearchBar + SavedSearches                     │
+ *   │ TimeRangeSelector + 操作按钮                   │
+ *   ├────────────┬─────────────────────────────────┤
+ *   │ QuickValues│  MessageTable                    │
+ *   │            │  (可配置列、高亮、排序、分页)      │
+ *   ├────────────┴─────────────────────────────────┤
+ *   │ AlertDetailDrawer (FieldBrowser + RawLog       │
+ *   │                   + 邻接消息)                   │
+ *   └──────────────────────────────────────────────┘
+ */
+
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Search, Download, CheckCircle, XCircle, Clock, Bell, RefreshCw, Eye,
-  EyeOff, AlertCircle, Zap, ArrowUpDown, AlertTriangle,
+  Download, CheckCircle, XCircle, Bell, RefreshCw, Eye, BarChart3,
+  EyeOff, AlertCircle, Zap, AlertTriangle,
   Loader2, CheckCircle2, Layers, Filter, ChevronDown, ChevronRight,
   Globe, Server, Shield, Activity, Target, GitBranch,
   Plus, Copy, Check, AlertOctagon,
   MoreHorizontal, ArrowRight, Clock3, ShieldAlert, Info, FileJson,
   Network, Bug, Terminal, LayoutGrid, List, X, Hash,
-  User, Building2, MapPin, Timer, TrendingUp, Cpu, Database, Cloud
+  User, Building2, MapPin, Timer, TrendingUp, Cpu, Database, Cloud, Clock
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { alertsApi } from '../services/api';
-import { FilterDropdown, TimeRangePicker } from '../components/FilterBar';
+
+// 新组件
+import SearchBar from '../components/SearchBar';
+import TimeRangeSelector, { TimeRange } from '../components/TimeRangeSelector';
+import QuickValuesPanel from '../components/QuickValuesPanel';
+import MessageTable from '../components/MessageTable';
+import FieldBrowser from '../components/FieldBrowser';
 
 // ==================== 类型定义 ====================
 
 type Severity = 'critical' | 'high' | 'medium' | 'low';
 type AlertStatus = 'new' | 'investigating' | 'closed' | 'false_positive' | 'active' | 'resolved';
-type AggregationDimension = 'none' | 'src_ip' | 'category' | 'pattern';
 
 interface Alert {
   id: string;
@@ -27,129 +48,59 @@ interface Alert {
   description: string;
   severity: Severity;
   status: AlertStatus;
-  source: string;  // 数据源产品
-  
-  // 网络信息
+  source: string;
+  sourceProduct?: string;
   srcIp: string;
   srcPort?: number;
   dstIp: string;
   dstPort?: number;
   protocol?: string;
-  
-  // 资产信息
   hostname?: string;
-  
-  // 时间信息
   firstSeen: string;
   lastSeen: string;
-  
-  // 原始日志
   rawLog?: string;
   parsedData?: Record<string, any>;
-  
-  // 关联信息
-  eventId?: number;
-  eventCode?: string;
-  aggregated?: boolean;
-  aggregatedCount?: number;
-  aggregatedIds?: string[];
-  
-  // 扩展数据
-  extraData?: Record<string, any>;
   category?: string;
   tags?: string[];
-  iocType?: string;
-  iocValue?: string;
-  
-  // 元数据
+  extraData?: Record<string, any>;
   createdAt: string;
   updatedAt: string;
+  [key: string]: any;
 }
 
-interface AlertGroup {
-  key: string;
-  dimension: string;       // 聚合维度: 源IP / 分类 / 模式
-  dimensionValue: string;  // 维度值
-  label: string;           // 聚合说明
-  count: number;
-  alerts: Alert[];
-  topSeverity: Severity;
-  timeSpan: string;        // 时间跨度
-  categories: string[];    // 包含的告警分类
-  alertTypes: string[];    // 包含的告警类型
-  firstSeen: string;
-  lastSeen: string;
+interface SavedSearch {
+  id?: string;
+  title: string;
+  query: string | { query_string?: string; [key: string]: any };
+  query_string?: string;
+  timeRange?: { start: string; end: string; label?: string };
+  createdAt?: string;
 }
 
-interface TriageStats {
-  pending: number;
-  critical: number;
-  investigating: number;
-  falsePositive: number;
-  resolved: number;
-  total24h: number;
+interface QuickFilter {
+  field: string;
+  value: string;
+  exclude: boolean;
 }
 
 // ==================== 配置常量 ====================
 
-const severityConfig: Record<Severity, { 
-  color: string; 
-  text: string; 
-  bg: string; 
-  border: string;
-  label: string;
-  gradient: string;
-}> = {
-  critical: { 
-    color: 'bg-rose-500', 
-    text: 'text-rose-400', 
-    bg: 'bg-rose-500/10', 
-    border: 'border-rose-500/30',
-    label: '危急',
-    gradient: 'from-rose-500/20 to-rose-500/5'
-  },
-  high: { 
-    color: 'bg-orange-500', 
-    text: 'text-orange-400', 
-    bg: 'bg-orange-500/10', 
-    border: 'border-orange-500/30',
-    label: '高危',
-    gradient: 'from-orange-500/20 to-orange-500/5'
-  },
-  medium: { 
-    color: 'bg-amber-500', 
-    text: 'text-amber-400', 
-    bg: 'bg-amber-500/10', 
-    border: 'border-amber-500/30',
-    label: '中危',
-    gradient: 'from-amber-500/20 to-amber-500/5'
-  },
-  low: { 
-    color: 'bg-blue-500', 
-    text: 'text-blue-400', 
-    bg: 'bg-blue-500/10', 
-    border: 'border-blue-500/30',
-    label: '低危',
-    gradient: 'from-blue-500/20 to-blue-500/5'
-  }
+const severityConfig: Record<Severity, { color: string; text: string; bg: string; border: string; label: string; gradient: string }> = {
+  critical: { color: 'bg-rose-500', text: 'text-rose-400', bg: 'bg-rose-500/10', border: 'border-rose-500/30', label: '危急', gradient: 'from-rose-500/20 to-rose-500/5' },
+  high: { color: 'bg-orange-500', text: 'text-orange-400', bg: 'bg-orange-500/10', border: 'border-orange-500/30', label: '高危', gradient: 'from-orange-500/20 to-orange-500/5' },
+  medium: { color: 'bg-amber-500', text: 'text-amber-400', bg: 'bg-amber-500/10', border: 'border-amber-500/30', label: '中危', gradient: 'from-amber-500/20 to-amber-500/5' },
+  low: { color: 'bg-blue-500', text: 'text-blue-400', bg: 'bg-blue-500/10', border: 'border-blue-500/30', label: '低危', gradient: 'from-blue-500/20 to-blue-500/5' },
 };
 
-const statusConfig: Record<AlertStatus, { 
-  icon: React.ElementType; 
-  color: string; 
-  bg: string; 
-  label: string;
-}> = {
+const statusConfig: Record<string, { icon: React.ElementType; color: string; bg: string; label: string }> = {
   new: { icon: Bell, color: 'text-blue-400', bg: 'bg-blue-500/10', label: '新告警' },
   investigating: { icon: Clock3, color: 'text-amber-400', bg: 'bg-amber-500/10', label: '调查中' },
   closed: { icon: CheckCircle, color: 'text-emerald-400', bg: 'bg-emerald-500/10', label: '已关闭' },
   false_positive: { icon: XCircle, color: 'text-gray-400', bg: 'bg-gray-500/10', label: '误报' },
-  // 兼容 API 返回的额外状态
   active: { icon: Clock3, color: 'text-amber-400', bg: 'bg-amber-500/10', label: '调查中' },
-  resolved: { icon: CheckCircle, color: 'text-emerald-400', bg: 'bg-emerald-500/10', label: '已关闭' }
+  resolved: { icon: CheckCircle, color: 'text-emerald-400', bg: 'bg-emerald-500/10', label: '已关闭' },
 };
 
-// 数据源产品图标映射
 const productIcons: Record<string, { icon: React.ElementType; color: string }> = {
   'WAF': { icon: Shield, color: 'text-purple-400' },
   'IDS': { icon: AlertOctagon, color: 'text-red-400' },
@@ -160,9 +111,11 @@ const productIcons: Record<string, { icon: React.ElementType; color: string }> =
   'HIDS': { icon: Server, color: 'text-amber-400' },
   'NIDS': { icon: Network, color: 'text-rose-400' },
   'SOC': { icon: Terminal, color: 'text-indigo-400' },
-  'CloudTrail': { icon: Cloud, color: 'text-aws' },
-  'default': { icon: AlertTriangle, color: 'text-gray-400' }
+  'CloudTrail': { icon: Cloud, color: 'text-teal-400' },
+  'default': { icon: AlertTriangle, color: 'text-gray-400' },
 };
+
+const eventTypeOptions = ['权限异常', '恶意软件', '数据泄露', '网络入侵', 'Web攻击', '横向移动', '其他'];
 
 // ==================== 工具函数 ====================
 
@@ -170,86 +123,26 @@ const formatTime = (time: string) => {
   if (!time) return '-';
   const date = new Date(time);
   if (isNaN(date.getTime())) return time;
-  
-  const now = new Date();
-  const diff = now.getTime() - date.getTime();
-  
-  // 如果是未来时间或刚刚，直接显示日期时间
-  if (diff < 0 || diff < 60000) {
-    return date.toLocaleString('zh-CN', { 
-      month: '2-digit', 
-      day: '2-digit', 
-      hour: '2-digit', 
-      minute: '2-digit' 
-    });
-  }
+  const diff = Date.now() - date.getTime();
+  if (diff < 0 || diff < 60000) return date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
   if (diff < 3600000) return `${Math.floor(diff / 60000)}分钟前`;
   if (diff < 86400000) return `${Math.floor(diff / 3600000)}小时前`;
-  return date.toLocaleString('zh-CN', { 
-    month: '2-digit', 
-    day: '2-digit', 
-    hour: '2-digit', 
-    minute: '2-digit' 
-  });
+  return date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 };
 
-const formatDateTime = (time: string) => {
-  return new Date(time).toLocaleString('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit'
-  });
-};
+const formatDateTime = (time: string) =>
+  new Date(time).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-const copyToClipboard = (text: string) => {
-  navigator.clipboard.writeText(text);
-};
+// ==================== 原始日志查看器 ====================
 
-// ==================== 组件定义 ====================
-
-// 标签/分类展示组件（紧凑单行设计）
-const TagsDisplay = ({ category, tags, hostname }: {
-  category?: string;
-  tags?: string[];
-  hostname?: string;
-}) => {
-  const items = [
-    ...(category ? [{ type: 'category', label: category, className: 'bg-indigo-500/10 border-indigo-500/30 text-indigo-300' }] : []),
-    ...(hostname ? [{ type: 'hostname', label: hostname, className: 'bg-cyan-500/10 border-cyan-500/30 text-cyan-300' }] : []),
-    ...(tags?.slice(0, 1).map(tag => ({ type: 'tag', label: tag, className: 'bg-page-bg/60 border-border-color/50 text-text-muted' })) || []),
-  ];
-  
-  return (
-    <div className="flex items-center gap-1">
-      {items.map((item, i) => (
-        <span 
-          key={i} 
-          className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 border rounded text-[10px] font-medium max-w-[120px] truncate ${item.className}`}
-          title={item.label}
-        >
-          {item.type !== 'tag' && <span className={`w-1.5 h-1.5 rounded-full ${item.type === 'category' ? 'bg-indigo-400' : 'bg-cyan-400'}`} />}
-          {item.label}
-        </span>
-      ))}
-      {tags && tags.length > 1 && (
-        <span className="text-[10px] text-text-muted/60 px-1">
-          +{tags.length - 1}
-        </span>
-      )}
-    </div>
-  );
-};
-
-// 原始日志查看器组件
-const RawLogViewer = ({ rawLog, parsedData }: { rawLog?: string; parsedData?: Record<string, any> }) => {
-  const [activeTab, setActiveTab] = useState<'raw' | 'parsed'>('raw');
+const RawLogViewer = ({ rawLog, extraData }: { rawLog?: string; extraData?: Record<string, any> }) => {
+  const [tab, setTab] = useState<'raw' | 'parsed'>('raw');
   const [copied, setCopied] = useState(false);
+  const hasParsed = extraData && Object.keys(extraData).length > 0;
 
   const handleCopy = () => {
-    const content = activeTab === 'raw' ? rawLog : JSON.stringify(parsedData, null, 2);
-    copyToClipboard(content || '');
+    const content = tab === 'raw' ? rawLog : JSON.stringify(extraData, null, 2);
+    navigator.clipboard.writeText(content || '').catch(() => {});
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -257,254 +150,19 @@ const RawLogViewer = ({ rawLog, parsedData }: { rawLog?: string; parsedData?: Re
   return (
     <div className="border border-border-color rounded-xl overflow-hidden">
       <div className="flex items-center justify-between px-4 py-2 bg-page-bg/80 border-b border-border-color">
-        <div className="flex items-center gap-1">
-          <button
-            onClick={() => setActiveTab('raw')}
-            className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-              activeTab === 'raw' 
-                ? 'bg-primary/20 text-primary' 
-                : 'text-text-muted hover:text-text-primary'
-            }`}
-          >
-            <FileJson className="w-3.5 h-3.5 inline mr-1" />
-            原始日志
-          </button>
-          {parsedData && (
-            <button
-              onClick={() => setActiveTab('parsed')}
-              className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-                activeTab === 'parsed' 
-                  ? 'bg-emerald-500/20 text-emerald-400' 
-                  : 'text-text-muted hover:text-text-primary'
-              }`}
-            >
-              <Activity className="w-3.5 h-3.5 inline mr-1" />
-              解析数据
-            </button>
-          )}
+        <div className="flex gap-1">
+          <button onClick={() => setTab('raw')} className={`px-3 py-1 text-xs rounded-md ${tab === 'raw' ? 'bg-primary/15 text-primary' : 'text-text-muted hover:text-text-secondary'}`}>原始日志</button>
+          {hasParsed && <button onClick={() => setTab('parsed')} className={`px-3 py-1 text-xs rounded-md ${tab === 'parsed' ? 'bg-primary/15 text-primary' : 'text-text-muted hover:text-text-secondary'}`}>解析数据</button>}
         </div>
-        <button
-          onClick={handleCopy}
-          className="flex items-center gap-1.5 px-2 py-1 text-xs text-text-muted hover:text-text-primary transition-colors"
-        >
-          {copied ? (
-            <>
-              <Check className="w-3.5 h-3.5 text-emerald-400" />
-              <span className="text-emerald-400">已复制</span>
-            </>
-          ) : (
-            <>
-              <Copy className="w-3.5 h-3.5" />
-              <span>复制</span>
-            </>
-          )}
+        <button onClick={handleCopy} className="flex items-center gap-1 px-2 py-1 text-xs text-text-muted hover:text-primary rounded transition-colors">
+          {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+          {copied ? '已复制' : '复制'}
         </button>
       </div>
-      <div className="p-4 bg-[#0d1117] max-h-80 overflow-auto">
-        {activeTab === 'raw' ? (
-          <pre className="text-xs text-gray-300 font-mono whitespace-pre-wrap break-all">
-            {rawLog || '无原始日志数据'}
-          </pre>
-        ) : (
-          <pre className="text-xs text-gray-300 font-mono whitespace-pre-wrap">
-            {JSON.stringify(parsedData, null, 2)}
-          </pre>
-        )}
-      </div>
+      <pre className="p-4 text-xs text-text-secondary font-mono overflow-auto max-h-[300px] whitespace-pre-wrap break-all bg-page-bg/50">
+        {tab === 'raw' ? (rawLog || '无原始日志') : JSON.stringify(extraData, null, 2)}
+      </pre>
     </div>
-  );
-};
-
-
-
-// 告警详情抽屉组件
-const AlertDetailDrawer = ({ 
-  alert, 
-  onClose, 
-  onStatusChange,
-  onCreateEvent 
-}: { 
-  alert: Alert; 
-  onClose: () => void;
-  onStatusChange: (status: AlertStatus) => void;
-  onCreateEvent: (alert: Alert) => void;
-}) => {
-  const severity = severityConfig[alert.severity] || severityConfig.medium;
-  const StatusIcon = statusConfig[alert.status]?.icon || Bell;
-  const ProductIcon = productIcons[alert.source]?.icon || AlertTriangle;
-  const productColor = productIcons[alert.source]?.color || 'text-gray-400';
-
-  return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50"
-      onClick={onClose}
-    >
-      <motion.div
-        initial={{ x: '100%' }}
-        animate={{ x: 0 }}
-        exit={{ x: '100%' }}
-        transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-        className="absolute right-0 top-0 bottom-0 w-full max-w-2xl bg-card-bg border-l border-border-color overflow-auto"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* 头部 */}
-        <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 bg-card-bg/95 backdrop-blur border-b border-border-color">
-          <div className="flex items-center gap-3">
-            <div>
-              <h2 className="text-lg font-semibold text-text-primary">{alert.title}</h2>
-              <p className="text-sm text-text-muted font-mono">{alert.alertCode}</p>
-            </div>
-          </div>
-          <button
-            onClick={onClose}
-            className="p-2 hover:bg-white/5 rounded-lg text-text-muted transition-colors"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        {/* 内容区域 */}
-        <div className="p-6 space-y-6">
-        {/* 状态栏：严重度 + 状态 */}
-          <div className="grid grid-cols-2 gap-4">
-            <div className={`p-4 rounded-xl ${severity.bg} border ${severity.border}`}>
-              <div className="text-xs text-text-muted mb-1">严重程度</div>
-              <div className={`text-lg font-semibold ${severity.text}`}>{severity.label}</div>
-            </div>
-            <div className="p-4 rounded-xl bg-page-bg border border-border-color">
-              <div className="text-xs text-text-muted mb-1">处理状态</div>
-              <div className={`flex items-center gap-2 text-lg font-semibold ${statusConfig[alert.status]?.color || 'text-gray-400'}`}>
-                <StatusIcon className="w-5 h-5" />
-                {statusConfig[alert.status]?.label || alert.status}
-              </div>
-            </div>
-          </div>
-
-          {/* 告警详情 - 紧凑布局 */}
-          <div className="p-4 rounded-xl bg-gradient-to-br from-page-bg to-card-bg border border-border-color">
-            <div className="flex items-center gap-2 mb-3">
-              <Info className="w-4 h-4 text-primary" />
-              <h3 className="text-sm font-semibold text-text-primary">告警详情</h3>
-            </div>
-            <div className="flex flex-wrap gap-x-8 gap-y-2 text-sm">
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-text-muted">分类:</span>
-                <span className="text-text-primary font-medium">{alert.category || '-'}</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-text-muted">数据源:</span>
-                <span className="text-text-primary">{alert.source || '-'}</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-text-muted">主机/资产:</span>
-                <span className="text-text-primary">{alert.hostname || '-'}</span>
-              </div>
-            </div>
-          </div>
-
-          {/* 网络信息五元组 */}
-          <div className="p-4 rounded-xl bg-gradient-to-br from-page-bg to-card-bg border border-border-color">
-            <div className="flex items-center gap-2 mb-3">
-              <Globe className="w-4 h-4 text-primary" />
-              <h3 className="text-sm font-semibold text-text-primary">网络信息 (五元组)</h3>
-            </div>
-            <div className="grid grid-cols-5 gap-2">
-              <div className="px-3 py-2 bg-rose-500/10 border border-rose-500/20 rounded-lg text-center">
-                <div className="text-[10px] text-rose-400/70 mb-0.5">源地址</div>
-                <div className="text-xs font-mono text-rose-300 truncate">{alert.srcIp || '-'}</div>
-              </div>
-              <div className="px-3 py-2 bg-rose-500/5 border border-rose-500/10 rounded-lg text-center">
-                <div className="text-[10px] text-rose-400/50 mb-0.5">源端口</div>
-                <div className="text-xs font-mono text-rose-300/70">{alert.srcPort || '-'}</div>
-              </div>
-              <div className="px-3 py-2 bg-blue-500/10 border border-blue-500/20 rounded-lg text-center">
-                <div className="text-[10px] text-blue-400/70 mb-0.5">目的地址</div>
-                <div className="text-xs font-mono text-blue-300 truncate">{alert.dstIp || '-'}</div>
-              </div>
-              <div className="px-3 py-2 bg-blue-500/5 border border-blue-500/10 rounded-lg text-center">
-                <div className="text-[10px] text-blue-400/50 mb-0.5">目的端口</div>
-                <div className="text-xs font-mono text-blue-300/70">{alert.dstPort || '-'}</div>
-              </div>
-              <div className="px-3 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-lg text-center">
-                <div className="text-[10px] text-emerald-400/70 mb-0.5">协议</div>
-                <div className="text-xs font-mono text-emerald-300">{alert.protocol || '-'}</div>
-              </div>
-            </div>
-          </div>
-          {/* 描述 */}
-          {alert.description && (
-            <div className="p-3 rounded-lg bg-page-bg border border-border-color">
-              <div className="flex items-center gap-2 mb-2">
-                <Info className="w-3.5 h-3.5 text-text-muted" />
-                <span className="text-xs font-medium text-text-muted">告警描述</span>
-              </div>
-              <p className="text-sm text-text-secondary leading-relaxed">{alert.description}</p>
-            </div>
-          )}
-
-          {/* 原始日志 */}
-          {(alert.rawLog || alert.parsedData) && (
-            <div>
-              <div className="flex items-center gap-2 mb-2">
-                <FileJson className="w-3.5 h-3.5 text-purple-400" />
-                <span className="text-xs font-medium text-text-muted">原始日志</span>
-              </div>
-              <RawLogViewer rawLog={alert.rawLog} parsedData={alert.parsedData} />
-            </div>
-          )}
-
-          {/* 扩展数据 */}
-          {alert.extraData && Object.keys(alert.extraData).length > 0 && (
-            <div className="p-3 rounded-lg bg-page-bg border border-border-color">
-              <div className="flex items-center gap-2 mb-2">
-                <Database className="w-3.5 h-3.5 text-cyan-400" />
-                <span className="text-xs font-medium text-text-muted">扩展信息</span>
-              </div>
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                {Object.entries(alert.extraData).slice(0, 6).map(([key, value]) => (
-                  <div key={key} className="flex items-start gap-2">
-                    <span className="text-text-muted w-24 flex-shrink-0">{key}:</span>
-                    <span className="text-text-primary font-mono break-all">
-                      {typeof value === 'object' ? JSON.stringify(value) : String(value)}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* 底部操作栏 */}
-        <div className="sticky bottom-0 z-10 flex items-center justify-between px-6 py-4 bg-card-bg/95 backdrop-blur border-t border-border-color">
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => onStatusChange('closed')}
-              className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
-            >
-              <CheckCircle className="w-4 h-4" />
-              关闭告警
-            </button>
-            <button
-              onClick={() => onStatusChange('false_positive')}
-              className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
-            >
-              <EyeOff className="w-4 h-4" />
-              标记误报
-            </button>
-          </div>
-          <button
-            onClick={() => onCreateEvent(alert)}
-            className="flex items-center gap-2 px-5 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
-          >
-            <Zap className="w-4 h-4" />
-            生成事件
-          </button>
-        </div>
-      </motion.div>
-    </motion.div>
   );
 };
 
@@ -512,66 +170,112 @@ const AlertDetailDrawer = ({
 
 export default function SecurityAlerts() {
   const navigate = useNavigate();
-  
-  // 状态
+
+  // ---- 搜索状态 ----
+  const [queryString, setQueryString] = useState('');
+  const [timeRange, setTimeRange] = useState<TimeRange>(() => ({
+    start: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+    end: new Date().toISOString(),
+    label: '24 小时',
+    preset: '24h',
+  }));
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [showQuickValues, setShowQuickValues] = useState(true);
+  const autoRefreshRef = useRef<ReturnType<typeof setInterval>>();
+
+  // ---- 数据状态 ----
   const [alerts, setAlerts] = useState<Alert[]>([]);
-  const [selectedAlerts, setSelectedAlerts] = useState<Set<string>>(new Set());
-  const [searchQuery, setSearchQuery] = useState('');
-  const [severityFilter, setSeverityFilter] = useState<Severity[]>([]);
-  const [statusFilter, setStatusFilter] = useState<AlertStatus[]>(['new', 'investigating']);
-  const [timeRange, setTimeRange] = useState<{ start: string; end: string }>(() => {
-    const now = new Date();
-    return {
-      start: now.toISOString().slice(0, 10),
-      end: now.toISOString().slice(0, 10)
-    };
-  });
-  const [showDetail, setShowDetail] = useState<Alert | null>(null);
+  const [totalAlerts, setTotalAlerts] = useState(0);
+  const [totalPages, setTotalPages] = useState(0);
+  const [tookMs, setTookMs] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
-  const [totalAlerts, setTotalAlerts] = useState(0);
-  const [totalPages, setTotalPages] = useState(0);
-  const [aggregationKey, setAggregationKey] = useState<string>('none');
-  const [sortField, setSortField] = useState<'time' | 'severity' | 'source'>('time');
+  const [sortField, setSortField] = useState('first_seen');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
-  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
-  const [activeTab, setActiveTab] = useState<'all' | 'pending' | 'critical' | 'investigating'>('all');
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
-  const [showAggregateModal, setShowAggregateModal] = useState(false);
-  const [aggregateForm, setAggregateForm] = useState({ title: '', severity: 'medium' as Severity, category: '其他', description: '' });
-  const eventTypeOptions = ['权限异常', '恶意软件', '数据泄露', '网络入侵', 'Web攻击', '横向移动', '其他'];
 
-  // Toast提示
+  // ---- 直方图数据 ----
+  const [histogramData, setHistogramData] = useState<{ key: string; count: number }[]>([]);
+  const [histogramLoading, setHistogramLoading] = useState(false);
+
+  // ---- QuickValues 筛选 ----
+  const [quickFilters, setQuickFilters] = useState<QuickFilter[]>([]);
+
+  // ---- 已保存搜索 ----
+  const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([]);
+
+  // ---- 选中行 ----
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  // ---- 详情抽屉 ----
+  const [showDetail, setShowDetail] = useState<Alert | null>(null);
+  const [detailTab, setDetailTab] = useState<'fields' | 'raw' | 'related'>('fields');
+  const [relatedAlerts, setRelatedAlerts] = useState<Record<string, any>[]>([]);
+  const [relatedLoading, setRelatedLoading] = useState(false);
+
+  // ---- 聚合事件 ----
+  const [showAggregateModal, setShowAggregateModal] = useState(false);
+  const [aggregateForm, setAggregateForm] = useState({ title: '', severity: 'medium' as Severity, category: '其他', description: '', includeRelated: false, markStatus: 'investigating' });
+
+  // ---- Toast ----
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const showToast = useCallback((message: string, type: 'success' | 'error' = 'success') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 3000);
   }, []);
 
-  // 获取告警数据
+  // ---- Tab ----
+  const [activeTab, setActiveTab] = useState<'all' | 'pending' | 'critical' | 'investigating'>('all');
+
+
+  // ==================== 构建查询字符串 ====================
+
+  const buildQueryString = useCallback(() => {
+    let q = queryString;
+
+    // activeTab 快捷筛选
+    if (activeTab === 'critical') q = q ? `severity:critical AND (${q})` : 'severity:critical';
+    if (activeTab === 'investigating') q = q ? `status:investigating AND (${q})` : 'status:investigating';
+    if (activeTab === 'pending') q = q ? `(status:new OR status:investigating) AND (${q})` : 'status:new OR status:investigating';
+
+    // QuickValues 筛选
+    for (const f of quickFilters) {
+      const clause = f.exclude ? `NOT ${f.field}:${f.value}` : `${f.field}:${f.value}`;
+      q = q ? `${q} AND ${clause}` : clause;
+    }
+
+    return q;
+  }, [queryString, activeTab, quickFilters]);
+
+  // ==================== 数据获取 ====================
+
   const fetchAlerts = useCallback(async () => {
     setIsLoading(true);
-    
     try {
-      const params: any = { page: currentPage, page_size: pageSize };
-      if (timeRange.start) params.start_time = timeRange.start;
-      if (timeRange.end) params.end_time = timeRange.end;
-      const res = await alertsApi.getAlerts(params);
-      const items = (res.data?.items || res.alerts || []).map((a: any) => ({
+      const q = buildQueryString();
+      const resp = await alertsApi.getAlerts({
+        page: currentPage,
+        page_size: pageSize,
+        search: q || undefined,
+        start_time: timeRange.start || undefined,
+        end_time: timeRange.end || undefined,
+      });
+
+      const items = (resp.data?.items || resp.alerts || []).map((a: any) => ({
         id: String(a.id),
         alertCode: a.alert_code || a.alertCode || '',
         title: a.title || '',
         description: a.description || '',
         severity: a.severity || 'medium',
         status: a.status || 'new',
-        source: a.source_product || a.source || 'Other',
+        source: a.source || 'Other',
+        sourceProduct: a.source_product || a.source || '',
         srcIp: a.src_ip || a.srcIp || '',
         srcPort: a.src_port || a.srcPort,
         dstIp: a.dst_ip || a.dstIp || '',
         dstPort: a.dst_port || a.dstPort,
         protocol: a.protocol,
         hostname: a.hostname || '',
-        affectedAssets: a.affected_assets || a.affectedAssets || [],
         category: a.category || '',
         tags: a.tags || [],
         rawLog: a.raw_log || a.rawLog,
@@ -582,369 +286,249 @@ export default function SecurityAlerts() {
         updatedAt: a.updated_at || a.updatedAt || '',
         extraData: a.extra_data || a.extraData || {},
       }));
+
       setAlerts(items);
-      setTotalAlerts(res.data?.total || 0);
-      setTotalPages(res.data?.pages || 0);
-    } catch (error) {
-      console.error('获取告警失败:', error);
+      setTotalAlerts(resp.data?.total || 0);
+      setTotalPages(resp.data?.pages || 0);
+      setTookMs(resp.took_ms ?? null);
+    } catch (e) {
+      console.error('获取告警失败:', e);
       showToast('获取告警数据失败', 'error');
       setAlerts([]);
     } finally {
       setIsLoading(false);
     }
-  }, [showToast, currentPage, pageSize, timeRange.start, timeRange.end]);
+  }, [buildQueryString, currentPage, pageSize, timeRange.start, timeRange.end, showToast]);
 
+  const fetchHistogram = useCallback(async () => {
+    setHistogramLoading(true);
+    try {
+      const q = buildQueryString();
+      // 通过 searchAlerts 聚合获取直方图
+      const resp = await alertsApi.searchAlerts({
+        q: q || undefined,
+        start_time: timeRange.start || undefined,
+        end_time: timeRange.end || undefined,
+        aggregations: ['date_histogram'],
+        histogram_interval: 'auto',
+        page_size: 0,
+      });
+      const buckets = resp?.data?.aggregations?.timeline?.buckets
+        || resp?.data?.aggregations?.date_histogram?.buckets
+        || [];
+      setHistogramData(buckets.map((b: any) => ({
+        key: b.key_as_string || b.key,
+        count: b.doc_count,
+      })));
+    } catch (e) {
+      console.error('直方图加载失败:', e);
+      setHistogramData([]);
+    } finally {
+      setHistogramLoading(false);
+    }
+  }, [buildQueryString, timeRange.start, timeRange.end]);
+
+  const fetchSavedSearches = useCallback(async () => {
+    try {
+      const resp = await alertsApi.getSavedSearches();
+      setSavedSearches(resp?.data || []);
+    } catch { /* ignore */ }
+  }, []);
+
+  // ---- 初始加载 + 刷新 ----
   useEffect(() => {
     fetchAlerts();
-    // 每30秒自动刷新数据
-    const interval = setInterval(() => {
-      fetchAlerts();
-    }, 30000);
-    return () => clearInterval(interval);
-  }, [fetchAlerts, currentPage, timeRange.start, timeRange.end]);
+    fetchHistogram();
+  }, [fetchAlerts, fetchHistogram]);
 
-  // 当筛选条件变化时重置到第一页
+  useEffect(() => { fetchSavedSearches(); }, [fetchSavedSearches]);
+
+  // ---- 自动刷新 ----
   useEffect(() => {
+    if (autoRefresh) {
+      autoRefreshRef.current = setInterval(() => {
+        fetchAlerts();
+        fetchHistogram();
+      }, 15000);
+    }
+    return () => { if (autoRefreshRef.current) clearInterval(autoRefreshRef.current); };
+  }, [autoRefresh, fetchAlerts, fetchHistogram]);
+
+  // ---- 筛选变化重置分页 ----
+  useEffect(() => { setCurrentPage(1); }, [queryString, quickFilters, activeTab, timeRange.start, timeRange.end]);
+
+  // ==================== 分诊统计 ====================
+
+  const triageStats = useMemo(() => ({
+    pending: totalAlerts,
+    critical: alerts.filter(a => a.severity === 'critical').length,
+    investigating: alerts.filter(a => a.status === 'investigating' || a.status === 'active').length,
+    resolved: alerts.filter(a => a.status === 'closed' || a.status === 'resolved').length,
+  }), [alerts, totalAlerts]);
+
+  // ==================== 搜索栏回调 ====================
+
+  const handleSearch = useCallback(() => {
     setCurrentPage(1);
-  }, [searchQuery, severityFilter.join(','), statusFilter.join(','), timeRange.start, timeRange.end]);
+    fetchAlerts();
+    fetchHistogram();
+  }, [fetchAlerts, fetchHistogram]);
 
-  // 分诊统计 - 直接使用 totalAlerts 显示总数
-  const triageStats: TriageStats = useMemo(() => {
-    return {
-      pending: totalAlerts || 0,
-      critical: alerts.filter(a => a.severity === 'critical').length,
-      investigating: alerts.filter(a => a.status === 'investigating' || a.status === 'active').length,
-      falsePositive: alerts.filter(a => a.status === 'false_positive').length,
-      resolved: alerts.filter(a => a.status === 'closed' || a.status === 'resolved').length,
-      total24h: alerts.filter(a => {
-        const alertTime = new Date(a.createdAt || a.firstSeen).getTime();
-        return alertTime > Date.now() - 86400000;
-      }).length
-    };
-  }, [alerts, totalAlerts]);
+  const handleTimeRangeChange = useCallback((range: TimeRange) => {
+    setTimeRange(range);
+  }, []);
 
-  // 动态智能聚合：按多维度指纹 + 动态时间窗口
-  const alertGroups: AlertGroup[] = useMemo(() => {
-    if (aggregationKey === 'none') return [];
+  const handleHistogramBucketClick = useCallback((start: string, end: string) => {
+    setTimeRange(prev => ({ ...prev, start, end, label: '自定义 (直方图)', preset: undefined }));
+  }, []);
 
-    /**
-     * 动态时间窗口算法：
-     * 1. 同一组内，告警时间间隔 < 首尾跨度 × 2 的视为连续
-     * 2. 最小窗口5分钟，最大窗口2小时
-     * 3. 间隔 > 窗口的自动断开为新的分组
-     */
-    const MIN_WINDOW_MS = 5 * 60 * 1000;
-    const MAX_WINDOW_MS = 2 * 60 * 60 * 1000;
-
-    // 获取分组指纹
-    const getFingerprint = (alert: Alert): string => {
-      switch (aggregationKey) {
-        case 'src_ip': return `src:${alert.srcIp}`;
-        case 'dst_ip': return `dst:${alert.dstIp}`;
-        case 'pattern': return `ptn:${alert.srcIp}_${alert.dstIp}_${alert.category}`;
-        default: return alert.srcIp;
-      }
-    };
-
-    // 获取维度显示名
-    const getDimensionLabel = (): string => {
-      switch (aggregationKey) {
-        case 'src_ip': return '同一来源IP';
-        case 'dst_ip': return '同一目的IP';
-        case 'pattern': return '相同攻击模式';
-        default: return '';
-      }
-    };
-
-    // 1. 按指纹分组
-    const fpGroups: Record<string, Alert[]> = {};
-    alerts.forEach(a => {
-      const fp = getFingerprint(a);
-      if (!fpGroups[fp]) fpGroups[fp] = [];
-      fpGroups[fp].push(a);
+  // ---- QuickValues 筛选 ----
+  const handleQuickFilterAdd = useCallback((field: string, value: string, exclude: boolean) => {
+    setQuickFilters(prev => {
+      // 避免重复
+      if (prev.some(f => f.field === field && f.value === value && f.exclude === exclude)) return prev;
+      return [...prev, { field, value, exclude }];
     });
+  }, []);
 
-    // 2. 动态时间窗口再分组
-    const groups: AlertGroup[] = [];
+  const handleQuickFilterRemove = useCallback((field: string, value: string) => {
+    setQuickFilters(prev => prev.filter(f => !(f.field === field && f.value === value)));
+  }, []);
 
-    Object.entries(fpGroups).forEach(([fp, fpAlerts]) => {
-      fpAlerts.sort((a, b) => new Date(a.firstSeen).getTime() - new Date(b.firstSeen).getTime());
-
-      let currentBatch: Alert[] = [fpAlerts[0]];
-      let batchStart = new Date(fpAlerts[0].firstSeen).getTime();
-      let batchEnd = new Date(fpAlerts[0].lastSeen).getTime();
-
-      for (let i = 1; i < fpAlerts.length; i++) {
-        const t = new Date(fpAlerts[i].firstSeen).getTime();
-        const span = batchEnd - batchStart;
-        // 动态窗口 = max(最小窗口, min(跨度×2, 最大窗口))
-        const windowMs = Math.min(Math.max(span * 2, MIN_WINDOW_MS), MAX_WINDOW_MS);
-
-        if (t - batchEnd <= windowMs) {
-          // 在动态窗口内，归入当前组
-          currentBatch.push(fpAlerts[i]);
-          batchEnd = new Date(fpAlerts[i].lastSeen).getTime();
-        } else {
-          // 超出窗口，保存当前组
-          if (currentBatch.length >= 2) {
-            const severityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
-            const topSev = currentBatch.reduce((min, a) =>
-              severityOrder[a.severity] < severityOrder[min] ? a.severity : min,
-              currentBatch[0].severity);
-            const allCats = [...new Set(currentBatch.map(a => a.category || '未分类'))];
-            const allTypes = [...new Set(currentBatch.map(a => a.title.split('（')[0].split('(')[0].trim()))];
-            const timeSpanMs = new Date(currentBatch[currentBatch.length-1].lastSeen).getTime() - new Date(currentBatch[0].firstSeen).getTime();
-            const timeSpanStr = timeSpanMs < 60000 ? `${Math.round(timeSpanMs/1000)}秒` :
-              timeSpanMs < 3600000 ? `${Math.round(timeSpanMs/60000)}分钟` :
-              `${(timeSpanMs/3600000).toFixed(1)}小时`;
-
-            const dimVal = aggregationKey === 'dst_ip' ? currentBatch[0].dstIp : currentBatch[0].srcIp;
-            groups.push({
-              key: `${fp}_${batchStart}`,
-              dimension: getDimensionLabel(),
-              dimensionValue: dimVal,
-              label: `${currentBatch.length}条${getDimensionLabel()}告警`,
-              count: currentBatch.length,
-              alerts: currentBatch,
-              topSeverity: topSev as Severity,
-              timeSpan: timeSpanStr,
-              categories: allCats,
-              alertTypes: allTypes,
-              firstSeen: currentBatch[0].firstSeen,
-              lastSeen: currentBatch[currentBatch.length-1].lastSeen,
-            });
-          }
-          currentBatch = [fpAlerts[i]];
-          batchStart = t;
-          batchEnd = new Date(fpAlerts[i].lastSeen).getTime();
-        }
-      }
-      // 处理最后一组
-      if (currentBatch.length >= 2) {
-        const severityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
-        const topSev = currentBatch.reduce((min, a) =>
-          severityOrder[a.severity] < severityOrder[min] ? a.severity : min,
-          currentBatch[0].severity);
-        const allCats = [...new Set(currentBatch.map(a => a.category || '未分类'))];
-        const allTypes = [...new Set(currentBatch.map(a => a.title.split('（')[0].split('(')[0].trim()))];
-        const timeSpanMs = new Date(currentBatch[currentBatch.length-1].lastSeen).getTime() - new Date(currentBatch[0].firstSeen).getTime();
-        const timeSpanStr = timeSpanMs < 60000 ? `${Math.round(timeSpanMs/1000)}秒` :
-          timeSpanMs < 3600000 ? `${Math.round(timeSpanMs/60000)}分钟` :
-          `${(timeSpanMs/3600000).toFixed(1)}小时`;
-
-        const dimVal = aggregationKey === 'dst_ip' ? currentBatch[0].dstIp : currentBatch[0].srcIp;
-        groups.push({
-          key: `${fp}_${batchStart}`,
-          dimension: getDimensionLabel(),
-          dimensionValue: dimVal,
-          label: `${currentBatch.length}条${getDimensionLabel()}告警`,
-          count: currentBatch.length,
-          alerts: currentBatch,
-          topSeverity: topSev as Severity,
-          timeSpan: timeSpanStr,
-          categories: allCats,
-          alertTypes: allTypes,
-          firstSeen: currentBatch[0].firstSeen,
-          lastSeen: currentBatch[currentBatch.length-1].lastSeen,
-        });
-      }
-    });
-
-    return groups.sort((a, b) => b.count - a.count);
-  }, [alerts, aggregationKey]);
-
-  // 过滤和排序
-  const filteredAlerts = useMemo(() => {
-    let result = alerts.filter(a => {
-      // 搜索过滤
-      if (searchQuery) {
-        const query = searchQuery.toLowerCase();
-        const matchSearch = 
-          a.title.toLowerCase().includes(query) ||
-          a.alertCode.toLowerCase().includes(query) ||
-          a.srcIp.includes(query) ||
-          a.dstIp.includes(query) ||
-          a.description.toLowerCase().includes(query);
-        if (!matchSearch) return false;
-      }
-      
-      // 严重度过滤
-      if (severityFilter.length > 0 && !severityFilter.includes(a.severity)) return false;
-      
-      // 状态过滤
-      if (statusFilter.length > 0 && !statusFilter.includes(a.status)) return false;
-      
-      // 时间过滤
-      if (timeRange.start && timeRange.end) {
-        const alertTime = new Date(a.lastSeen).getTime();
-        const startTime = new Date(timeRange.start).getTime();
-        const endTime = new Date(timeRange.end).getTime() + 86400000; // 包含结束当天
-        if (alertTime < startTime || alertTime > endTime) return false;
-      }
-      
-      // Tab过滤
-      if (activeTab === 'pending' && a.status !== 'new') return false;
-      if (activeTab === 'critical' && a.severity !== 'critical') return false;
-      if (activeTab === 'investigating' && a.status !== 'investigating') return false;
-      
-      return true;
-    });
-
-    // 排序
-    const severityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
-    result.sort((a, b) => {
-      // 首先按聚合组排序（多的在前）
-      if (aggregationKey !== 'none') {
-        const aGroup = alertGroups.find(g => g.alerts.some(ga => ga.id === a.id));
-        const bGroup = alertGroups.find(g => g.alerts.some(ga => ga.id === b.id));
-        if (aGroup && bGroup) {
-          if (aGroup.count !== bGroup.count) return bGroup.count - aGroup.count;
-        } else if (aGroup) return -1;
-        else if (bGroup) return 1;
-      }
-      // 然后按严重度
-      if (severityOrder[a.severity] !== severityOrder[b.severity]) {
-        return severityOrder[a.severity] - severityOrder[b.severity];
-      }
-      // 最后按时间
-      return new Date(b.lastSeen).getTime() - new Date(a.lastSeen).getTime();
-    });
-
-    // 排序
-    result.sort((a, b) => {
-      if (sortField === 'time') {
-        const ta = new Date(a.lastSeen || a.firstSeen).getTime();
-        const tb = new Date(b.lastSeen || b.firstSeen).getTime();
-        return sortOrder === 'desc' ? tb - ta : ta - tb;
-      } else if (sortField === 'severity') {
-        const order = { critical: 0, high: 1, medium: 2, low: 3 };
-        const sa = order[a.severity] ?? 2;
-        const sb = order[b.severity] ?? 2;
-        return sortOrder === 'desc' ? sa - sb : sb - sa;
-      } else if (sortField === 'source') {
-        return sortOrder === 'desc'
-          ? b.source.localeCompare(a.source)
-          : a.source.localeCompare(b.source);
-      }
-      return 0;
-    });
-
-    return result;
-  }, [alerts, searchQuery, severityFilter, statusFilter, timeRange, activeTab, aggregationKey, alertGroups, sortField, sortOrder]);
-
-  // 选中操作
-  const toggleSelect = (id: string) => {
-    setSelectedAlerts(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  const toggleSelectAll = () => {
-    if (selectedAlerts.size === filteredAlerts.length) {
-      setSelectedAlerts(new Set());
-    } else {
-      setSelectedAlerts(new Set(filteredAlerts.map(a => a.id)));
+  // ---- 已保存搜索 ----
+  const handleSaveSearch = useCallback(async (title: string) => {
+    try {
+      await alertsApi.createSavedSearch({
+        title,
+        query: { query_string: queryString },
+        query_string: queryString,
+      });
+      showToast('搜索已保存');
+      fetchSavedSearches();
+    } catch {
+      showToast('保存失败', 'error');
     }
-  };
+  }, [queryString, showToast, fetchSavedSearches]);
 
-  const toggleGroup = (key: string) => {
-    setExpandedGroups(prev => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  };
+  const handleLoadSearch = useCallback((search: SavedSearch) => {
+    const q = search.query_string || (typeof search.query === 'object' ? search.query?.query_string : search.query) || '';
+    setQueryString(q);
+    setCurrentPage(1);
+  }, []);
 
-  // 状态变更（禁止从非new状态退回new）
-  const handleStatusChange = (alertId: string, newStatus: AlertStatus) => {
-    const alert = alerts.find(a => a.id === alertId);
-    // 检查是否可以从非新告警改回新告警
-    if (newStatus === 'new' && alert && alert.status !== 'new') {
-      showToast('已处理过的告警不能重置为新告警', 'error');
-      return;
+  const handleDeleteSearch = useCallback(async (id: string) => {
+    try {
+      await alertsApi.deleteSavedSearch(id);
+      showToast('已删除');
+      fetchSavedSearches();
+    } catch {
+      showToast('删除失败', 'error');
     }
-    // 更新告警列表和详情
-    setAlerts(prev => prev.map(a => 
-      a.id === alertId ? { ...a, status: newStatus } : a
-    ));
-    setShowDetail(prev => prev ? (prev.id === alertId ? { ...prev, status: newStatus } : prev) : null);
-    showToast(`告警状态已更新为 ${statusConfig[newStatus]?.label || newStatus}`);
-  };
+  }, [showToast, fetchSavedSearches]);
 
-  // 生成事件 - 详细描述
-  const handleCreateEvent = (alert: Alert) => {
-    setSelectedAlerts(new Set([alert.id]));
-    const selected = alerts.filter(a => selectedAlerts.has(a.id) || a.id === alert.id);
-    const sevLabel = { critical: '危急', high: '高危', medium: '中危', low: '低危' }[alert.severity];
-    const catMap: Record<string, string> = { '网络扫描': '网络入侵', '暴力破解': '权限异常', '恶意软件': '恶意软件', 'Web攻击': 'Web攻击', 'DDoS': '网络入侵', '数据安全': '数据泄露', 'C2通信': '网络入侵', '横向移动': '横向移动', '身份异常': '权限异常', '侦察扫描': '网络入侵' };
+  // ---- 排序 ----
+  const handleSortChange = useCallback((field: string, order: 'asc' | 'desc') => {
+    setSortField(field);
+    setSortOrder(order);
+  }, []);
+
+  // ---- 详情抽屉 + 邻接消息 ----
+  const handleRowClick = useCallback((row: any) => {
+    setShowDetail(row);
+    setDetailTab('fields');
+    setRelatedAlerts([]);
+  }, []);
+
+  const fetchRelated = useCallback(async (alertId: string) => {
+    setRelatedLoading(true);
+    try {
+      const resp = await alertsApi.relatedAlerts(alertId);
+      setRelatedAlerts(resp?.data || []);
+    } catch {
+      setRelatedAlerts([]);
+    } finally {
+      setRelatedLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (showDetail?.id && detailTab === 'related' && relatedAlerts.length === 0) {
+      fetchRelated(showDetail.id);
+    }
+  }, [showDetail?.id, detailTab, fetchRelated, relatedAlerts.length]);
+
+  // ---- 搜索字段（FieldBrowser 回调）----
+  const handleSearchField = useCallback((field: string, value: string) => {
+    const clause = `${field}:"${value}"`;
+    setQueryString(prev => prev ? `${prev} AND ${clause}` : clause);
+    setShowDetail(null);
+    setCurrentPage(1);
+  }, []);
+
+  // ---- 状态变更 ----
+  const handleStatusChange = useCallback(async (alertId: string, status: string) => {
+    try {
+      await alertsApi.updateAlertStatus(Number(alertId), status);
+      showToast('状态已更新');
+      fetchAlerts();
+      if (showDetail?.id === alertId) {
+        setShowDetail(prev => prev ? { ...prev, status: status as AlertStatus } : null);
+      }
+    } catch {
+      showToast('更新失败', 'error');
+    }
+  }, [showToast, fetchAlerts, showDetail]);
+
+  // ---- 聚合生成事件 ----
+  const handleCreateEventFromDetail = useCallback((alert: Alert) => {
+    setSelectedIds(new Set([alert.id]));
     setAggregateForm({
-      title: `[事件] ${alert.title}${selected.length > 1 ? ` (+${selected.length - 1}条关联)` : ''}`,
+      title: `事件: ${alert.title}`,
       severity: alert.severity,
-      category: catMap[alert.category] || '其他',
-      description: [
-        `━━━ 事件概要 ━━━`,
-        `标题: ${alert.title}`,
-        `严重级别: ${sevLabel}`,
-        `告警来源: ${alert.source} | 分类: ${alert.category || '未分类'}`,
-        '',
-        `━━━ 网络信息 ━━━`,
-        `源地址: ${alert.srcIp}${alert.srcPort ? `:${alert.srcPort}` : ''}`,
-        `目标地址: ${alert.dstIp}${alert.dstPort ? `:${alert.dstPort}` : ''}`,
-        `协议: ${alert.protocol || '-'}`,
-        `主机/资产: ${alert.hostname || '-'}`,
-        '',
-        `━━━ 时间范围 ━━━`,
-        `首次发现: ${alert.firstSeen}`,
-        `最后发现: ${alert.lastSeen}`,
-        '',
-        `━━━ 告警描述 ━━━`,
-        alert.description || '无详细描述',
-        '',
-        `━━━ 处置建议 ━━━`,
-        `1. 确认告警真实性，检查相关日志`,
-        `2. 如确认攻击，建议立即隔离受影响资产`,
-        `3. 更新安全策略，封禁攻击源IP`,
-        `4. 在事件工作台中跟进处置`,
-      ].join('\n')
+      category: alert.category || '其他',
+      description: alert.description,
+      includeRelated: false,
+      markStatus: 'investigating',
     });
     setShowAggregateModal(true);
-  };
+    setShowDetail(null);
+  }, []);
 
-  // 批量聚合
-  const handleAggregate = async () => {
-    if (selectedAlerts.size === 0) {
-      showToast('请选择要聚合的告警', 'error');
-      return;
-    }
-    
+  const handleAggregate = useCallback(async () => {
+    if (!aggregateForm.title.trim() || selectedIds.size === 0) return;
     try {
-      const res = await alertsApi.aggregateAlerts({
-        alert_ids: Array.from(selectedAlerts),
+      await alertsApi.aggregateAlerts({
+        alert_ids: Array.from(selectedIds).map(Number),
         title: aggregateForm.title,
         severity: aggregateForm.severity,
+        description: aggregateForm.description,
         category: aggregateForm.category,
-        description: aggregateForm.description
+        include_related: aggregateForm.includeRelated,
+        mark_status: aggregateForm.markStatus,
       });
-      
-      if (res.success) {
-        showToast(`已生成事件，关联 ${selectedAlerts.size} 条告警`);
-        setShowAggregateModal(false);
-        setSelectedAlerts(new Set());
-        fetchAlerts();
-        navigate('/detection/events');
-      }
-    } catch (error) {
+      showToast(`已聚合 ${selectedIds.size} 条告警生成事件`);
+      setShowAggregateModal(false);
+      setSelectedIds(new Set());
+      fetchAlerts();
+      navigate('/detection/events');
+    } catch {
       showToast('聚合失败', 'error');
     }
-  };
+  }, [aggregateForm, selectedIds, showToast, fetchAlerts, navigate]);
+
+  // ---- 导出 ----
+  const handleExport = useCallback(() => {
+    const params: any = {};
+    if (timeRange.start) params.start_time = timeRange.start;
+    if (timeRange.end) params.end_time = timeRange.end;
+    alertsApi.exportAlerts(params).catch(() => showToast('导出失败', 'error'));
+  }, [timeRange, showToast]);
+
+  // ==================== 渲染 ====================
 
   return (
-    <div className="space-y-6">
-      {/* Toast 提示 */}
+    <div className="flex flex-col h-full">
+      {/* Toast */}
       <AnimatePresence>
         {toast && (
           <motion.div
@@ -961,545 +545,310 @@ export default function SecurityAlerts() {
         )}
       </AnimatePresence>
 
-      {/* 分诊统计面板 */}
-      <div className="grid grid-cols-6 gap-4">
-        <motion.div
-          whileHover={{ scale: 1.02 }}
-          className={`col-span-1 glass-card rounded-xl p-4 cursor-pointer transition-all ${
-            activeTab === 'pending' ? 'ring-2 ring-amber-500' : ''
-          }`}
-          onClick={() => setActiveTab(activeTab === 'pending' ? 'all' : 'pending')}
-        >
-          <div className="flex items-center gap-3">
-            <div className="w-12 h-12 rounded-xl bg-amber-500/10 flex items-center justify-center">
-              <AlertCircle className="w-6 h-6 text-amber-400" />
-            </div>
-            <div>
-              <div className="text-2xl font-bold text-text-primary">{triageStats.pending}</div>
-              <div className="text-xs text-text-muted">待分诊</div>
-            </div>
-          </div>
-        </motion.div>
+      {/* ========== 顶部搜索区 ========== */}
+      <div className="flex-shrink-0 space-y-3 px-6 pt-4 pb-3">
 
-        <motion.div
-          whileHover={{ scale: 1.02 }}
-          className={`col-span-1 glass-card rounded-xl p-4 cursor-pointer transition-all ${
-            activeTab === 'critical' ? 'ring-2 ring-rose-500' : ''
-          }`}
-          onClick={() => setActiveTab(activeTab === 'critical' ? 'all' : 'critical')}
-        >
-          <div className="flex items-center gap-3">
-            <div className="w-12 h-12 rounded-xl bg-rose-500/10 flex items-center justify-center relative">
-              <AlertTriangle className="w-6 h-6 text-rose-400" />
-              {triageStats.critical > 0 && (
-                <span className="absolute -top-1 -right-1 w-5 h-5 bg-rose-500 rounded-full text-[10px] font-bold text-white flex items-center justify-center">
-                  {triageStats.critical > 99 ? '99+' : triageStats.critical}
-                </span>
-              )}
-            </div>
-            <div>
-              <div className="text-2xl font-bold text-text-primary">{triageStats.critical}</div>
-              <div className="text-xs text-text-muted">危急</div>
-            </div>
-          </div>
-        </motion.div>
 
-        <motion.div
-          whileHover={{ scale: 1.02 }}
-          className={`col-span-1 glass-card rounded-xl p-4 cursor-pointer transition-all ${
-            activeTab === 'investigating' ? 'ring-2 ring-blue-500' : ''
-          }`}
-          onClick={() => setActiveTab(activeTab === 'investigating' ? 'all' : 'investigating')}
-        >
-          <div className="flex items-center gap-3">
-            <div className="w-12 h-12 rounded-xl bg-blue-500/10 flex items-center justify-center">
-              <Clock3 className="w-6 h-6 text-blue-400" />
-            </div>
-            <div>
-              <div className="text-2xl font-bold text-text-primary">{triageStats.investigating}</div>
-              <div className="text-xs text-text-muted">调查中</div>
-            </div>
-          </div>
-        </motion.div>
+        {/* SearchBar */}
+        <SearchBar
+          value={queryString}
+          onChange={setQueryString}
+          onSearch={handleSearch}
+          hitCount={totalAlerts}
+          tookMs={tookMs}
+          loading={isLoading}
+          savedSearches={savedSearches as any[]}
+          onSaveSearch={handleSaveSearch}
+          onLoadSearch={handleLoadSearch}
+          onDeleteSearch={handleDeleteSearch}
+          timeRangeLabel={timeRange.label}
+        />
 
-        <motion.div
-          whileHover={{ scale: 1.02 }}
-          className="col-span-1 glass-card rounded-xl p-4"
-        >
-          <div className="flex items-center gap-3">
-            <div className="w-12 h-12 rounded-xl bg-gray-500/10 flex items-center justify-center">
-              <EyeOff className="w-6 h-6 text-gray-400" />
-            </div>
-            <div>
-              <div className="text-2xl font-bold text-text-primary">{triageStats.falsePositive}</div>
-              <div className="text-xs text-text-muted">误报</div>
-            </div>
-          </div>
-        </motion.div>
-
-        <motion.div
-          whileHover={{ scale: 1.02 }}
-          className="col-span-1 glass-card rounded-xl p-4"
-        >
-          <div className="flex items-center gap-3">
-            <div className="w-12 h-12 rounded-xl bg-emerald-500/10 flex items-center justify-center">
-              <CheckCircle className="w-6 h-6 text-emerald-400" />
-            </div>
-            <div>
-              <div className="text-2xl font-bold text-text-primary">{triageStats.resolved}</div>
-              <div className="text-xs text-text-muted">已处理</div>
-            </div>
-          </div>
-        </motion.div>
-
-        <motion.div
-          whileHover={{ scale: 1.02 }}
-          className="col-span-1 glass-card rounded-xl p-4"
-        >
-          <div className="flex items-center gap-3">
-            <div className="w-12 h-12 rounded-xl bg-purple-500/10 flex items-center justify-center">
-              <TrendingUp className="w-6 h-6 text-purple-400" />
-            </div>
-            <div>
-              <div className="text-2xl font-bold text-text-primary">{triageStats.total24h}</div>
-              <div className="text-xs text-text-muted">24h新增</div>
-            </div>
-          </div>
-        </motion.div>
-      </div>
-
-      {/* 标题栏 */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <div>
-            <h1 className="text-2xl font-semibold text-text-primary">安全告警</h1>
-            <p className="text-sm text-text-secondary mt-1">多源数据聚合 · 智能分析 · 快速响应</p>
-          </div>
-        </div>
-        
-        <div className="flex items-center gap-3">
-    
-
-          {/* 聚合维度选择 */}
-          <select
-            value={aggregationKey}
-            onChange={(e) => setAggregationKey(e.target.value)}
-            className="px-4 py-2 bg-page-bg border border-border-color rounded-lg text-sm text-text-primary"
-          >
-            <option value="none">逐条显示</option>
-            <option value="src_ip">按来源IP聚合</option>
-            <option value="dst_ip">按目的IP聚合</option>
-            <option value="pattern">按攻击模式聚合 (来源+目标+分类)</option>
-          </select>
-
-          <button
-            onClick={fetchAlerts}
-            disabled={isLoading}
-            className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors disabled:opacity-50"
-          >
-            <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
-            刷新
-          </button>
-        </div>
-      </div>
-
-      {/* 搜索过滤栏 */}
-      <div className="glass-card rounded-xl p-4">
-        <div className="flex items-center gap-4">
-          <div className="flex-1 relative">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-text-muted" />
-            <input
-              type="text"
-              placeholder="搜索告警标题、ID、IP地址、描述..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-12 pr-4 py-3 bg-page-bg border border-border-color rounded-xl text-text-primary focus:outline-none focus:border-primary"
-            />
-          </div>
-          <div className="flex items-center gap-2 flex-wrap">
-            <FilterDropdown
-              label="严重度"
-              options={[
-                { value: 'critical', label: '危急', color: 'bg-rose-500' },
-                { value: 'high', label: '高危', color: 'bg-orange-500' },
-                { value: 'medium', label: '中危', color: 'bg-amber-500' },
-                { value: 'low', label: '低危', color: 'bg-blue-500' }
-              ]}
-              selected={severityFilter}
-              onChange={(vals) => setSeverityFilter(vals as Severity[])}
-            />
-            <FilterDropdown
-              label="状态"
-              options={[
-                { value: 'new', label: '新告警', color: 'bg-blue-500' },
-                { value: 'investigating', label: '调查中', color: 'bg-amber-500' },
-                { value: 'closed', label: '已关闭', color: 'bg-emerald-500' },
-                { value: 'false_positive', label: '误报', color: 'bg-gray-500' }
-              ]}
-              selected={statusFilter}
-              onChange={(vals) => setStatusFilter(vals.length ? vals as AlertStatus[] : ['new', 'investigating'])}
-            />
-            <TimeRangePicker value={timeRange} onChange={(v) => { setTimeRange(v); setCurrentPage(1); }} />
-          </div>
-        </div>
-      </div>
-
-      {/* 批量操作栏 */}
-      {selectedAlerts.size > 0 && (
-        <motion.div
-          initial={{ opacity: 0, y: -10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="flex items-center gap-4 p-4 bg-gradient-to-r from-primary/10 to-primary/5 border border-primary/20 rounded-xl"
-        >
-          <span className="text-sm text-primary font-medium">
-            已选择 <span className="font-bold">{selectedAlerts.size}</span> 项
-          </span>
-          
-          <div className="h-6 w-px bg-border-color" />
-          
+        {/* TimeRangeSelector + 操作按钮 */}
+        <div className="flex items-center justify-between">
+          <TimeRangeSelector
+            value={timeRange}
+            onChange={handleTimeRangeChange}
+            enableAutoRefresh
+            autoRefreshEnabled={autoRefresh}
+            onAutoRefreshChange={setAutoRefresh}
+          />
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => handleCreateEvent(alerts.find(a => selectedAlerts.has(a.id))!)}
-              className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
-            >
-              <Zap className="w-4 h-4" />
-              生成事件
-            </button>
-            <button
-              onClick={() => {
-                selectedAlerts.forEach(id => handleStatusChange(id, 'closed'));
-                setSelectedAlerts(new Set());
-              }}
-              className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
-            >
-              <CheckCircle className="w-4 h-4" />
-              关闭
-            </button>
-            <button
-              onClick={() => {
-                selectedAlerts.forEach(id => handleStatusChange(id, 'false_positive'));
-                setSelectedAlerts(new Set());
-              }}
-              className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
-            >
-              <EyeOff className="w-4 h-4" />
-              误报
-            </button>
-          </div>
-          
-          <div className="flex-1" />
-          
-          <button
-            onClick={() => setSelectedAlerts(new Set())}
-            className="px-4 py-2 text-text-muted hover:text-text-primary transition-colors"
-          >
-            取消选择
-          </button>
-        </motion.div>
-      )}
-
-      {/* 聚合组展示 */}
-      {aggregationKey !== 'none' && alertGroups.length > 0 && (
-        <div className="space-y-3 mb-4">
-          <div className="flex items-center gap-2 text-sm text-text-muted">
-            <Layers className="w-4 h-4 text-primary" />
-            <span>已按 <strong className="text-primary">{aggregationKey === 'src_ip' ? '来源IP' : aggregationKey === 'dst_ip' ? '目的IP' : '攻击模式'}</strong> 聚合，共 <strong className="text-primary">{alertGroups.length}</strong> 组</span>
-            <span className="text-xs text-text-muted">（仅聚合2条及以上的告警）</span>
-          </div>
-          <div className="space-y-3">
-            {alertGroups.map(group => (
-              <motion.div
-                key={group.key}
-                layout
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="bg-gradient-to-r from-primary/5 to-primary/0 border border-primary/20 rounded-xl overflow-hidden"
+            {selectedIds.size > 0 && (
+              <button
+                onClick={() => setShowAggregateModal(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-600 text-white text-xs hover:bg-purple-700 transition-colors"
               >
-                <div
-                  className="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-primary/5 transition-colors"
-                  onClick={() => toggleGroup(group.key)}
-                >
-                  <div className="flex items-center gap-3 flex-1 min-w-0">
-                    <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 ${
-                      group.topSeverity === 'critical' ? 'bg-rose-500/20' :
-                      group.topSeverity === 'high' ? 'bg-orange-500/20' : 'bg-amber-500/20'
-                    }`}>
-                      {aggregationKey === 'src_ip' ? <Globe className="w-5 h-5 text-rose-400" /> :
-                       aggregationKey === 'dst_ip' ? <Server className="w-5 h-5 text-blue-400" /> :
-                       <Target className="w-5 h-5 text-purple-400" />}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-sm font-semibold text-text-primary">
-                          {aggregationKey === 'src_ip' ? `来源IP: ${group.dimensionValue}` :
-                           aggregationKey === 'dst_ip' ? `目的IP: ${group.dimensionValue}` :
-                           `攻击模式: ${group.dimensionValue}`}
-                        </span>
-                        <span className={`px-2 py-0.5 text-[11px] font-bold rounded ${
-                          group.topSeverity === 'critical' ? 'bg-rose-500/20 text-rose-400' :
-                          group.topSeverity === 'high' ? 'bg-orange-500/20 text-orange-400' :
-                          'bg-amber-500/20 text-amber-400'
-                        }`}>
-                          {group.count}条告警
-                        </span>
-                        <span className="text-xs text-text-muted bg-page-bg px-2 py-0.5 rounded">
-                          ⌛ {group.timeSpan}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2 mt-1 text-xs text-text-muted">
-                        <span>{group.alertTypes.slice(0, 4).join(' · ')}</span>
-                        {group.alertTypes.length > 4 && <span>+{group.alertTypes.length - 4}项</span>}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2 flex-shrink-0 ml-3">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        const sevMap = { critical: '危急', high: '高危', medium: '中危', low: '低危' };
-                        const severityDist = group.alerts.reduce((acc: Record<string, number>, a) => {
-                          acc[a.severity] = (acc[a.severity] || 0) + 1; return acc;
-                        }, {});
-                        const sevDistStr = Object.entries(severityDist).map(([k, v]) => `${sevMap[k as Severity]}: ${v}条`).join(' | ');
-                        group.alerts.sort((a: Alert, b: Alert) => new Date(a.firstSeen).getTime() - new Date(b.firstSeen).getTime());
-                        const catMap2: Record<string, string> = { '网络扫描': '网络入侵', '暴力破解': '权限异常', '恶意软件': '恶意软件', 'Web攻击': 'Web攻击', 'DDoS': '网络入侵', '数据安全': '数据泄露', 'C2通信': '网络入侵', '横向移动': '横向移动', '身份异常': '权限异常', '侦察扫描': '网络入侵' };
-                        const topCat = catMap2[group.categories[0]] || '其他';
-                        setAggregateForm({
-                          title: `[聚合事件] ${group.dimensionValue} ${group.count}条告警`,
-                          severity: group.topSeverity,
-                          category: topCat,
-                          description: [
-                            `━━━ 事件概要 ━━━`,
-                            `聚合维度: ${group.dimension}`,
-                            `影响IP: ${group.dimensionValue}`,
-                            `告警总数: ${group.count}条 | 时间跨度: ${group.timeSpan}`,
-                            `严重度分布: ${sevDistStr}`,
-                            '',
-                            `━━━ 告警类型 ━━━`,
-                            ...group.alertTypes.map((t: string, i: number) => `${i + 1}. ${t}`),
-                            '',
-                            `━━━ 详细时间线 ━━━`,
-                            ...group.alerts.map((a: Alert, i: number) => {
-                              const idx = String(i + 1).padStart(2, '0');
-                              const time = new Date(a.firstSeen).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
-                              return `[${idx}] ${time} | [${sevMap[a.severity as Severity]}] ${a.title} | ${a.srcIp}→${a.dstIp}`;
-                            }),
-                            '',
-                            `━━━ 处置建议 ━━━`,
-                            `1. 分析时间线中的攻击路径，确认攻击意图`,
-                            `2. 对 ${group.dimensionValue} 相关资产进行排查`,
-                            `3. 更新安全策略，阻断攻击源`,
-                            `4. 在事件工作台中跟进处置`,
-                          ].join('\n')
-                        });
-                        setSelectedAlerts(new Set(group.alerts.map(a => a.id)));
-                        setShowAggregateModal(true);
-                      }}
-                      className="p-2 text-purple-400 hover:bg-purple-500/10 rounded-lg transition-colors"
-                      title="一键生成事件"
-                    >
-                      <Zap className="w-4 h-4" />
-                    </button>
-                    <ChevronRight className={`w-4 h-4 text-text-muted transition-transform flex-shrink-0 ${
-                      expandedGroups.has(group.key) ? 'rotate-90' : ''
-                    }`} />
-                  </div>
-                </div>
-                {expandedGroups.has(group.key) && (
-                  <div className="border-t border-border-color/50">
-                    {/* 表头 */}
-                    <div className="flex items-center gap-3 px-4 py-2 bg-page-bg/50 text-xs text-text-muted uppercase">
-                      <span className="w-2"></span>
-                      <span className="w-28">告警ID</span>
-                      <span className="flex-1">告警信息</span>
-                      <span className="w-32">源地址</span>
-                      <span className="w-32">目标地址</span>
-                      <span className="w-16">严重度</span>
-                      <span className="w-20">时间</span>
-                      <span className="w-16">操作</span>
-                    </div>
-                    <div className="divide-y divide-border-color/30">
-                      {group.alerts.map(alert => {
-                        const sev = severityConfig[alert.severity] || severityConfig.medium;
-                        return (
-                          <div key={alert.id} className="flex items-center gap-3 px-4 py-2 hover:bg-white/5 text-sm">
-                            <span className={`w-2 h-2 rounded-full flex-shrink-0 ${sev.color}`} />
-                            <span className="text-xs font-mono text-text-muted w-28 flex-shrink-0">{alert.alertCode}</span>
-                            <span className="flex-1 text-text-primary min-w-0 truncate">{alert.title}</span>
-                            <span className="w-32 text-xs text-text-muted font-mono truncate">{alert.srcIp}{alert.srcPort ? `:${alert.srcPort}` : ''}</span>
-                            <span className="w-32 text-xs text-text-muted font-mono truncate">{alert.dstIp}{alert.dstPort ? `:${alert.dstPort}` : ''}</span>
-                            <span className="w-16 text-xs text-text-muted">{sev.label}</span>
-                            <span className="w-20 text-xs text-text-muted">{formatTime(alert.lastSeen)}</span>
-                            <button
-                              onClick={() => setShowDetail(alert)}
-                              className="w-16 text-xs text-primary hover:underline"
-                            >
-                              查看
-                            </button>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-              </motion.div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* 告警列表 */}
-        <div className="glass-card rounded-xl overflow-x-auto">
-          <table className="w-full min-w-[800px]">
-            <thead className="bg-page-bg/80 border-b border-border-color sticky top-0 z-10">
-              <tr className="text-left text-xs text-text-muted uppercase tracking-wider">
-                <th className="p-3 w-10 whitespace-nowrap">
-                  <input
-                    type="checkbox"
-                    checked={selectedAlerts.size === filteredAlerts.length && filteredAlerts.length > 0}
-                    onChange={toggleSelectAll}
-                    className="w-4 h-4 rounded border-border-color"
-                  />
-                </th>
-                <th className="p-3 font-medium min-w-[100px]">告警日志ID</th>
-                <th className="p-3 font-medium min-w-[200px]">告警信息</th>
-                <th className="p-3 font-medium min-w-[80px]">严重度</th>
-                <th className="p-3 font-medium min-w-[150px]">分类/资产</th>
-                <th className="p-3 font-medium min-w-[80px]">状态</th>
-                <th className="p-3 font-medium min-w-[120px]">告警时间</th>
-                <th className="p-3 font-medium min-w-[80px]">操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredAlerts.map((alert, index) => {
-                const severity = severityConfig[alert.severity] || severityConfig.medium;
-                const StatusIcon = statusConfig[alert.status]?.icon || Bell;
-
-                return (
-                  <motion.tr
-                    key={alert.id}
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: index * 0.03 }}
-                    className={`border-b border-border-color/50 hover:bg-white/5 transition-colors ${
-                      selectedAlerts.has(alert.id) ? 'bg-primary/5' : ''
-                    }`}
-                  >
-                    <td className="p-3">
-                      <input
-                        type="checkbox"
-                        checked={selectedAlerts.has(alert.id)}
-                        onChange={() => toggleSelect(alert.id)}
-                        className="w-4 h-4 rounded border-border-color"
-                      />
-                    </td>
-                    <td className="p-3">
-                      <span className="text-xs font-mono text-text-muted">{alert.alertCode}</span>
-                    </td>
-                    <td className="p-2 w-24">
-                      <p className="text-sm font-medium text-text-primary truncate">{alert.title}</p>
-                    </td>
-                    <td className="p-3">
-                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-lg ${severity.bg} ${severity.text}`}>
-                        <span className={`w-1.5 h-1.5 rounded-full ${severity.color}`} />
-                        {severity.label}
-                      </span>
-                    </td>
-                    <td className="p-3">
-                      <TagsDisplay category={alert.category} tags={alert.tags} hostname={alert.hostname} />
-                    </td>
-                    <td className="p-3">
-                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-lg ${statusConfig[alert.status]?.bg || 'bg-gray-500/10'} ${statusConfig[alert.status]?.color || 'text-gray-400'}`}>
-                        <StatusIcon className="w-3 h-3" />
-                        {statusConfig[alert.status]?.label || alert.status}
-                      </span>
-                    </td>
-                    <td className="p-3 text-sm text-text-muted whitespace-nowrap">
-                      {formatTime(alert.lastSeen)}
-                    </td>
-                    <td className="p-3">
-                      <div className="flex items-center gap-1">
-                        <button
-                          onClick={() => setShowDetail(alert)}
-                          className="p-2 text-text-muted hover:text-primary hover:bg-primary/10 rounded-lg transition-colors"
-                          title="查看详情"
-                        >
-                          <Eye className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => handleCreateEvent(alert)}
-                          className="p-2 text-text-muted hover:text-purple-400 hover:bg-purple-500/10 rounded-lg transition-colors"
-                          title="生成事件"
-                        >
-                          <Zap className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </td>
-                  </motion.tr>
-                );
-              })}
-            </tbody>
-          </table>
-          
-          {filteredAlerts.length === 0 && (
-            <div className="p-12 text-center">
-              <Shield className="w-12 h-12 text-text-muted mx-auto mb-3" />
-              <p className="text-text-secondary">暂无告警数据</p>
-            </div>
-          )}
-        </div>
-
-      {/* 分页 */}
-      {totalAlerts > 0 && (
-        <div className="flex items-center justify-between px-4 py-3 bg-card-bg border-t border-border-color">
-          <span className="text-sm text-text-muted">
-            共 {totalAlerts} 条，第 {currentPage}/{totalPages} 页
-          </span>
-          <div className="flex items-center gap-2">
-            <select
-              value={pageSize}
-              onChange={(e) => { setPageSize(Number(e.target.value)); setCurrentPage(1); }}
-              className="px-2 py-1 bg-page-bg border border-border-color rounded text-sm text-text-primary"
-            >
-              <option value={10}>10条/页</option>
-              <option value={20}>20条/页</option>
-              <option value={50}>50条/页</option>
-              <option value={100}>100条/页</option>
-            </select>
+                <Zap className="w-3.5 h-3.5" />
+                聚合事件 ({selectedIds.size})
+              </button>
+            )}
             <button
-              onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-              disabled={currentPage === 1}
-              className="px-3 py-1 bg-page-bg border border-border-color rounded text-sm text-text-primary disabled:opacity-50 disabled:cursor-not-allowed hover:bg-white/5"
+              onClick={handleExport}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-page-bg border border-border-color text-text-muted hover:text-text-secondary text-xs transition-colors"
             >
-              上一页
+              <Download className="w-3.5 h-3.5" />
+              导出
             </button>
-            <span className="text-sm text-text-secondary px-2">
-              {currentPage} / {totalPages}
-            </span>
             <button
-              onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-              disabled={currentPage === totalPages}
-              className="px-3 py-1 bg-page-bg border border-border-color rounded text-sm text-text-primary disabled:opacity-50 disabled:cursor-not-allowed hover:bg-white/5"
+              onClick={() => setShowQuickValues(!showQuickValues)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-colors ${
+                showQuickValues ? 'bg-primary/10 border-primary/30 text-primary' : 'bg-page-bg border-border-color text-text-muted hover:text-text-secondary'
+              }`}
+              title={showQuickValues ? '隐藏字段分布' : '显示字段分布'}
             >
-              下一页
+              <BarChart3 className="w-3.5 h-3.5" />
+              {showQuickValues ? '隐藏面板' : '显示面板'}
+            </button>
+            <button
+              onClick={() => { fetchAlerts(); fetchHistogram(); }}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-text-muted hover:text-text-secondary bg-page-bg border border-border-color rounded-lg transition-colors"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
+              刷新
             </button>
           </div>
         </div>
-      )}
 
-      {/* 详情抽屉 */}
+      </div>
+
+      {/* ========== 主内容区 ========== */}
+      <div className="flex-1 flex overflow-hidden px-6 pb-4 gap-4">
+        {/* QuickValues 侧栏 */}
+        {showQuickValues && (
+          <div className="flex-shrink-0 w-[280px] hidden lg:block">
+            <QuickValuesPanel
+              onFilterAdd={handleQuickFilterAdd}
+              activeFilters={quickFilters}
+              onFilterRemove={handleQuickFilterRemove}
+              startTime={timeRange.start}
+              endTime={timeRange.end}
+              className="h-full"
+            />
+          </div>
+        )}
+
+        {/* 右侧：MessageTable */}
+        <div className="flex-1 min-w-0 bg-card-bg border border-border-color rounded-xl overflow-hidden">
+          <MessageTable
+            data={alerts}
+            loading={isLoading}
+            total={totalAlerts}
+            page={currentPage}
+            pageSize={pageSize}
+            onPageChange={setCurrentPage}
+            onPageSizeChange={setPageSize}
+            onSortChange={handleSortChange}
+            sortField={sortField}
+            sortOrder={sortOrder}
+            onRowClick={handleRowClick}
+            expandedRowId={showDetail?.id || null}
+            searchQuery={buildQueryString()}
+            selectedIds={selectedIds}
+            onSelectionChange={setSelectedIds}
+            className="h-full"
+          />
+        </div>
+      </div>
+
+      {/* ========== 详情抽屉 ========== */}
       <AnimatePresence>
         {showDetail && (
-          <AlertDetailDrawer
-            alert={showDetail}
-            onClose={() => setShowDetail(null)}
-            onStatusChange={(status) => handleStatusChange(showDetail.id, status)}
-            onCreateEvent={handleCreateEvent}
-          />
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50"
+            onClick={() => setShowDetail(null)}
+          >
+            <motion.div
+              initial={{ x: '100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '100%' }}
+              transition={{ type: 'spring', damping: 25, stiffness: 300 }}
+              className="absolute right-0 top-0 bottom-0 w-full max-w-2xl bg-card-bg border-l border-border-color flex flex-col"
+              onClick={e => e.stopPropagation()}
+            >
+              {/* 抽屉头部 */}
+              <div className="flex-shrink-0 flex items-center justify-between px-6 py-4 border-b border-border-color bg-card-bg/95 backdrop-blur">
+                <div className="min-w-0 flex-1">
+                  <h2 className="text-lg font-semibold text-text-primary truncate">{showDetail.title}</h2>
+                  <p className="text-xs text-text-muted font-mono">{showDetail.alertCode || showDetail.id}</p>
+                </div>
+                <button onClick={() => setShowDetail(null)} className="p-2 hover:bg-white/5 rounded-lg text-text-muted ml-3">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* 状态栏 */}
+              <div className="flex-shrink-0 grid grid-cols-2 gap-3 px-6 py-3 border-b border-border-color/50">
+                <div className={`p-3 rounded-xl ${severityConfig[showDetail.severity]?.bg} border ${severityConfig[showDetail.severity]?.border}`}>
+                  <div className="text-[10px] text-text-muted mb-0.5">严重程度</div>
+                  <div className={`text-sm font-semibold ${severityConfig[showDetail.severity]?.text}`}>
+                    {severityConfig[showDetail.severity]?.label}
+                  </div>
+                </div>
+                <div className="p-3 rounded-xl bg-page-bg border border-border-color">
+                  <div className="text-[10px] text-text-muted mb-0.5">处理状态</div>
+                  <div className={`flex items-center gap-1.5 text-sm font-semibold ${statusConfig[showDetail.status]?.color || 'text-gray-400'}`}>
+                    {React.createElement(statusConfig[showDetail.status]?.icon || Bell, { className: 'w-4 h-4' })}
+                    {statusConfig[showDetail.status]?.label || showDetail.status}
+                  </div>
+                </div>
+              </div>
+
+              {/* 核心信息区 */}
+              <div className="flex-shrink-0 px-6 py-3 border-b border-border-color/50">
+                {/* 通用信息 */}
+                <div className="grid grid-cols-4 gap-2 mb-3">
+                  {[
+                    { label: '安全产品', value: showDetail.sourceProduct || showDetail.source, color: 'cyan' },
+                    { label: '分类', value: showDetail.category, color: 'amber' },
+                    { label: '告警时间', value: showDetail.firstSeen ? new Date(showDetail.firstSeen).toLocaleString('zh-CN', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' }) : '-', color: 'gray' },
+                    { label: '主机', value: showDetail.hostname, color: 'orange' },
+                  ].map(item => (
+                    <div key={item.label} className="px-2 py-1.5 bg-page-bg border border-border-color rounded-lg text-center">
+                      <div className="text-[10px] text-text-muted mb-0.5">{item.label}</div>
+                      <div className="text-xs font-medium text-text-primary truncate">{item.value || '-'}</div>
+                    </div>
+                  ))}
+                </div>
+                {/* 网络信息（仅网络类告警显示） */}
+                {(showDetail.srcIp || showDetail.dstIp || showDetail.protocol) && (
+                  <div className="grid grid-cols-5 gap-2">
+                    {[
+                      { label: '源地址', value: showDetail.srcIp, color: 'rose' },
+                      { label: '源端口', value: showDetail.srcPort, color: 'rose' },
+                      { label: '目的地址', value: showDetail.dstIp, color: 'blue' },
+                      { label: '目的端口', value: showDetail.dstPort, color: 'blue' },
+                      { label: '协议', value: showDetail.protocol, color: 'emerald' },
+                    ].map(item => (
+                      <div key={item.label} className={`px-2 py-1.5 bg-${item.color}-500/10 border border-${item.color}-500/20 rounded-lg text-center`}>
+                        <div className={`text-[10px] text-${item.color}-400/70 mb-0.5`}>{item.label}</div>
+                        <div className={`text-xs font-mono text-${item.color}-300 truncate`}>{item.value || '-'}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Tab 切换 */}
+              <div className="flex-shrink-0 flex gap-1 px-6 pt-2 border-b border-border-color">
+                {[
+                  { key: 'fields', label: '字段浏览器', icon: Hash },
+                  { key: 'raw', label: '原始日志', icon: FileJson },
+                  { key: 'related', label: '邻接消息', icon: GitBranch },
+                ].map(tab => {
+                  const Icon = tab.icon;
+                  return (
+                    <button
+                      key={tab.key}
+                      onClick={() => setDetailTab(tab.key as any)}
+                      className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition-colors ${
+                        detailTab === tab.key
+                          ? 'border-primary text-primary'
+                          : 'border-transparent text-text-muted hover:text-text-secondary'
+                      }`}
+                    >
+                      <Icon className="w-3.5 h-3.5" />
+                      {tab.label}
+                      {tab.key === 'related' && relatedAlerts.length > 0 && (
+                        <span className="px-1.5 py-0.5 rounded-full bg-primary/15 text-primary text-[10px]">{relatedAlerts.length}</span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Tab 内容 */}
+              <div className="flex-1 overflow-y-auto">
+                {detailTab === 'fields' && (
+                  <FieldBrowser data={showDetail} onSearchField={handleSearchField} className="h-full" />
+                )}
+
+                {detailTab === 'raw' && (
+                  <div className="p-4">
+                    <RawLogViewer rawLog={showDetail.rawLog} extraData={showDetail.extraData || showDetail.parsedData} />
+                  </div>
+                )}
+
+                {detailTab === 'related' && (
+                  <div className="p-4">
+                    {relatedLoading ? (
+                      <div className="flex items-center justify-center py-12">
+                        <Loader2 className="w-5 h-5 text-text-muted animate-spin" />
+                      </div>
+                    ) : relatedAlerts.length === 0 ? (
+                      <div className="flex flex-col items-center justify-center py-12 text-text-muted text-sm">
+                        <GitBranch className="w-8 h-8 mb-2 opacity-30" />
+                        <span>暂无相关消息</span>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <div className="text-xs text-text-muted mb-3">
+                          找到 <span className="text-text-secondary font-medium">{relatedAlerts.length}</span> 条相关消息（同 IP / 同类别 / 前后 1h）
+                        </div>
+                        {relatedAlerts.map((ra: any) => (
+                          <div
+                            key={ra.id || ra._id}
+                            onClick={() => {
+                              setShowDetail(ra as Alert);
+                              setDetailTab('fields');
+                              setRelatedAlerts([]);
+                            }}
+                            className="p-3 bg-page-bg border border-border-color rounded-xl hover:border-primary/30 cursor-pointer transition-colors"
+                          >
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-xs font-medium text-text-primary truncate">{ra.title || ra.alert_code || ra.id}</span>
+                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${severityConfig[(ra.severity as Severity)]?.bg} ${severityConfig[(ra.severity as Severity)]?.text}`}>
+                                {severityConfig[(ra.severity as Severity)]?.label || ra.severity}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-3 text-[10px] text-text-muted">
+                              <span className="font-mono">{ra.src_ip || ra.srcIp || '-'}</span>
+                              <span>{ra.source || '-'}</span>
+                              <span>{formatTime(ra.first_seen || ra.firstSeen || '')}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* 抽屉底部操作栏 */}
+              <div className="flex-shrink-0 flex items-center justify-between px-6 py-3 border-t border-border-color bg-card-bg/95 backdrop-blur">
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleStatusChange(showDetail.id, 'closed')}
+                    className="flex items-center gap-1.5 px-3 py-2 bg-emerald-600 text-white text-xs rounded-lg hover:bg-emerald-700 transition-colors"
+                  >
+                    <CheckCircle className="w-3.5 h-3.5" />
+                    关闭告警
+                  </button>
+                  <button
+                    onClick={() => handleStatusChange(showDetail.id, 'false_positive')}
+                    className="flex items-center gap-1.5 px-3 py-2 bg-gray-600 text-white text-xs rounded-lg hover:bg-gray-700 transition-colors"
+                  >
+                    <EyeOff className="w-3.5 h-3.5" />
+                    标记误报
+                  </button>
+                </div>
+                <button
+                  onClick={() => handleCreateEventFromDetail(showDetail)}
+                  className="flex items-center gap-1.5 px-4 py-2 bg-primary text-white text-xs rounded-lg hover:bg-primary-hover transition-colors"
+                >
+                  <Zap className="w-3.5 h-3.5" />
+                  生成事件
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
         )}
       </AnimatePresence>
 
-      {/* 聚合生成事件弹窗 */}
+      {/* ========== 聚合事件弹窗 ========== */}
       <AnimatePresence>
         {showAggregateModal && (
           <motion.div
@@ -1514,7 +863,7 @@ export default function SecurityAlerts() {
               animate={{ scale: 1 }}
               exit={{ scale: 0.95 }}
               className="bg-card-bg rounded-2xl p-6 w-full max-w-lg border border-border-color"
-              onClick={(e) => e.stopPropagation()}
+              onClick={e => e.stopPropagation()}
             >
               <div className="flex items-center gap-3 mb-6">
                 <div className="w-12 h-12 bg-purple-500/10 rounded-xl flex items-center justify-center">
@@ -1522,7 +871,7 @@ export default function SecurityAlerts() {
                 </div>
                 <div>
                   <h3 className="text-lg font-semibold text-text-primary">聚合生成事件</h3>
-                  <p className="text-sm text-text-muted">将 {selectedAlerts.size} 条告警聚合为安全事件</p>
+                  <p className="text-sm text-text-muted">将 {selectedIds.size} 条告警聚合为安全事件</p>
                 </div>
               </div>
 
@@ -1532,7 +881,7 @@ export default function SecurityAlerts() {
                   <input
                     type="text"
                     value={aggregateForm.title}
-                    onChange={(e) => setAggregateForm({ ...aggregateForm, title: e.target.value })}
+                    onChange={e => setAggregateForm({ ...aggregateForm, title: e.target.value })}
                     className="w-full px-4 py-3 bg-page-bg border border-border-color rounded-xl text-text-primary focus:border-primary focus:outline-none"
                     placeholder="输入事件标题"
                   />
@@ -1543,7 +892,7 @@ export default function SecurityAlerts() {
                     <label className="block text-sm text-text-secondary mb-2">严重程度</label>
                     <select
                       value={aggregateForm.severity}
-                      onChange={(e) => setAggregateForm({ ...aggregateForm, severity: e.target.value as Severity })}
+                      onChange={e => setAggregateForm({ ...aggregateForm, severity: e.target.value as Severity })}
                       className="w-full px-4 py-3 bg-page-bg border border-border-color rounded-xl text-text-primary focus:border-primary focus:outline-none"
                     >
                       <option value="critical">危急</option>
@@ -1556,7 +905,7 @@ export default function SecurityAlerts() {
                     <label className="block text-sm text-text-secondary mb-2">事件类型</label>
                     <select
                       value={aggregateForm.category}
-                      onChange={(e) => setAggregateForm({ ...aggregateForm, category: e.target.value })}
+                      onChange={e => setAggregateForm({ ...aggregateForm, category: e.target.value })}
                       className="w-full px-4 py-3 bg-page-bg border border-border-color rounded-xl text-text-primary focus:border-primary focus:outline-none"
                     >
                       {eventTypeOptions.map(t => <option key={t} value={t}>{t}</option>)}
@@ -1568,8 +917,8 @@ export default function SecurityAlerts() {
                   <label className="block text-sm text-text-secondary mb-2">事件描述</label>
                   <textarea
                     value={aggregateForm.description}
-                    onChange={(e) => setAggregateForm({ ...aggregateForm, description: e.target.value })}
-                    rows={12}
+                    onChange={e => setAggregateForm({ ...aggregateForm, description: e.target.value })}
+                    rows={4}
                     className="w-full px-4 py-3 bg-page-bg border border-border-color rounded-xl text-text-primary font-mono text-xs focus:border-primary focus:outline-none resize-none"
                     placeholder="描述事件详情..."
                   />
@@ -1577,12 +926,7 @@ export default function SecurityAlerts() {
               </div>
 
               <div className="flex gap-3 mt-6">
-                <button
-                  onClick={() => setShowAggregateModal(false)}
-                  className="flex-1 py-3 bg-page-bg text-text-secondary rounded-xl hover:bg-white/5 transition-colors"
-                >
-                  取消
-                </button>
+                <button onClick={() => setShowAggregateModal(false)} className="flex-1 py-3 bg-page-bg text-text-secondary rounded-xl hover:bg-white/5 transition-colors">取消</button>
                 <button
                   onClick={handleAggregate}
                   disabled={!aggregateForm.title.trim()}

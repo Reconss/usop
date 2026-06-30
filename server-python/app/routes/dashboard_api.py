@@ -1,27 +1,26 @@
 """
 Dashboard API 路由 - 仪表盘数据接口
+使用真实数据库数据
 """
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, request
 from app.routes.auth import login_required
 from app.database import db
 from app.models import Event, Alert, Asset, ScanTask, DetectionRuleExtended
 from datetime import datetime, timedelta
-from sqlalchemy import func
+from sqlalchemy import func, desc
 
 dashboard_api_bp = Blueprint('dashboard_api', __name__)
-
 
 @dashboard_api_bp.route('/metrics', methods=['GET'])
 @login_required
 def get_metrics():
     """获取仪表盘指标数据"""
     today = datetime.utcnow().date()
-    today_start = datetime.combine(today, datetime.min.time())
     
-    # 总告警数 (改为统计所有告警)
+    # 总告警数
     total_alerts = Alert.query.count()
     
-    # 今日告警数 (保留用于趋势分析)
+    # 今日告警数
     today_alerts = Alert.query.filter(
         func.date(Alert.created_at) == today
     ).count()
@@ -39,31 +38,31 @@ def get_metrics():
     # 资产总数
     total_assets = Asset.query.count()
     
-    # 计算 Agent 健康率 (假设在线的为健康的)
-    total_agents = 10  # 实际应该从数据库查询
-    healthy_agents = 8
+    # 趋势计算 (基于真实数据对比昨天)
+    yesterday = today - timedelta(days=1)
+    yesterday_alerts = Alert.query.filter(
+        func.date(Alert.created_at) == yesterday
+    ).count()
     
-    # 趋势计算 (模拟)
-    alerts_trend = 12.5
-    pending_trend = -5.2
-    assets_trend = 8.3
-    health_trend = 2.1
+    if yesterday_alerts > 0:
+        alerts_trend = round((today_alerts - yesterday_alerts) / yesterday_alerts * 100, 1)
+    else:
+        alerts_trend = 0 if today_alerts == 0 else 100
     
     return jsonify({
         'success': True,
         'data': {
-            'todayAlerts': total_alerts,  # 返回总告警数
+            'todayAlerts': today_alerts,
+            'totalAlerts': total_alerts,
             'pendingEvents': pending_events,
             'totalAssets': total_assets,
             'highRiskAssets': high_risk_assets,
-            'agentHealthRate': healthy_agents / total_agents * 100 if total_agents > 0 else 0,
             'alertsTrend': alerts_trend,
-            'pendingTrend': pending_trend,
-            'assetsTrend': assets_trend,
-            'healthTrend': health_trend
+            'pendingTrend': 0,
+            'assetsTrend': 0,
+            'healthTrend': 0
         }
     })
-
 
 @dashboard_api_bp.route('/event-trend', methods=['GET'])
 @login_required
@@ -72,20 +71,49 @@ def get_event_trend():
     now = datetime.utcnow()
     hours_ago = now - timedelta(hours=24)
     
-    # 模拟趋势数据
     timestamps = []
     critical = []
     high = []
     medium = []
     low = []
     
+    # 从 Alert 表按小时统计
     for i in range(24):
-        hour_time = (hours_ago + timedelta(hours=i)).strftime('%H:00')
+        hour_start = hours_ago + timedelta(hours=i)
+        hour_end = hour_start + timedelta(hours=1)
+        hour_time = hour_start.strftime('%H:00')
+        
         timestamps.append(hour_time)
-        critical.append(max(0, 5 + (hash(f'c{i}') % 10)))
-        high.append(max(0, 15 + (hash(f'h{i}') % 20)))
-        medium.append(max(0, 30 + (hash(f'm{i}') % 30)))
-        low.append(max(0, 50 + (hash(f'l{i}') % 40)))
+        
+        # 按严重级别统计
+        critical_cnt = Alert.query.filter(
+            Alert.created_at >= hour_start,
+            Alert.created_at < hour_end,
+            Alert.severity == 'critical'
+        ).count()
+        
+        high_cnt = Alert.query.filter(
+            Alert.created_at >= hour_start,
+            Alert.created_at < hour_end,
+            Alert.severity == 'high'
+        ).count()
+        
+        medium_cnt = Alert.query.filter(
+            Alert.created_at >= hour_start,
+            Alert.created_at < hour_end,
+            Alert.severity == 'medium'
+        ).count()
+        
+        low_cnt = Alert.query.filter(
+            Alert.created_at >= hour_start,
+            Alert.created_at < hour_end,
+            Alert.severity == 'low'
+        ).count()
+        
+        critical.append(critical_cnt)
+        high.append(high_cnt)
+        medium.append(medium_cnt)
+        low.append(low_cnt)
     
     return jsonify({
         'success': True,
@@ -98,82 +126,112 @@ def get_event_trend():
         }
     })
 
-
 @dashboard_api_bp.route('/event-types', methods=['GET'])
 @login_required
 def get_event_types():
     """获取事件类型分布"""
-    # 模拟数据
-    event_types = [
-        {'name': '网络入侵', 'value': 35, 'color': '#EF4444'},
-        {'name': '恶意软件', 'value': 25, 'color': '#F97316'},
-        {'name': '数据泄露', 'value': 18, 'color': '#EAB308'},
-        {'name': '权限异常', 'value': 12, 'color': '#22C55E'},
-        {'name': '配置变更', 'value': 10, 'color': '#3B82F6'}
-    ]
+    category_stats = db.session.query(
+        Alert.category,
+        func.count(Alert.id).label('count')
+    ).filter(
+        Alert.category.isnot(None),
+        Alert.category != ''
+    ).group_by(
+        Alert.category
+    ).order_by(
+        func.count(Alert.id).desc()
+    ).limit(10).all()
     
-    return jsonify({
-        'success': True,
-        'data': event_types
-    })
-
+    colors = ['#EF4444', '#F97316', '#EAB308', '#22C55E', '#3B82F6', '#8B5CF6', '#EC4899', '#14B8A6', '#F59E0B', '#6366F1']
+    
+    event_types = []
+    for i, row in enumerate(category_stats):
+        severity = 'medium'
+        category_lower = (row.category or '').lower()
+        if any(kw in category_lower for kw in ['attack', 'malware', 'intrusion', 'exploit']):
+            severity = 'critical'
+        elif any(kw in category_lower for kw in ['brute', 'dos', 'ddos']):
+            severity = 'high'
+        
+        event_types.append({
+            'name': row.category or '未知',
+            'value': row.count,
+            'color': colors[i % len(colors)]
+        })
+    
+    if not event_types:
+        event_types = [{'name': '无数据', 'value': 1, 'color': '#6366F1'}]
+    
+    return jsonify({'success': True, 'data': event_types})
 
 @dashboard_api_bp.route('/attack-sources', methods=['GET'])
 @login_required
 def get_attack_sources():
     """获取 Top 攻击源"""
-    # 模拟数据
-    attack_sources = [
-        {'ip': '45.142.212.100', 'country': '俄罗斯', 'count': 1523},
-        {'ip': '185.220.101.50', 'country': '德国', 'count': 892},
-        {'ip': '103.253.145.20', 'country': '越南', 'count': 456},
-        {'ip': '91.234.56.78', 'country': '乌克兰', 'count': 234},
-        {'ip': '192.168.1.105', 'country': '内网', 'count': 89}
-    ]
+    ip_stats = db.session.query(
+        Alert.src_ip,
+        func.count(Alert.id).label('count')
+    ).filter(
+        Alert.src_ip.isnot(None),
+        Alert.src_ip != ''
+    ).group_by(
+        Alert.src_ip
+    ).order_by(
+        func.count(Alert.id).desc()
+    ).limit(10).all()
     
-    return jsonify({
-        'success': True,
-        'data': attack_sources
-    })
-
+    attack_sources = []
+    for row in ip_stats:
+        ip = str(row[0]) if row[0] else ''
+        first_octet = int(ip.split('.')[0]) if ip and '.' in ip else 0
+        country = '海外' if 1 <= first_octet <= 223 else '内网'
+        
+        attack_sources.append({
+            'ip': ip,
+            'country': country,
+            'count': row[1]
+        })
+    
+    if not attack_sources:
+        attack_sources = [{'ip': '192.168.1.100', 'country': '内网', 'count': 0}]
+    
+    return jsonify({'success': True, 'data': attack_sources})
 
 @dashboard_api_bp.route('/risk-assets', methods=['GET'])
 @login_required
 def get_risk_assets():
     """获取高风险资产"""
-    assets = Asset.query.order_by(Asset.risk_score.desc()).limit(5).all()
+    assets = Asset.query.filter(
+        Asset.risk_score.isnot(None),
+        Asset.risk_score > 0
+    ).order_by(
+        Asset.risk_score.desc()
+    ).limit(10).all()
     
     data = []
     for asset in assets:
         data.append({
             'id': str(asset.id),
-            'name': asset.name,
+            'name': asset.name or asset.hostname or asset.ip or '未知',
             'type': asset.type or 'unknown',
-            'riskScore': asset.risk_score,
+            'riskScore': asset.risk_score or 0,
             'lastSeen': asset.updated_at.isoformat() if asset.updated_at else None
         })
     
-    # 如果数据库为空，添加模拟数据
     if not data:
-        data = [
-            {'id': '1', 'name': 'web-server-01.company.com', 'type': 'domain', 'riskScore': 85, 'lastSeen': '2026-04-27T10:00:00Z'},
-            {'id': '2', 'name': '192.168.1.50', 'type': 'ip', 'riskScore': 72, 'lastSeen': '2026-04-27T09:30:00Z'},
-            {'id': '3', 'name': 'api-gateway.company.com', 'type': 'domain', 'riskScore': 65, 'lastSeen': '2026-04-27T09:00:00Z'},
-            {'id': '4', 'name': '192.168.1.100', 'type': 'ip', 'riskScore': 58, 'lastSeen': '2026-04-27T08:30:00Z'},
-            {'id': '5', 'name': 'db-server-01.company.com', 'type': 'domain', 'riskScore': 45, 'lastSeen': '2026-04-27T08:00:00Z'}
-        ]
+        data = [{'id': '1', 'name': '无风险资产数据', 'type': 'unknown', 'riskScore': 0, 'lastSeen': None}]
     
-    return jsonify({
-        'success': True,
-        'data': data
-    })
-
+    return jsonify({'success': True, 'data': data})
 
 @dashboard_api_bp.route('/recent-alerts', methods=['GET'])
 @login_required
 def get_recent_alerts():
     """获取最近告警"""
-    alerts = Alert.query.order_by(Alert.created_at.desc()).limit(10).all()
+    limit = request.args.get('limit', 10, type=int)
+    
+    alerts = Alert.query.order_by(
+        Alert.created_at.desc()
+    ).limit(limit).all()
     
     data = []
     for alert in alerts:
@@ -183,14 +241,12 @@ def get_recent_alerts():
             'severity': alert.severity,
             'status': alert.status,
             'source': alert.source,
+            'category': alert.category,
+            'src_ip': alert.src_ip,
             'created_at': alert.created_at.isoformat() if alert.created_at else None
         })
     
-    return jsonify({
-        'success': True,
-        'data': data
-    })
-
+    return jsonify({'success': True, 'data': data})
 
 @dashboard_api_bp.route('/summary', methods=['GET'])
 @login_required

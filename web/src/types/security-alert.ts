@@ -6,7 +6,7 @@
 export type Severity = 'critical' | 'high' | 'medium' | 'low';
 
 /** 告警/事件状态 */
-export type AlertStatus = 'new' | 'investigating' | 'closed' | 'false_positive';
+export type AlertStatus = 'new' | 'pending_approval' | 'investigating' | 'closed' | 'false_positive';
 
 /** 数据源类型 */
 export type DataSourceType = 'pull' | 'push';
@@ -38,6 +38,9 @@ export type EventActionType =
   | 'enriched'          // 事件丰富
   | 'merged'            // 合并事件
   | 'escalated'         // 升级处理
+  | 'approval_requested' // 请求审批
+  | 'approved'          // 审批通过
+  | 'rejected'          // 审批拒绝
   | 'closed';           // 关闭事件
 
 /** 过滤操作符 */
@@ -399,6 +402,9 @@ export const EventActionLabels: Record<EventActionType, string> = {
   enriched: '事件丰富',
   merged: '合并事件',
   escalated: '升级处理',
+  approval_requested: '请求审批',
+  approved: '审批通过',
+  rejected: '审批拒绝',
   closed: '关闭事件'
 };
 
@@ -413,6 +419,9 @@ export const EventActionColors: Record<EventActionType, { text: string; bg: stri
   enriched: { text: 'text-indigo-400', bg: 'bg-indigo-400/10' },
   merged: { text: 'text-teal-400', bg: 'bg-teal-400/10' },
   escalated: { text: 'text-red-400', bg: 'bg-red-400/10' },
+  approval_requested: { text: 'text-amber-400', bg: 'bg-amber-400/10' },
+  approved: { text: 'text-green-400', bg: 'bg-green-400/10' },
+  rejected: { text: 'text-rose-400', bg: 'bg-rose-400/10' },
   closed: { text: 'text-gray-400', bg: 'bg-gray-400/10' }
 };
 
@@ -434,12 +443,14 @@ export const StatusLabels: Record<AlertStatus, string> = {
   new: '新建',
   investigating: '调查中',
   closed: '已关闭',
-  false_positive: '误报'
+  false_positive: '误报',
+  pending_approval: '待审批'
 };
 
 export const StatusConfig: Record<AlertStatus, { color: string; text: string; bg: string; border: string }> = {
   new: { color: 'bg-blue-500', text: 'text-blue-400', bg: 'bg-blue-500/10', border: 'border-blue-500/20' },
   investigating: { color: 'bg-orange-500', text: 'text-orange-400', bg: 'bg-orange-500/10', border: 'border-orange-500/20' },
   closed: { color: 'bg-emerald-500', text: 'text-emerald-400', bg: 'bg-emerald-500/10', border: 'border-emerald-500/20' },
-  false_positive: { color: 'bg-gray-500', text: 'text-gray-400', bg: 'bg-gray-500/10', border: 'border-gray-500/20' }
+  false_positive: { color: 'bg-gray-500', text: 'text-gray-400', bg: 'bg-gray-500/10', border: 'border-gray-500/20' },
+  pending_approval: { color: 'bg-amber-500', text: 'text-amber-400', bg: 'bg-amber-500/10', border: 'border-amber-500/20' }
 };

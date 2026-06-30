@@ -55,7 +55,13 @@ export async function request<T = any>(
     throw new Error(`无法连接到API服务，请确保后端服务运行在 ${useDirectConnect ? BACKEND_FALLBACK : 'localhost:5001'}`);
   }
   
-  const data = JSON.parse(responseText);
+  let data: any;
+  try {
+    data = JSON.parse(responseText);
+  } catch {
+    // 非JSON响应（如代理错误页），返回原始文本
+    throw new Error(responseText.substring(0, 200) || `请求失败 (${response.status})`);
+  }
   
   if (!response.ok) {
     if (response.status === 401) {
@@ -122,6 +128,14 @@ export const userApi = {
     }),
 };
 
+
+// System Status API
+export const systemStatusApi = {
+  getStorageStatus: () => request('/system-status/storage-status'),
+  getDataFlowStatus: () => request('/system-status/data-flow-status'),
+  getQuickStats: () => request('/system-status/quick-stats'),
+};
+
 // Dashboard API
 export const dashboardApi = {
   getMetrics: () => request('/dashboard-api/metrics'),
@@ -167,7 +181,7 @@ export const alertsApi = {
   deleteAlert: (id: number) => request(`/alerts-api/alerts/${id}`, { method: 'DELETE' }),
   batchDelete: (alert_ids: number[]) =>
     request('/alerts-api/alerts/batch', { method: 'DELETE', body: { alert_ids } }),
-  aggregateAlerts: (data: { alert_ids: number[]; title: string; severity?: string; description?: string }) =>
+  aggregateAlerts: (data: { alert_ids: number[]; title: string; severity?: string; description?: string; category?: string; include_related?: boolean; mark_status?: string }) =>
     request('/alerts-api/alerts/aggregate', { method: 'POST', body: data }),
   getAlertStats: () => request('/alerts-api/alerts/stats'),
   getAlertTrend: (bucket?: string, start_time?: string, end_time?: string) => {
@@ -186,6 +200,80 @@ export const alertsApi = {
     return request(`/alerts-api/alerts/export?${searchParams.toString()}`);
   },
   initHypertable: () => request('/alerts-api/alerts/init-hypertable', { method: 'POST' }),
+
+  // ===== Graylog-style ES 搜索 API =====
+  searchAlerts: (params: {
+    q?: string;
+    page?: number;
+    page_size?: number;
+    aggregations?: string[];
+    agg_field?: string;
+    histogram_interval?: string;
+    start_time?: string;
+    end_time?: string;
+  }) => {
+    const sp = new URLSearchParams();
+    if (params.q) sp.append('q', params.q);
+    if (params.page) sp.append('page', String(params.page));
+    if (params.page_size) sp.append('page_size', String(params.page_size));
+    if (params.agg_field) sp.append('agg_field', params.agg_field);
+    if (params.histogram_interval) sp.append('histogram_interval', params.histogram_interval);
+    if (params.start_time) sp.append('start_time', params.start_time);
+    if (params.end_time) sp.append('end_time', params.end_time);
+    if (params.aggregations) params.aggregations.forEach(a => sp.append('aggregations', a));
+    return request(`/alerts-api/alerts/search?${sp.toString()}`);
+  },
+
+  quickValues: (field: string, start_time?: string, end_time?: string) => {
+    const sp = new URLSearchParams();
+    sp.append('field', field);
+    if (start_time) sp.append('start_time', start_time);
+    if (end_time) sp.append('end_time', end_time);
+    return request(`/alerts-api/alerts/quick-values?${sp.toString()}`);
+  },
+
+  fieldStats: (field: string, start_time?: string, end_time?: string) => {
+    const sp = new URLSearchParams();
+    sp.append('field', field);
+    if (start_time) sp.append('start_time', start_time);
+    if (end_time) sp.append('end_time', end_time);
+    return request(`/alerts-api/alerts/field-stats?${sp.toString()}`);
+  },
+
+  // ===== Related Alerts =====
+  relatedAlerts: (alertId: string, limit?: number) => {
+    const sp = new URLSearchParams();
+    if (limit) sp.append('limit', String(limit));
+    return request(`/alerts-api/alerts/${alertId}/related?${sp.toString()}`);
+  },
+
+  // ===== Date Histogram =====
+  dateHistogram: (params?: {
+    interval?: string;
+    start_time?: string;
+    end_time?: string;
+    query?: string;
+  }) => {
+    const sp = new URLSearchParams();
+    if (params?.query) sp.append('q', params.query);
+    if (params?.start_time) sp.append('start_time', params.start_time);
+    if (params?.end_time) sp.append('end_time', params.end_time);
+    sp.append('aggregations', 'date_histogram');
+    sp.append('histogram_interval', params?.interval || '1h');
+    return request(`/alerts-api/alerts/search?${sp.toString()}`);
+  },
+
+  // ===== Streams API =====
+  getStreams: () => request('/alerts-api/alerts/streams'),
+  getStream: (id: string) => request(`/alerts-api/alerts/streams/${id}`),
+  createStream: (data: any) => request('/alerts-api/alerts/streams', { method: 'POST', body: data }),
+  updateStream: (id: string, data: any) => request(`/alerts-api/alerts/streams/${id}`, { method: 'PUT', body: data }),
+  deleteStream: (id: string) => request(`/alerts-api/alerts/streams/${id}`, { method: 'DELETE' }),
+
+  // ===== Saved Searches API =====
+  getSavedSearches: () => request('/alerts-api/alerts/saved-searches'),
+  createSavedSearch: (data: any) => request('/alerts-api/alerts/saved-searches', { method: 'POST', body: data }),
+  deleteSavedSearch: (id: string) => request(`/alerts-api/alerts/saved-searches/${id}`, { method: 'DELETE' }),
 };
 
 // Events API (使用 events API 作为后端)
@@ -240,13 +328,18 @@ export const scansApi = {
     if (params?.page) searchParams.append('page', String(params.page));
     if (params?.page_size) searchParams.append('page_size', String(params.page_size));
     if (params?.status) searchParams.append('status', params.status);
-    return request(`/scans-api/scans?${searchParams.toString()}`);
+    return request(`/scans-api/tasks?${searchParams.toString()}`);
   },
   
-  getScan: (id: number) => request(`/scans-api/scans/${id}`),
-  createScan: (data: any) => request('/scans-api/scans', { method: 'POST', body: data }),
-  startScan: (id: number) => request(`/scans-api/scans/${id}/start`, { method: 'POST' }),
-  stopScan: (id: number) => request(`/scans-api/scans/${id}/stop`, { method: 'POST' }),
+  getScan: (id: number) => request(`/scans-api/tasks/${id}`),
+  createScan: (data: any) => request('/scans-api/tasks', { method: 'POST', body: data }),
+  startScan: (id: number) => request(`/scans-api/tasks/${id}/start`, { method: 'POST' }),
+  stopScan: (id: number) => request(`/scans-api/tasks/${id}/pause`, { method: 'POST' }),
+  resumeScan: (id: number) => request(`/scans-api/tasks/${id}/resume`, { method: 'POST' }),
+  
+  // 代理配置
+  getProxyConfig: () => request('/scans-api/tasks/proxy'),
+  setProxyConfig: (data: any) => request('/scans-api/tasks/proxy', { method: 'POST', body: data }),
 };
 
 // Rules API
@@ -300,6 +393,26 @@ export const playbooksApi = {
   updatePlaybook: (id: number, data: any) => request(`/playbooks-api/playbooks/${id}`, { method: 'PUT', body: data }),
   deletePlaybook: (id: number) => request(`/playbooks-api/playbooks/${id}`, { method: 'DELETE' }),
   executePlaybook: (id: string | number, data?: any) => request(`/playbooks-api/playbooks/${id}/execute`, { method: 'POST', body: data }),
+  
+  // 执行记录
+  getExecutions: (params?: { page?: number; page_size?: number }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.page) searchParams.append('page', String(params.page));
+    if (params?.page_size) searchParams.append('page_size', String(params.page_size));
+    return request(`/playbooks-api/playbooks/executions?${searchParams.toString()}`);
+  },
+  getExecution: (id: string) => request(`/playbooks-api/playbooks/executions/${id}`),
+  
+  // 审批相关
+  getApprovals: (params?: { page?: number; limit?: number; status?: string }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.page) searchParams.append('page', String(params.page));
+    if (params?.limit) searchParams.append('limit', String(params.limit));
+    if (params?.status) searchParams.append('status', params.status);
+    return request(`/playbooks-api/playbooks/approvals?${searchParams.toString()}`);
+  },
+  processApproval: (approvalId: string, approved: boolean) => 
+    request(`/playbooks-api/playbooks/approvals/${approvalId}`, { method: 'POST', body: { approved } }),
 };
 
 // Hunting API
@@ -315,9 +428,38 @@ export const huntingApi = {
   getQueryResults: (id: number) => request(`/hunting-api/queries/${id}/results`),
   deleteQuery: (id: number) => request(`/hunting-api/queries/${id}`, { method: 'DELETE' }),
   executeQuery: (id: number) => request(`/hunting-api/queries/${id}/execute`, { method: 'POST' }),
+  executePlaybook: (data: { nodes: any[]; context?: Record<string, any> }) =>
+    request('/playbooks/execute', { method: 'POST', body: data }),
+  executeSingleNode: (nodeType: string, data: any) =>
+    request('/playbooks/execute/' + nodeType, { method: 'POST', body: data }),
+  getTemplates: () => request('/hunting/templates'),
+  search: (data: { query: string; page?: number; page_size?: number; severity?: string; source?: string; start_time?: string; end_time?: string }) =>
+    request('/hunting/search', { method: 'POST', body: data }),
+  getStats: () => request('/hunting/stats'),
+  getIndicators: () => request('/hunting/indicators'),
 };
 
 // Vulnerabilities API
+// n8n API - direct fetch (不经过 request 的 /api 前缀)
+const n8nBase = '/n8n';
+async function n8nFetch(path: string, options: RequestInit = {}): Promise<any> {
+  const resp = await fetch(`${n8nBase}${path}`, options);
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    throw new Error(`n8n API error ${resp.status}: ${text.substring(0, 200)}`);
+  }
+  return resp.json();
+}
+
+export const n8nApi = {
+  getWorkflows: () => n8nFetch('/api/v1/workflows'),
+  getWorkflow: (id: string) => n8nFetch('/api/v1/workflows/' + id),
+  createWorkflow: (data: any) => n8nFetch('/api/v1/workflows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }),
+  activateWorkflow: (id: string) => n8nFetch('/api/v1/workflows/' + id + '/activate', { method: 'POST' }),
+  deactivateWorkflow: (id: string) => n8nFetch('/api/v1/workflows/' + id + '/deactivate', { method: 'POST' }),
+  triggerWebhook: (webhookPath: string, data: any) => n8nFetch('/webhook/' + webhookPath, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }),
+};
+
 export const vulnerabilitiesApi = {
   getVulnerabilities: (params?: { page?: number; page_size?: number; severity?: string; type?: string }) => {
     const searchParams = new URLSearchParams();
@@ -331,6 +473,15 @@ export const vulnerabilitiesApi = {
   getVulnerability: (id: number) => request(`/vulnerabilities-api/vulnerabilities/${id}`),
   createVulnerability: (data: any) => request('/vulnerabilities-api/vulnerabilities', { method: 'POST', body: data }),
   updateVulnerability: (id: number, data: any) => request(`/vulnerabilities-api/vulnerabilities/${id}`, { method: 'PUT', body: data }),
+  
+  // 漏洞评级配置
+  getAssessmentConfig: () => request('/vulnerabilities-api/assessment/config'),
+  saveAssessmentConfig: (rules: any[]) => request('/vulnerabilities-api/assessment/config', { method: 'POST', body: { rules } }),
+  recalculateAll: () => request('/vulnerabilities-api/assessment/recalculate', { method: 'POST' }),
+  
+  // Nessus 导入
+  importNessus: (items: any[], type: string) => request('/vulnerabilities-api/nessus/import', { method: 'POST', body: { items, type } }),
+  previewNessus: (items: any[]) => request('/vulnerabilities-api/nessus/preview', { method: 'POST', body: { items } }),
 };
 
 // Audit Logs API
@@ -581,7 +732,9 @@ export const aiApi = {
   getLlmProviders: () => request('/ai-api/llm-providers'),
   addLlmProvider: (data: any) => request('/ai-api/llm-providers', { method: 'POST', body: data }),
   updateLlmProvider: (id: string, data: any) => request(`/ai-api/llm-providers/${id}`, { method: 'PUT', body: data }),
-  deleteLlmProvider: (id: string) => request(`/ai-api/llm-providers/${id}`, { method: 'DELETE' }),
+  deleteLlmProvider: (id: string) => request(`/ai-api/llm-providers/${id}`, { method: "DELETE" }),
+  setDefaultLlmProvider: (id: string) => request(`/ai-api/llm-providers/${id}/set-default`, { method: "POST" }),
+  getDefaultLlmProvider: () => request("/ai-api/llm-providers/default"),
 
   // ===== Agent Provider Management =====
   getAgentProviders: () => request('/ai-api/agent-providers'),
@@ -688,10 +841,29 @@ export const pipelineMappingsApi = {
 
 // Notifications API
 export const notificationsApi = {
-  getNotifications: () => request('/notifications'),
-  markAsRead: (id: number) => request(`/notifications/${id}/read`, { method: 'PATCH' }),
+  getNotifications: (params?: { page?: number; limit?: number; type?: string }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.page) searchParams.append('page', String(params.page));
+    if (params?.limit) searchParams.append('limit', String(params.limit));
+    if (params?.type) searchParams.append('type', params.type);
+    return request(`/notifications?${searchParams.toString()}`);
+  },
+  getUnreadCount: () => request('/notifications/unread-count'),
+  markAsRead: (id: string) => request(`/notifications/${id}/read`, { method: 'PATCH' }),
   markAllAsRead: () => request('/notifications/mark-all-read', { method: 'POST' }),
-  deleteNotification: (id: number) => request(`/notifications/${id}`, { method: 'DELETE' }),
+  deleteNotification: (id: string) => request(`/notifications/${id}`, { method: 'DELETE' }),
+  
+  // 审批相关
+  getApprovals: (params?: { page?: number; limit?: number; status?: string }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.page) searchParams.append('page', String(params.page));
+    if (params?.limit) searchParams.append('limit', String(params.limit));
+    if (params?.status) searchParams.append('status', params.status);
+    return request(`/notifications/approvals?${searchParams.toString()}`);
+  },
+  getApproval: (id: string) => request(`/notifications/approvals/${encodeURIComponent(String(id))}`),
+  processApproval: (id: string, approved: boolean) => 
+    request(`/notifications/approvals/${encodeURIComponent(String(id))}`, { method: 'POST', body: { approved } }),
 };
 
 // Event Actions API (事件处置记录)
@@ -755,8 +927,8 @@ export const eventActionsApi = {
     request(`/event-actions-api/events/${eventId}`, { method: 'DELETE' }),
 
   // 执行剧本
-  executePlaybook: (eventId: string, playbookId: string | number) =>
-    request(`/event-actions-api/events/${eventId}/playbooks/${playbookId}/execute`, { method: 'POST', body: {} }),
+  executePlaybook: (eventId: string, playbookId: string | number, data?: { params?: Record<string, string>; event?: any }) =>
+    request(`/event-actions-api/events/${eventId}/playbooks/${playbookId}/execute`, { method: 'POST', body: data || {} }),
 
   // 获取可用剧本
   getEventPlaybooks: (eventId: string) =>
@@ -872,4 +1044,30 @@ export const workflowApi = {
   list: () => request("/ai-api/workflows"),
   save: (data: any) => request("/ai-api/workflows", {method:"POST",body:data}),
   delete: (id:string) => request("/ai-api/workflows/"+id, {method:"DELETE"}),
+};
+
+// Search API (全文搜索 + 调查)
+export const searchApi = {
+  // 关键词搜索
+  search: (keyword: string, limit?: number) => 
+    request(`/search/search?q=${encodeURIComponent(keyword)}${limit ? '&limit=' + limit : ''}`),
+  
+  // IP搜索
+  searchByIp: (ip: string, limit?: number) => 
+    request(`/search/search/ip?ip=${ip}${limit ? '&limit=' + limit : ''}`),
+  
+  // IP调查
+  investigateIp: (ip: string) => 
+    request(`/search/search/investigate-ip?ip=${ip}`),
+  
+  // 高级搜索
+  advancedSearch: (conditions: {
+    keyword?: string;
+    ip?: string;
+    severity?: string;
+    category?: string;
+    start_time?: string;
+    end_time?: string;
+    limit?: number;
+  }) => request('/search/search/advanced', { method: 'POST', body: conditions }),
 };

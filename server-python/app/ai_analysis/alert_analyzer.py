@@ -32,11 +32,13 @@ def analyze_alert_batch(limit: int = 50) -> dict:
             return {"success": True, "analyzed": 0, "events_created": 0, "message": "无未分析的告警"}
 
         alerts = [dict(r._mapping) for r in rows]
+        logger.info(f"找到 {len(alerts)} 条未处理告警")
         results = _analyze_with_llm(alerts)
 
         events_created = 0
         false_positives = 0
 
+        logger.info(f"_analyze_with_llm 返回 {len(results)} 条结果")
         for item in results:
             alert_code = item.get("alert_code", "")
             analysis = item.get("analysis", {})
@@ -57,7 +59,11 @@ def analyze_alert_batch(limit: int = 50) -> dict:
                 false_positives += 1
             elif is_attack and priority in ("high", "critical"):
                 # 高风险 → 创建事件 + 状态 closed
-                event_id = _create_event(alert_code, analysis)
+                try:
+                    event_id = _create_event(alert_code, analysis)
+                except Exception as e:
+                    logger.error(f"创建事件失败: {alert_code} - {e}")
+                    event_id = "" 
                 sess.execute(text("""
                     UPDATE alerts SET status = 'closed',
                         event_ids = COALESCE(event_ids, '[]'::jsonb) || CAST(:eid_arr AS jsonb),
@@ -79,7 +85,9 @@ def analyze_alert_batch(limit: int = 50) -> dict:
                     "ai_analysis": analysis
                 }, ensure_ascii=False)})
 
+        logger.info(f"准备提交 {len(results)} 条告警更新")
         sess.commit()
+        logger.info(f"提交完成")
         return {
             "success": True, "analyzed": len(results),
             "events_created": events_created,

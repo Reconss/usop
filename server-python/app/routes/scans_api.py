@@ -146,7 +146,7 @@ def delete_task(task_id):
 @scans_api_bp.route('/tasks/<int:task_id>/start', methods=['POST'])
 @login_required
 def start_task(task_id):
-    """启动扫描任务"""
+    """启动扫描任务（后台线程执行实际扫描）"""
     task = ScanTask.query.get(task_id)
     if not task:
         return jsonify({'success': False, 'error': '任务不存在'}), 404
@@ -157,6 +157,14 @@ def start_task(task_id):
     task.status = 'running'
     task.started_at = datetime.utcnow()
     db.session.commit()
+    
+    # 启动后台扫描线程（传入当前 app 实例）
+    from app.engine.scanner import run_scan_task
+    import threading
+    from flask import current_app
+    _app = current_app._get_current_object()
+    t = threading.Thread(target=run_scan_task, args=(task_id, _app), daemon=True)
+    t.start()
     
     return jsonify({
         'success': True,
@@ -272,6 +280,98 @@ def create_profile():
         'success': True,
         'data': profile.to_dict()
     }), 201
+
+
+@scans_api_bp.route('/tasks/proxy', methods=['GET'])
+@login_required
+def get_proxy_config():
+    """获取扫描代理配置"""
+    from app.engine.scanner import ProxyConfig
+    pc = ProxyConfig.load_from_db()
+    return jsonify({'success': True, 'data': pc.to_dict()})
+
+
+@scans_api_bp.route('/tasks/proxy', methods=['POST'])
+@login_required
+def set_proxy_config():
+    """设置扫描代理配置"""
+    data = request.get_json() or {}
+    from app.models import SystemConfig
+    cfg = SystemConfig.query.filter_by(key='scan_proxy_config').first()
+    if not cfg:
+        cfg = SystemConfig(key='scan_proxy_config', value='{}', category='scan')
+        db.session.add(cfg)
+    cfg.value = json.dumps({
+        "enabled": data.get("enabled", False),
+        "type": data.get("type", "http"),
+        "host": data.get("host", ""),
+        "port": int(data.get("port", 1080)),
+        "username": data.get("username", ""),
+        "password": data.get("password", "")
+    }, ensure_ascii=False)
+    db.session.commit()
+    return jsonify({'success': True, 'message': '代理配置已保存'})
+
+
+@scans_api_bp.route('/tasks/callback', methods=['POST'])
+def scan_callback():
+    """扫描容器回调接口 — 接收异步扫描结果"""
+    data = request.get_json() or {}
+    scan_id = data.get("scan_id", "")
+    results = data.get("results", {})
+
+    # 找到对应的扫描任务（通过 scan_id 查找）
+    from app.models import ScanTask, ScanResult
+    task = ScanTask.query.filter(
+        ScanTask.results['scan_id'].as_string() == scan_id
+    ).first() if scan_id else None
+
+    if not task:
+        logger.warning(f"收到未匹配的回调: scan_id={scan_id}")
+        return jsonify({"success": False, "error": "任务未找到"}), 404
+
+    all_findings = []
+    for t, t_results in results.items():
+        if isinstance(t_results, dict):
+            for scan_subtype, items in t_results.items():
+                if isinstance(items, list):
+                    for item in items:
+                        if "error" in item:
+                            continue
+                        sr = ScanResult(task_id=task.id, type=scan_subtype, target=t, data=item)
+                        db.session.add(sr)
+                        all_findings.append(item)
+
+    task.status = "completed"
+    task.completed_at = datetime.utcnow()
+    task.progress = 100
+    task.results = {
+        "scanner_service": True,
+        "scan_id": scan_id,
+        "count": len(all_findings),
+        "results": all_findings[:100],
+        "remote_scan": results
+    }
+    db.session.commit()
+    logger.info(f"回调完成: scan_id={scan_id}, 共 {len(all_findings)} 条")
+
+    return jsonify({"success": True, "data": {"imported": len(all_findings)}})
+
+
+@scans_api_bp.route('/tasks/<int:task_id>/results', methods=['GET'])
+@login_required
+def get_task_results(task_id):
+    """获取扫描任务的结果详情"""
+    from app.models import ScanResult
+    results = ScanResult.query.filter_by(task_id=task_id).order_by(ScanResult.created_at).all()
+    return jsonify({
+        'success': True,
+        'data': {
+            'task_id': task_id,
+            'count': len(results),
+            'items': [r.to_dict() for r in results]
+        }
+    })
 
 
 @scans_api_bp.route('/tasks/stats', methods=['GET'])

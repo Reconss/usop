@@ -18,7 +18,7 @@ export type AlertSource = 'WAF' | 'HIDS' | 'NIDS' | 'EDR' | 'SIEM' | 'SOC' | 'Cl
 export type Severity = 'critical' | 'high' | 'medium' | 'low';
 
 /** 告警状态 */
-export type AlertStatus = 'new' | 'investigating' | 'closed' | 'false_positive';
+export type AlertStatus = 'new' | 'investigating' | 'closed' | 'false_positive' | 'ai_analyzed';
 
 /** 通用告警接口 - 统一不同来源的告警格式 */
 export interface UnifiedAlert {
@@ -58,6 +58,7 @@ export interface UnifiedAlert {
   // 关联信息
   eventId?: number;
   eventCode?: string;
+  eventIds: string[];
   relatedAlertIds: number[];
   aggregated: boolean;
   aggregatedCount: number;
@@ -131,7 +132,8 @@ export const STATUS_CONFIG: Record<AlertStatus, { label: string; color: string; 
   new: { label: '新建', color: 'bg-blue-500', textColor: 'text-blue-400', bgColor: 'bg-blue-500/10' },
   investigating: { label: '调查中', color: 'bg-orange-500', textColor: 'text-orange-400', bgColor: 'bg-orange-500/10' },
   closed: { label: '已关闭', color: 'bg-emerald-500', textColor: 'text-emerald-400', bgColor: 'bg-emerald-500/10' },
-  false_positive: { label: '误报', color: 'bg-gray-500', textColor: 'text-gray-400', bgColor: 'bg-gray-500/10' }
+  false_positive: { label: '误报', color: 'bg-gray-500', textColor: 'text-gray-400', bgColor: 'bg-gray-500/10' },
+  ai_analyzed: { label: '已分析', color: 'bg-purple-500', textColor: 'text-purple-400', bgColor: 'bg-purple-500/10' }
 };
 
 // ==================== 工具函数 ====================
@@ -187,7 +189,8 @@ export function normalizeAlert(rawAlert: any): UnifiedAlert {
     timestamp: rawAlert.timestamp || rawAlert.time || rawAlert.created_at || new Date().toISOString(),
     
     eventId: rawAlert.event_id || rawAlert.eventId,
-    eventCode: rawAlert.event_code || rawAlert.eventCode,
+    eventIds: rawAlert.event_ids || rawAlert.eventIds || [],
+    eventCode: rawAlert.event_code || rawAlert.eventCode || (rawAlert.extra_data?.incident_id) || (rawAlert.event_ids && rawAlert.event_ids.length > 0 ? rawAlert.event_ids[0] : undefined),
     relatedAlertIds: rawAlert.related_alert_ids || rawAlert.relatedAlertIds || [],
     aggregated: rawAlert.aggregated || false,
     aggregatedCount: rawAlert.aggregated_count || rawAlert.aggregatedCount || 0,
@@ -785,6 +788,7 @@ export default function SecurityAlertCenter() {
             <option value="investigating">调查中</option>
             <option value="closed">已关闭</option>
             <option value="false_positive">误报</option>
+            <option value="ai_analyzed">已分析</option>
           </select>
 
           {/* 类别筛选 */}
@@ -1259,6 +1263,18 @@ function AlertRow({
       <span className={`px-2 py-0.5 rounded text-xs ${STATUS_CONFIG[alert.status].bgColor} ${STATUS_CONFIG[alert.status].textColor} flex-shrink-0`}>
         {STATUS_CONFIG[alert.status].label}
       </span>
+      {/* 关联事件 */}
+      {alert.eventCode && (
+        <span className="px-2 py-0.5 rounded text-xs bg-cyan-500/10 text-cyan-400 flex-shrink-0">
+          事件 {alert.eventCode}
+        </span>
+      )}
+      {/* AI 已分析标记 */}
+      {alert.status === 'ai_analyzed' && (
+        <span className="px-2 py-0.5 rounded text-xs bg-purple-500/10 text-purple-400 flex-shrink-0 flex items-center gap-1">
+          <Zap size={12} /> AI
+        </span>
+      )}
       
       {/* 主信息 */}
       <div className="flex-1 min-w-0">
@@ -1492,6 +1508,46 @@ function AlertDetailPanel({
             </div>
           </section>
           
+          {/* AI 分析结果 */}
+          {alert.extraData && (alert.extraData as any).ai_analysis && (
+          <section>
+            <h4 className="text-sm font-medium text-text-secondary mb-3">AI 分析结果</h4>
+            <div className="glass-card rounded-lg p-4 space-y-2">
+              <div>
+                <div className="text-xs text-text-muted">研判结论</div>
+                <div className="text-sm text-text-primary">
+                  {(alert.extraData as any).ai_verdict === 'attack' ? '⚠ 确认攻击' :
+                   (alert.extraData as any).ai_verdict === 'false_positive' ? '✅ 误报' : '-'}
+                </div>
+              </div>
+              {(alert.extraData as any).ai_analysis?.reason && (
+              <div>
+                <div className="text-xs text-text-muted">分析理由</div>
+                <div className="text-sm text-text-primary">{(alert.extraData as any).ai_analysis.reason}</div>
+              </div>
+              )}
+              {(alert.extraData as any).ai_analysis?.suggested_action && (
+              <div>
+                <div className="text-xs text-text-muted">建议措施</div>
+                <div className="text-sm text-text-primary">{(alert.extraData as any).ai_analysis.suggested_action}</div>
+              </div>
+              )}
+              {(alert.extraData as any).incident_id && (
+              <div>
+                <div className="text-xs text-text-muted">关联事件ID</div>
+                <div className="text-sm text-text-primary font-mono">{(alert.extraData as any).incident_id}</div>
+              </div>
+              )}
+              {(alert.extraData as any).ai_analyzed_at && (
+              <div>
+                <div className="text-xs text-text-muted">分析时间</div>
+                <div className="text-sm text-text-primary">{new Date((alert.extraData as any).ai_analyzed_at).toLocaleString('zh-CN')}</div>
+              </div>
+              )}
+            </div>
+          </section>
+          )}
+          
           {/* 原始日志 */}
           <section>
             <div className="flex items-center justify-between mb-3">
@@ -1519,17 +1575,7 @@ function AlertDetailPanel({
                 <pre className="text-xs text-text-primary font-mono whitespace-pre-wrap break-all bg-page-bg p-2 rounded">
                   {alert.rawLog}
                 </pre>
-                
-                {alert.parsedData && Object.keys(alert.parsedData).length > 0 && (
-                  <>
-                    <div className="flex items-center justify-between mt-4 mb-2">
-                      <span className="text-xs text-text-muted">解析后数据</span>
-                    </div>
-                    <pre className="text-xs text-text-primary font-mono whitespace-pre-wrap break-all bg-page-bg p-2 rounded">
-                      {JSON.stringify(alert.parsedData, null, 2)}
-                    </pre>
-                  </>
-                )}
+
               </div>
             )}
           </section>

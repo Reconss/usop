@@ -1,4 +1,8 @@
 """
+⚠️ DEPRECATED (Sprint 5/6): 告警相关功能已迁移至 Elasticsearch（es_alert_store.py）。
+   标记 [DEPRECATED] 的函数仅为旧前端兼容保留，新代码请使用 es_store。
+   非告警功能（原始日志/解析日志/指标）仍通过 TimescaleDB 运行。
+
 TimescaleDB 连接模块 - 用于存储告警日志时序数据
 
 数据库端口说明:
@@ -122,6 +126,7 @@ def get_tsdb():
     return tsdb
 
 
+# [DEPRECATED] → 使用 es_store 替代
 def insert_alert_log(session, alert_data: dict) -> int:
     """
     插入告警日志到 TimescaleDB
@@ -159,6 +164,7 @@ def insert_alert_log(session, alert_data: dict) -> int:
     return result.scalar()
 
 
+# [DEPRECATED] → 使用 es_store 替代
 def batch_insert_alert_logs(session, alerts: list) -> int:
     """
     批量插入告警日志
@@ -199,6 +205,7 @@ def batch_insert_alert_logs(session, alerts: list) -> int:
     return result.rowcount
 
 
+# [DEPRECATED] → 使用 es_store 替代
 def query_alert_logs(session, start_time, end_time=None, severity=None, 
                      rule_id=None, source=None, limit=100, offset=0) -> list:
     """
@@ -252,6 +259,7 @@ def query_alert_logs(session, start_time, end_time=None, severity=None,
     return [dict(row._mapping) for row in result]
 
 
+# [DEPRECATED] → 使用 es_store 替代
 def get_alert_stats(session, start_time, end_time=None, group_by='severity') -> dict:
     """
     获取告警统计
@@ -297,6 +305,7 @@ def get_alert_stats(session, start_time, end_time=None, group_by='severity') -> 
     }
 
 
+# [DEPRECATED] → 使用 es_store 替代
 def get_alert_trend(session, start_time, end_time=None, 
                     bucket='1 hour', group_by='severity') -> list:
     """
@@ -341,6 +350,7 @@ def get_alert_trend(session, start_time, end_time=None,
 # 新增: parsed_logs 全文字段搜索功能
 # ==========================================
 
+# [DEPRECATED] → 使用 es_store 替代
 def full_text_search(session, search_query: str, 
                     start_time=None, end_time=None,
                     log_type=None, src_ip=None, username=None,
@@ -541,6 +551,7 @@ def insert_parsed_log(session, log_data: dict) -> int:
     return result.scalar()
 
 
+# [DEPRECATED] → 使用 es_store 替代
 def insert_alert_event(session, alert_data: dict) -> int:
     """
     插入告警事件
@@ -694,6 +705,7 @@ def get_log_summary(session, start_time, end_time=None) -> dict:
 # Alert 表 (TimescaleDB Hypertable)
 # ==========================================
 
+# [DEPRECATED] → 使用 es_store 替代
 def create_alerts_hypertable(session):
     """
     创建 alerts 表并转换为 TimescaleDB hypertable
@@ -863,6 +875,7 @@ def create_alerts_hypertable(session):
         return False
 
 
+# [DEPRECATED] → 使用 es_store 替代
 def insert_alert(session, alert_data: dict) -> int:
     """
     插入告警到 TimescaleDB
@@ -931,6 +944,7 @@ def insert_alert(session, alert_data: dict) -> int:
     return result.scalar()
 
 
+# [DEPRECATED] → 使用 es_store 替代
 def update_alert_status(session, alert_id: int, status: str) -> bool:
     """
     更新告警状态
@@ -956,6 +970,7 @@ def update_alert_status(session, alert_id: int, status: str) -> bool:
     return result.rowcount > 0
 
 
+# [DEPRECATED] → 使用 es_store 替代
 def query_alerts(session, start_time=None, end_time=None,
                 severity=None, status=None, source=None,
                 src_ip=None, dst_ip=None,
@@ -1127,6 +1142,7 @@ def get_alert_stats(session, start_time=None, end_time=None) -> dict:
     }
 
 
+# [DEPRECATED] → 使用 es_store 替代
 def aggregate_alerts(session, alert_ids: list, title: str, 
                      severity: str = None, description: str = None) -> dict:
     """

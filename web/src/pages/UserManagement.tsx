@@ -2,9 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Plus, Search, Edit2, Trash2, UserCheck, UserX, X, Mail, Shield, Key, Eye, EyeOff, RefreshCw } from 'lucide-react';
 import type { User } from '../types';
-import { userApi } from '../services/api';
+import { userApi, request as apiRequest } from '../services/api';
 
-const roles = ['超级管理员', '安全分析师', '运营人员', '审计员', '访客'];
+
 
 export default function UserManagement() {
   const [users, setUsers] = useState<User[]>([]);
@@ -13,13 +13,30 @@ export default function UserManagement() {
   const [showForm, setShowForm] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [showPassword, setShowPassword] = useState(false);
+  const [resetPwdModal, setResetPwdModal] = useState<{open:boolean;userId:string;username:string}>({open:false,userId:'',username:''});
+  const [resetPwdValue, setResetPwdValue] = useState('');
   const [formData, setFormData] = useState({
     username: '',
     email: '',
-    role: '运营人员',
+    role: '',
     password: '',
     confirmPassword: ''
   });
+
+  const [roleOptions, setRoleOptions] = useState<{id:string;name:string}[]>([]);
+  const [toast, setToast] = useState<{type:string;message:string} | null>(null);
+  const addToast = (type: string, message: string) => {
+    setToast({ type, message });
+    setTimeout(() => setToast(null), 3000);
+  };
+  
+  useEffect(() => {
+    apiRequest('/roles-api/roles').then((r:any) => {
+      if (r.success && r.data) {
+        setRoleOptions(r.data.map((role:any) => ({id: role.id, name: role.name})));
+      }
+    }).catch(() => {});
+  }, []);
 
   const fetchUsers = async () => {
     setLoading(true);
@@ -162,9 +179,9 @@ export default function UserManagement() {
                     <span className="text-sm font-medium text-text-primary">{user.username}</span>
                   </div>
                 </td>
-                <td className="px-6 py-4 text-sm text-text-secondary">{user.role}</td>
+                <td className="px-6 py-4 text-sm text-text-secondary">{roleOptions.find(r=>r.id===user.role)?.name||user.role||'-'}</td>
                 <td className="px-6 py-4 text-sm text-text-secondary">{user.email}</td>
-                <td className="px-6 py-4 text-sm text-text-secondary">{new Date(user.lastLogin).toLocaleString('zh-CN')}</td>
+                <td className="px-6 py-4 text-sm text-text-secondary">{user.lastLogin ? new Date(user.lastLogin).toLocaleString('zh-CN') : '-'}</td>
                 <td className="px-6 py-4">
                   <button
                     onClick={() => toggleStatus(user.id)}
@@ -185,6 +202,15 @@ export default function UserManagement() {
                       className="p-2 text-text-secondary hover:text-primary transition-colors"
                     >
                       <Edit2 className="w-4 h-4" />
+                    </motion.button>
+                    <motion.button
+                      whileHover={{ scale: 1.1 }}
+                      whileTap={{ scale: 0.9 }}
+                      onClick={() => setResetPwdModal({open:true, userId:user.id, username:user.username})}
+                      className="p-2 text-text-secondary hover:text-amber-400 transition-colors"
+                      title="重置密码"
+                    >
+                      <Key className="w-4 h-4" />
                     </motion.button>
                     <motion.button
                       whileHover={{ scale: 1.1 }}
@@ -272,8 +298,8 @@ export default function UserManagement() {
                         onChange={(e) => setFormData({ ...formData, role: e.target.value })}
                         className="w-full pl-10 pr-4 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary focus:border-primary focus:outline-none"
                       >
-                        {roles.map(role => (
-                          <option key={role} value={role}>{role}</option>
+                        {roleOptions.map(r => (
+                          <option key={r.id} value={r.id}>{r.name}</option>
                         ))}
                       </select>
                     </div>
@@ -338,6 +364,39 @@ export default function UserManagement() {
           </>
         )}
       </AnimatePresence>
+      {/* 密码重置弹窗 */}
+      <AnimatePresence>{resetPwdModal.open&&(
+        <motion.div initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <motion.div initial={{opacity:0,scale:0.95}} animate={{opacity:1,scale:1}} exit={{opacity:0,scale:0.95}}
+            className="bg-card-bg border border-border-color rounded-2xl p-5 w-full max-w-sm mx-4 shadow-2xl" onClick={e=>e.stopPropagation()}>
+            <h3 className="text-sm font-semibold text-text-primary mb-1 flex items-center gap-2"><Key className="w-4 h-4 text-amber-400"/>重置密码</h3>
+            <p className="text-xs text-text-muted mb-4">为用户 <strong>{resetPwdModal.username}</strong> 设置新密码</p>
+            <input value={resetPwdValue} onChange={e=>setResetPwdValue(e.target.value)} type="text"
+              placeholder="输入新密码（至少6位）"
+              className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-xl text-sm text-text-primary placeholder:text-text-muted/40 mb-4 focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/20 transition-all outline-none" />
+            <div className="flex gap-2 justify-end">
+              <button onClick={()=>{setResetPwdModal({open:false,userId:'',username:''});setResetPwdValue('');}}
+                className="px-4 py-2 text-xs text-text-secondary hover:text-text-primary transition-colors rounded-lg hover:bg-card-bg-hover">取消</button>
+              <button onClick={async()=>{
+                if (!resetPwdValue || resetPwdValue.length < 6) return;
+                try {
+                  const r = await apiRequest('/users-api/users/'+resetPwdModal.userId+'/reset-password', {
+                    method:'POST', body:{password: resetPwdValue}
+                  });
+                  if (r.success) addToast('success', '密码已重置');
+                  else addToast('error', r.error||'重置失败');
+                } catch(e:any) { addToast('error', e.message); }
+                setResetPwdModal({open:false,userId:'',username:''});
+                setResetPwdValue('');
+              }}
+                className="px-4 py-2 bg-gradient-to-br from-amber-600 to-orange-600 text-white rounded-lg text-xs font-medium hover:from-amber-500 hover:to-orange-500 transition-all disabled:opacity-40"
+                disabled={!resetPwdValue||resetPwdValue.length<6}>
+                确认重置
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}</AnimatePresence>
     </div>
   );
 }

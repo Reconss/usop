@@ -11,7 +11,10 @@ import {
   CheckCircle,
   AlertTriangle,
   Info,
-  Loader2
+  Loader2,
+  Shield,
+  X,
+  Check
 } from 'lucide-react';
 import { authApi, notificationsApi } from '../services/api';
 
@@ -22,6 +25,7 @@ interface Notification {
   type: string;
   read: boolean;
   created_at?: string;
+  data?: Record<string, any>;
 }
 
 interface HeaderProps {
@@ -65,6 +69,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
   const backendUnavailableRef = React.useRef(false);
   const consecutiveErrorsRef = React.useRef(0);
   const [notifyInterval, setNotifyInterval] = useState<number | null>(60000);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+
+  const showToast = (message: string, type: 'success' | 'error' = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
+  };
 
   // 获取通知列表
   const fetchNotifications = async (isRetry = false) => {
@@ -73,10 +83,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
 
     try {
       setLoadingNotifications(true);
-      const res = await notificationsApi.getNotifications();
+      const res = await notificationsApi.getNotifications({ limit: 50 });
       if (res.success && res.data) {
         const items = Array.isArray(res.data) ? res.data : res.data.items || [];
-        setNotifications(items);
+        setNotifications(items.map((n: any) => ({
+          ...n,
+          read: n.is_read,
+          message: n.content
+        })));
       }
       // 成功后重置错误计数
       consecutiveErrorsRef.current = 0;
@@ -130,14 +144,27 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
     navigate('/profile');
   };
 
-  const handleMarkAsRead = async (id: number) => {
+  const handleMarkAsRead = async (id: string | number) => {
     try {
-      await notificationsApi.markAsRead(id);
+      await notificationsApi.markAsRead(String(id));
       setNotifications(notifications.map(n => 
         n.id === id ? { ...n, read: true } : n
       ));
     } catch (error) {
       console.error('标记已读失败:', error);
+    }
+  };
+  
+  // 处理审批操作
+  const handleApproval = async (approvalId: string, approved: boolean) => {
+    try {
+      await notificationsApi.processApproval(approvalId, approved);
+      showToast(approved ? '审批已批准' : '审批已拒绝');
+      // 刷新通知
+      fetchNotifications();
+    } catch (error) {
+      console.error('审批操作失败:', error);
+      showToast('审批操作失败，请重试', 'error');
     }
   };
 
@@ -181,6 +208,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
     switch (type) {
       case 'error': return <AlertTriangle className="w-4 h-4 text-critical" />;
       case 'success': return <CheckCircle className="w-4 h-4 text-success" />;
+      case 'approval_request': return <Shield className="w-4 h-4 text-amber-400" />;
+      case 'approval_result': return <CheckCircle className="w-4 h-4 text-emerald-400" />;
       default: return <Info className="w-4 h-4 text-medium" />;
     }
   };
@@ -246,7 +275,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
                     </button>
                   )}
                 </div>
-                <div className="max-h-64 overflow-y-auto">
+                <div className="max-h-96 overflow-y-auto">
                   {loadingNotifications ? (
                     <div className="p-4 flex justify-center">
                       <Loader2 className="w-5 h-5 text-primary animate-spin" />
@@ -258,15 +287,31 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
                       <div 
                         key={n.id} 
                         className={`p-3 hover:bg-primary/5 cursor-pointer border-b border-border-color/50 last:border-0 transition-colors ${!n.read ? 'bg-primary/5' : ''}`}
-                        onClick={() => handleMarkAsRead(n.id)}
                       >
-                        <div className="flex items-start gap-3">
+                        <div className="flex items-start gap-3" onClick={() => handleMarkAsRead(n.id)}>
                           {getNotificationIcon(n.type)}
                           <div className="flex-1 min-w-0">
                             <p className="text-sm text-text-primary truncate">{n.title}</p>
                             <p className="text-xs text-text-muted mt-1">{n.message}</p>
                           </div>
                         </div>
+                        {/* 审批操作按钮 */}
+                        {n.type === 'approval_request' && n.data && n.data.approval_id && (
+                          <div className="flex gap-2 mt-2 ml-7">
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleApproval(String(n.data!.approval_id), true); }}
+                              className="flex items-center gap-1 px-2 py-1 text-xs bg-emerald-500/20 text-emerald-400 rounded hover:bg-emerald-500/30"
+                            >
+                              <Check className="w-3 h-3" /> 批准
+                            </button>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleApproval(String(n.data!.approval_id), false); }}
+                              className="flex items-center gap-1 px-2 py-1 text-xs bg-rose-500/20 text-rose-400 rounded hover:bg-rose-500/30"
+                            >
+                              <X className="w-3 h-3" /> 拒绝
+                            </button>
+                          </div>
+                        )}
                       </div>
                     ))
                   )}
@@ -317,6 +362,17 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
           </AnimatePresence>
         </div>
       </div>
+      
+      {/* Toast 提示 */}
+      {toast && (
+        <div className={`fixed top-4 right-4 px-4 py-3 rounded-lg shadow-lg z-50 text-sm ${
+          toast.type === 'success' 
+            ? 'bg-emerald-500 text-white' 
+            : 'bg-critical text-white'
+        }`}>
+          {toast.message}
+        </div>
+      )}
     </header>
   );
 };

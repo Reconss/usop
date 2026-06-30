@@ -1,0 +1,105 @@
+# SIEM 大规模数据处理架构
+# ClickHouse (分析) + Elasticsearch (搜索)
+
+services:
+  # ===== 统一处理器 =====
+  processor:
+    build: .
+    container_name: usop-processor
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - CLICKHOUSE_HOST=clickhouse
+      - ES_HOSTS=http://elasticsearch:9200
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - siem-network
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          memory: 2G
+    restart: unless-stopped
+
+  # ===== Redis (消息队列) =====
+  redis:
+    image: redis:7-alpine
+    container_name: usop-redis
+    command: redis-server --appendonly yes --maxmemory 1gb --maxmemory-policy allkeys-lru
+    networks:
+      - siem-network
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ===== ClickHouse (分析) =====
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.8
+    container_name: usop-clickhouse
+    environment:
+      CLICKHOUSE_DB: usop_analytics
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    networks:
+      - siem-network
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    command: >
+      clickhouse-server
+      --max_server_memory_usage=0
+      --max_concurrent_queries=100
+      --keep_alive_timeout=3
+
+  # ===== Elasticsearch (搜索) =====
+  elasticsearch:
+    image: elasticsearch:8.11.0
+    container_name: usop-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms1g -Xmx2g
+    networks:
+      - siem-network
+    ports:
+      - "9200:9200"
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+
+volumes:
+  redis-data:
+  clickhouse-data:
+  es-data:
+
+networks:
+  siem-network:
+    driver: bridge
