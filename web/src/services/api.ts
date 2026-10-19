@@ -321,19 +321,31 @@ export const eventsApi = {
 
 // Assets API
 export const assetsApi = {
-  getAssets: (params?: { page?: number; page_size?: number; type?: string; search?: string }) => {
+  getAssets: (params?: {
+    page?: number; page_size?: number; type?: string; search?: string;
+    status?: string; min_risk?: number; max_risk?: number;
+  }) => {
     const searchParams = new URLSearchParams();
     if (params?.page) searchParams.append('page', String(params.page));
     if (params?.page_size) searchParams.append('page_size', String(params.page_size));
     if (params?.type) searchParams.append('type', params.type);
     if (params?.search) searchParams.append('search', params.search);
+    if (params?.status) searchParams.append('status', params.status);
+    if (params?.min_risk !== undefined) searchParams.append('min_risk', String(params.min_risk));
+    if (params?.max_risk !== undefined) searchParams.append('max_risk', String(params.max_risk));
     return request(`/assets-api/assets?${searchParams.toString()}`);
   },
-  
+
   getAsset: (id: number) => request(`/assets-api/assets/${id}`),
   createAsset: (data: any) => request('/assets-api/assets', { method: 'POST', body: data }),
   updateAsset: (id: number, data: any) => request(`/assets-api/assets/${id}`, { method: 'PUT', body: data }),
   deleteAsset: (id: number) => request(`/assets-api/assets/${id}`, { method: 'DELETE' }),
+  batchDelete: (assetIds: (string | number)[]) =>
+    request('/assets-api/assets/batch', { method: 'DELETE', body: { asset_ids: assetIds } }),
+  getStats: () => request('/assets-api/assets/stats'),
+  getTopology: (limit = 20) => request(`/assets-api/assets/topology?limit=${limit}`),
+  exportAssets: () => request('/assets-api/assets/export'),
+  syncScan: (taskId: number) => request(`/assets-api/assets/sync-scan/${taskId}`, { method: 'POST' }),
 };
 
 // Scans API

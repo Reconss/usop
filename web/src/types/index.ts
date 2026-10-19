@@ -61,8 +61,9 @@ export interface AssetVulnInfo {
 export interface Asset {
   id: string;
   name: string;
-  type: 'ip' | 'domain' | 'service' | 'host';
-  status: 'verified' | 'pending' | 'online';
+  /** 后端真实取值含 server/web/webapp/container/database/network 等，保持宽松 */
+  type: string;
+  status: string;
   riskScore: number;
   assessedRiskScore?: number;
   osInfo?: string;

@@ -1,5 +1,9 @@
-"""
-资产管理 API 路由
+"""资产管理 API 路由
+
+参考 TestNet 资产管理系统的攻击面视角：
+- metadata 承载责任人/部门/位置/描述等业务属性（owner/department/location/description）
+- stats 提供攻击面总览（开放端口、未修复漏洞、Web 暴露、子域名）
+- topology 提供资产-服务攻击面关系图数据
 """
 from flask import Blueprint, request, jsonify
 from app.routes.auth import login_required
@@ -9,6 +13,23 @@ from datetime import datetime
 from sqlalchemy import or_
 
 assets_api_bp = Blueprint('assets_api', __name__)
+
+# extra_data 中的业务属性键（与前端表单一一对应）
+META_KEYS = ('owner', 'department', 'location', 'description')
+
+
+def _merge_meta(asset_dict: dict) -> dict:
+    """把 extra_data 中的业务属性提到顶层，便于前端直接渲染"""
+    meta = asset_dict.get('metadata') or {}
+    for key in META_KEYS:
+        if meta.get(key) is not None:
+            asset_dict[key] = meta[key]
+    return asset_dict
+
+
+def _looks_like_ip(text: str) -> bool:
+    parts = text.split('.')
+    return len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts)
 
 
 @assets_api_bp.route('/assets', methods=['GET'])
@@ -29,7 +50,9 @@ def get_assets():
         query = query.filter(
             or_(
                 Asset.name.ilike(f'%{search}%'),
-                Asset.ip.ilike(f'%{search}%')
+                Asset.ip.ilike(f'%{search}%'),
+                Asset.domain.ilike(f'%{search}%'),
+                Asset.hostname.ilike(f'%{search}%')
             )
         )
     if asset_type:
@@ -46,7 +69,7 @@ def get_assets():
     
     items = []
     for asset in pagination.items:
-        asset_dict = asset.to_dict()
+        asset_dict = _merge_meta(asset.to_dict())
         # 添加漏洞统计
         vuln_stats = db.session.query(
             AssetVulnerability.severity,
@@ -88,9 +111,9 @@ def get_asset(asset_id):
     asset = Asset.query.get(asset_id)
     if not asset:
         return jsonify({'success': False, 'error': '资产不存在'}), 404
-    
-    asset_dict = asset.to_dict()
-    
+
+    asset_dict = _merge_meta(asset.to_dict())
+
     # 添加漏洞统计
     vuln_stats = db.session.query(
         AssetVulnerability.severity,
@@ -126,15 +149,25 @@ def get_asset(asset_id):
 def create_asset():
     """创建资产"""
     data = request.get_json()
-    
+
+    if not (data.get('name') or '').strip():
+        return jsonify({'success': False, 'error': '资产名称不能为空'}), 400
+
+    name = data['name'].strip()
+    # 业务属性统一进 metadata（extra_data），与扫描结果数据隔离
+    meta_in = data.get('metadata') or {}
+    metadata = {k: meta_in[k] for k in META_KEYS if meta_in.get(k)}
+
     asset = Asset(
-        name=data.get('name'),
+        name=name,
         type=data.get('type', 'ip'),
-        ip=data.get('ip'),
+        ip=data.get('ip') or (name if _looks_like_ip(name) else None),
+        domain=data.get('domain'),
+        hostname=data.get('hostname'),
         status=data.get('status', 'pending'),
         risk_score=data.get('risk_score', 0),
         tags=data.get('tags', []),
-        extra_data=data.get('metadata', {})
+        extra_data=metadata
     )
     
     db.session.add(asset)
@@ -165,11 +198,11 @@ def create_asset():
 def update_asset(asset_id):
     """更新资产"""
     data = request.get_json()
-    
+
     asset = Asset.query.get(asset_id)
     if not asset:
         return jsonify({'success': False, 'error': '资产不存在'}), 404
-    
+
     if 'name' in data:
         asset.name = data['name']
     if 'type' in data:
@@ -183,14 +216,20 @@ def update_asset(asset_id):
     if 'tags' in data:
         asset.tags = data['tags']
     if 'metadata' in data:
-        asset.extra_data = data['metadata']
-    
+        # 业务属性合并进 extra_data（保留 web_results/subdomains 等扫描数据）
+        extra = dict(asset.extra_data or {})
+        meta_in = data.get('metadata') or {}
+        for key in META_KEYS:
+            if key in meta_in:
+                extra[key] = meta_in[key]
+        asset.extra_data = extra
+
     asset.updated_at = datetime.utcnow()
     db.session.commit()
-    
+
     return jsonify({
         'success': True,
-        'data': asset.to_dict()
+        'data': _merge_meta(asset.to_dict())
     })
 
 
@@ -319,32 +358,95 @@ def update_vulnerability_status(asset_id, vuln_id):
 @assets_api_bp.route('/assets/stats', methods=['GET'])
 @login_required
 def get_stats():
-    """获取资产统计"""
+    """获取攻击面总览统计"""
     total = Asset.query.count()
     by_type = db.session.query(
         Asset.type,
         db.func.count(Asset.id)
     ).group_by(Asset.type).all()
-    
+
     by_status = db.session.query(
         Asset.status,
         db.func.count(Asset.id)
     ).group_by(Asset.status).all()
-    
+
     risk_distribution = {
         'critical': Asset.query.filter(Asset.risk_score >= 80).count(),
         'high': Asset.query.filter(Asset.risk_score >= 60, Asset.risk_score < 80).count(),
         'medium': Asset.query.filter(Asset.risk_score >= 40, Asset.risk_score < 60).count(),
         'low': Asset.query.filter(Asset.risk_score < 40).count()
     }
-    
+
+    # 攻击面扩展统计（全部真实查询）
+    open_ports = AssetPort.query.filter(AssetPort.state == 'open').count()
+    open_vulns = AssetVulnerability.query.filter(AssetVulnerability.status == 'open').count()
+
+    web_assets = 0
+    subdomain_total = 0
+    for extra, in db.session.query(Asset.extra_data).all():
+        if not extra:
+            continue
+        if extra.get('web_results'):
+            web_assets += 1
+        subdomain_total += len(extra.get('subdomains') or [])
+
     return jsonify({
         'success': True,
         'data': {
             'total': total,
             'by_type': dict(by_type),
             'by_status': dict(by_status),
-            'risk_distribution': risk_distribution
+            'risk_distribution': risk_distribution,
+            'open_ports': open_ports,
+            'open_vulns': open_vulns,
+            'web_assets': web_assets,
+            'subdomain_total': subdomain_total
+        }
+    })
+
+
+@assets_api_bp.route('/assets/topology', methods=['GET'])
+@login_required
+def get_topology():
+    """攻击面关系图数据：Top 风险资产与其开放端口/服务（ECharts 力导向图）"""
+    limit = request.args.get('limit', 20, type=int)
+    assets = Asset.query.order_by(
+        db.func.coalesce(Asset.assessed_risk_score, Asset.risk_score).desc()
+    ).limit(limit).all()
+
+    nodes = []
+    links = []
+    seen_services = {}
+
+    for asset in assets:
+        score = asset.assessed_risk_score if asset.assessed_risk_score is not None else (asset.risk_score or 0)
+        nodes.append({
+            'id': f'asset-{asset.id}',
+            'name': asset.name,
+            'category': 0,
+            'value': score,
+            'symbolSize': 28 + min(score, 100) * 0.4
+        })
+        ports = AssetPort.query.filter_by(asset_id=asset.id, state='open').all()
+        for p in ports:
+            svc = p.service or f'{p.port}/{p.protocol}'
+            node_id = f'svc-{asset.id}-{p.port}'
+            if node_id not in seen_services:
+                seen_services[node_id] = True
+                nodes.append({
+                    'id': node_id,
+                    'name': f'{p.port} {svc}'.strip(),
+                    'category': 1,
+                    'symbolSize': 16
+                })
+            links.append({'source': f'asset-{asset.id}', 'target': node_id})
+
+    return jsonify({
+        'success': True,
+        'data': {
+            'nodes': nodes,
+            'links': links,
+            'asset_count': len(assets)
         }
     })
 
