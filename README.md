@@ -97,25 +97,42 @@ USOP 支持两种部署形态，按场景选择：
 
 访问：前端 `http://localhost:3266`、后端 `http://localhost:5001`、Flink UI `:8081`、ES `:9200`。
 
-### 方式二：非容器（基础设施 Docker + 应用原生，便于开发调试）
+### 方式二：非容器（应用原生 + 组件按需 Docker/外部，便于开发调试）
 
-基础设施（PG / Redis / ES / Kafka / Flink）仍在 Docker，但 **Flask 后端与 React 前端在宿主机原生运行**（热更新、断点调试）。所有组件连接信息集中在 `deploy/.env.native`（模板 `deploy/.env.native.example`），首次运行自动生成。
+**Flask 后端与 React 前端在宿主机原生运行**（热更新、断点调试）；基础设施（PG / Redis / ES / Kafka / Flink）则**按组件自由选择**：用本地 Docker 起，或对接已有的独立部署实例（云数据库 / 自建集群等）。连接信息集中在 `deploy/.env.native`（模板 `deploy/.env.native.example`），首次运行自动生成。
+
+每个组件用一个 `*_PROVIDER` 开关控制：
 
 ```bash
-# 基础设施走 Docker + 应用原生启动（后端 :5001，前端 :9000）
+# deploy/.env.native 中
+PG_PROVIDER=docker        # docker    → 由脚本经 docker-compose.infra.yml 启动
+REDIS_PROVIDER=docker
+ES_PROVIDER=external      # external  → 已在别处独立部署，仅按下方地址连接（不启 Docker）
+KAFKA_PROVIDER=docker
+FLINK_PROVIDER=docker
+# 五个全 external 时，脚本自动等同 --no-infra
+```
+
+典型混搭：ES 用云上 Elastic、其余本地 Docker —— 脚本只会 `docker compose up` 起 PG/Redis/Kafka/Flink，跳过 ES 并直接连你配的云地址。
+
+```bash
+# 默认（全 docker）：基础设施走 Docker + 应用原生启动（后端 :5001，前端 :9000）
 ./start_native.sh
 
 # 变体
-./start_native.sh --no-infra   # 基础设施已在别处，仅连 .env 中配置的远端地址
+./start_native.sh --no-infra   # 所有组件均按 .env 连外部（不启 Docker）
 ./start_native.sh --build      # 前端改用生产构建并静态托管在 :3266
-./start_native.sh --stop       # 停止基础设施并杀掉应用进程
-./start_native.sh --status     # 查看组件 / 应用就绪情况
-./start_native.sh --logs       # 跟踪基础设施日志（应用日志落本地文件）
+./start_native.sh --stop       # 停止 Docker 类组件并杀掉应用进程
+./start_native.sh --status     # 查看各组件提供方式（docker/external）与就绪情况
+./start_native.sh --logs       # 跟踪 Docker 类组件日志（应用日志落本地文件）
 ```
 
-> 非容器模式下，应用侧连组件用 `localhost` 地址；Flink 关联作业内嵌 SQL 用容器网内地址
-> （`kafka:29092` / `postgres:5432`），两者在 `deploy/.env.native` 中已分别配好，一般无需改动。
-> 单纯管理基础设施可用 `./start-bigdata.sh up|down|status|logs|init-topics`。
+> **地址区分（重要）**：应用侧用「宿主机可达地址」（`DATABASE_URL` / `ES_URL` / `KAFKA_BOOTSTRAP_SERVERS` / `FLINK_*_URL`）；
+> Flink 关联作业内嵌 SQL 用「组件网络内地址」（`PG_HOST` / `KAFKA_BOOTSTRAP`）。
+> 当某组件是 **external 且 Flink 仍跑在 Docker** 时，这两个必须填 Flink 容器能访问到的地址
+> （通常是宿主 IP 或 `host.docker.internal`），否则关联作业回写 PG / 消费 Kafka 会连不上。
+> 外部 ES 若带鉴权，通过 `ES_USER` / `ES_PASSWORD` / `ES_USE_SSL` 配置。
+> 单纯管理 Docker 类基础设施可用 `./start-bigdata.sh up|down|status|logs|init-topics`。
 
 ### 前端发版（全容器模式）
 

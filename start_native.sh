@@ -2,20 +2,22 @@
 # =============================================================================
 # USOP 非容器启动器
 # -----------------------------------------------------------------------------
-# 设计：基础设施（PostgreSQL / Redis / Elasticsearch / Kafka / Flink）跑在 Docker，
-#       应用（Flask 后端 + React 前端）在宿主机原生运行 —— 便于本地调试、热重载。
-#       组件连接信息全部来自 deploy/.env.native（模板见 deploy/.env.native.example）。
+# 设计：应用（Flask 后端 + React 前端）在宿主机原生运行；基础设施
+#       （PostgreSQL / Redis / Elasticsearch / Kafka / Flink）可按组件自由混搭：
+#         - *_PROVIDER=docker    → 由本脚本经 docker-compose.infra.yml 启动
+#         - *_PROVIDER=external  → 已在别处独立部署，仅按 .env 中地址连接
+#       全部 external 时自动等同 --no-infra。连接信息来自 deploy/.env.native。
 #
 # 用法：
-#   ./start_native.sh                 # 起基础设施 + 后端(5001) + 前端(9000)
-#   ./start_native.sh --no-infra      # 基础设施已在别处，仅起应用（按 .env 连远端）
+#   ./start_native.sh                 # 按 .env 中各 *_PROVIDER 起组件 + 后端(5001) + 前端(9000)
+#   ./start_native.sh --no-infra      # 所有组件均按 .env 连外部（不启 Docker）
 #   ./start_native.sh --build         # 前端改用生产构建并静态托管在 3266
 #   ./start_native.sh --skip-web      # 只起后端
 #   ./start_native.sh --skip-migrate  # 跳过数据库迁移
 #   ./start_native.sh --env my.env    # 指定连接配置文件
-#   ./start_native.sh --stop          # 停止基础设施并杀掉应用进程
-#   ./start_native.sh --status        # 查看组件 / 应用就绪情况
-#   ./start_native.sh --logs [服务]    # 跟踪基础设施日志（应用日志落本地文件）
+#   ./start_native.sh --stop          # 停止 Docker 类组件并杀掉应用进程
+#   ./start_native.sh --status        # 查看各组件提供方式 / 应用就绪情况
+#   ./start_native.sh --logs [服务]    # 跟踪 Docker 类组件日志（应用日志落本地文件）
 #   ./start_native.sh -h | --help
 #
 # 退出：Ctrl-C 或 ./start_native.sh --stop
@@ -115,23 +117,46 @@ ensure_python() {
 }
 
 # ------------------------------------------------------------------ 基础设施
-start_infra() {
-  have_docker || die "需要 Docker 来运行基础设施（或改用 --no-infra 连接已有组件）"
-  command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 \
-    || die "缺少 docker compose（v2+）"
+# 解析 URL 的 host 与 port（兼容 user:pass@host:port / scheme://host:port）
+url_hostport() {
+  local u="$1"
+  u="${u#*://}"; u="${u#*@}"
+  local auth="${u%%/*}"; auth="${auth%%\?*}"
+  local h="${auth%:*}" p="${auth##*:}"
+  [ "$p" = "$auth" ] && p=""
+  printf '%s %s' "$h" "$p"
+}
 
-  # 本机 5432 被占用（如 macOS Homebrew PostgreSQL）时，自动改用 5433
+# 按各组件 *_PROVIDER 决定哪些走 Docker（填入 INFRA_SVCS），哪些连外部
+build_infra_svcs() {
+  INFRA_SVCS=()
+  [ "${PG_PROVIDER:-docker}"    = "docker" ] && INFRA_SVCS+=(postgres)
+  [ "${REDIS_PROVIDER:-docker}" = "docker" ] && INFRA_SVCS+=(redis)
+  [ "${ES_PROVIDER:-docker}"    = "docker" ] && INFRA_SVCS+=(elasticsearch)
+  [ "${KAFKA_PROVIDER:-docker}" = "docker" ] && INFRA_SVCS+=(kafka)
+  [ "${FLINK_PROVIDER:-docker}" = "docker" ] && INFRA_SVCS+=(flink-jobmanager flink-taskmanager flink-sql-gateway)
+}
+
+start_infra() {
+  build_infra_svcs
+  if [ ${#INFRA_SVCS[@]} -eq 0 ]; then
+    warn "所有组件均为 external，无需启动 Docker（等同 --no-infra）"
+    NO_INFRA=1; return 0
+  fi
+  have_docker || die "需要 Docker 来运行 docker 类组件（把对应 *_PROVIDER 改为 external 可跳过）"
+  docker compose version >/dev/null 2>&1 || die "缺少 docker compose（v2+）"
+
+  # 本机 5432 被占用（如 macOS Homebrew PostgreSQL）时，自动改用 5433（仅当 PG 走 Docker）
   local pg_host_port=5432
-  if tcp_ok localhost 5432; then
+  if [[ " ${INFRA_SVCS[*]} " == *" postgres "* ]] && tcp_ok localhost 5432; then
     pg_host_port=5433
     warn "本机 5432 已被占用，PostgreSQL 改用宿主机端口 5433（应用侧 DATABASE_URL 同步）"
     export PG_HOST_PORT=5433
-    # 同步改写 DATABASE_URL 端口，避免应用连错
     export DATABASE_URL="${DATABASE_URL/":5432/"/":5433/"}"
   fi
 
-  log "启动基础设施（docker compose -f docker-compose.infra.yml）"
-  docker compose -f "$INFRA_COMPOSE" up -d \
+  log "启动基础设施（docker compose -f docker-compose.infra.yml up -d ${INFRA_SVCS[*]}）"
+  docker compose -f "$INFRA_COMPOSE" up -d "${INFRA_SVCS[@]}" \
     || die "基础设施启动失败，检查 docker-compose.infra.yml 与端口占用"
 }
 
@@ -145,15 +170,47 @@ wait_svc() {  # wait_svc label check_cmd timeout
   return 1
 }
 
+# 单个组件的就绪等待见下方 wait_infra（docker 类查容器，external 类查网络地址）
 wait_infra() {
-  log "等待基础设施就绪"
-  wait_svc "PostgreSQL(:${PG_HOST_PORT:-5432})" \
-    "docker exec usop_infra_pg pg_isready -U ${PG_USER:-usop} -d ${PG_DB:-usop_security}" 120
-  wait_svc "Redis(:6379)" "docker exec usop_infra_redis redis-cli ping" 60
-  wait_svc "Elasticsearch(:9200)" "curl -fs http://localhost:9200/_cluster/health" 120
-  wait_svc "Kafka(:9092)" "docker exec usop_infra_kafka kafka-broker-api-versions --bootstrap-server localhost:9092" 120
-  wait_svc "Flink JobManager(:8081)" "curl -fs http://localhost:8081/overview" 90
-  wait_svc "Flink SQL Gateway(:8083)" "curl -fs http://localhost:8083/v1/info" 90
+  log "等待组件就绪（docker 类查容器、external 类查网络地址）"
+  # PostgreSQL
+  if [ "${PG_PROVIDER:-docker}" = "docker" ]; then
+    wait_svc "PostgreSQL(:${PG_HOST_PORT:-5432})" \
+      "docker exec usop_infra_pg pg_isready -U ${PG_USER:-usop} -d ${PG_DB:-usop_security}" 120
+  else
+    local hp h p; hp=$(url_hostport "${DATABASE_URL}"); h=${hp%% *}; p=${hp##* }
+    wait_svc "PostgreSQL(external ${h}:${p:-5432})" "tcp_ok ${h} ${p:-5432}" 60
+  fi
+  # Redis
+  if [ "${REDIS_PROVIDER:-docker}" = "docker" ]; then
+    wait_svc "Redis(:6379)" "docker exec usop_infra_redis redis-cli ping" 60
+  else
+    wait_svc "Redis(external ${REDIS_HOST}:${REDIS_PORT})" "tcp_ok ${REDIS_HOST} ${REDIS_PORT}" 60
+  fi
+  # Elasticsearch
+  if [ "${ES_PROVIDER:-docker}" = "docker" ]; then
+    wait_svc "Elasticsearch(:9200)" "curl -fs http://localhost:9200/_cluster/health" 120
+  else
+    local hp h p; hp=$(url_hostport "${ES_URL}"); h=${hp%% *}; p=${hp##* }
+    wait_svc "Elasticsearch(external ${h}:${p:-9200})" \
+      "curl -fs http://${h}:${p:-9200}/_cluster/health" 120
+  fi
+  # Kafka
+  if [ "${KAFKA_PROVIDER:-docker}" = "docker" ]; then
+    wait_svc "Kafka(:9092)" \
+      "docker exec usop_infra_kafka kafka-broker-api-versions --bootstrap-server localhost:9092" 120
+  else
+    local hp h p; hp=$(url_hostport "${KAFKA_BOOTSTRAP_SERVERS}"); h=${hp%% *}; p=${hp##* }
+    wait_svc "Kafka(external ${h}:${p:-9092})" "tcp_ok ${h} ${p:-9092}" 120
+  fi
+  # Flink
+  if [ "${FLINK_PROVIDER:-docker}" = "docker" ]; then
+    wait_svc "Flink JobManager(:8081)" "curl -fs http://localhost:8081/overview" 90
+    wait_svc "Flink SQL Gateway(:8083)" "curl -fs http://localhost:8083/v1/info" 90
+  else
+    wait_svc "Flink JobManager(external)" "curl -fs ${FLINK_JOBMANAGER_URL%/}/overview" 90
+    wait_svc "Flink SQL Gateway(external)" "curl -fs ${FLINK_SQL_GATEWAY_URL%/}/v1/info" 90
+  fi
 }
 
 # ------------------------------------------------------------------ 迁移
@@ -279,8 +336,14 @@ cmd_stop() {
 
 cmd_status() {
   load_env 2>/dev/null || true
-  if [ "$NO_INFRA" = 0 ] && have_docker; then
-    docker compose -f "$INFRA_COMPOSE" ps -a || true
+  echo "== 组件提供方式 =="
+  printf '  %-14s %s\n' "PostgreSQL"   "${PG_PROVIDER:-docker}"
+  printf '  %-14s %s\n' "Redis"        "${REDIS_PROVIDER:-docker}"
+  printf '  %-14s %s\n' "Elasticsearch" "${ES_PROVIDER:-docker}"
+  printf '  %-14s %s\n' "Kafka"        "${KAFKA_PROVIDER:-docker}"
+  printf '  %-14s %s\n' "Flink"        "${FLINK_PROVIDER:-docker}"
+  if [ "$NO_INFRA" = 0 ] && [ "${PG_PROVIDER:-docker}" = "docker" ] && have_docker; then
+    echo; docker compose -f "$INFRA_COMPOSE" ps -a || true
   fi
   echo
   tcp_ok localhost "${FLASK_PORT:-5001}" && ok "后端 :${FLASK_PORT:-5001} 可达" || warn "后端 :${FLASK_PORT:-5001} 未运行"
@@ -325,7 +388,9 @@ main() {
 
   echo
   printf '%s============================================================%s\n' "$C_G" "$C_0"
-  printf '%s  USOP 非容器模式已启动（基础设施: %s）%s\n' "$C_G" "$C_0" "$([ "$NO_INFRA" = 1 ] && echo 外部 || echo Docker)"
+  local infra_mode
+  if [ "$NO_INFRA" = 1 ]; then infra_mode="全部外部"; else infra_mode="按组件混搭(Docker+外部)"; fi
+  printf '%s  USOP 非容器模式已启动（基础设施: %s）%s\n' "$C_G" "$C_0" "$infra_mode"
   printf '%s============================================================%s\n' "$C_G" "$C_0"
   if [ "$DO_BUILD" = 1 ]; then
     echo "  前端(构建)  http://localhost:3266"
@@ -333,9 +398,16 @@ main() {
     echo "  前端(开发)  http://localhost:9000"
   fi
   echo "  后端 API    http://localhost:${FLASK_PORT:-5001}/api/health"
-  echo "  PostgreSQL  localhost:${PG_HOST_PORT:-5432}   Redis localhost:6379"
-  echo "  ES          http://localhost:9200   Kafka localhost:9092"
-  echo "  Flink UI    http://localhost:8081   SQL Gateway http://localhost:8083"
+  # 组件地址按提供方式动态展示
+  local hp h p
+  hp=$(url_hostport "${DATABASE_URL}"); h=${hp%% *}; p=${hp##* }
+  printf '  PostgreSQL  %s:%s  [%s]\n' "$h" "${p:-5432}" "${PG_PROVIDER:-docker}"
+  printf '  Redis       %s:%s  [%s]\n' "${REDIS_HOST}" "${REDIS_PORT}" "${REDIS_PROVIDER:-docker}"
+  hp=$(url_hostport "${ES_URL}"); h=${hp%% *}; p=${hp##* }
+  printf '  ES          http://%s:%s  [%s]\n' "$h" "${p:-9200}" "${ES_PROVIDER:-docker}"
+  hp=$(url_hostport "${KAFKA_BOOTSTRAP_SERVERS}"); h=${hp%% *}; p=${hp##* }
+  printf '  Kafka       %s:%s  [%s]\n' "$h" "${p:-9092}" "${KAFKA_PROVIDER:-docker}"
+  printf '  Flink       %s  [%s]\n' "${FLINK_JOBMANAGER_URL}" "${FLINK_PROVIDER:-docker}"
   echo "  后端日志    $BACKEND_LOG"
   echo "  前端日志    $WEB_LOG"
   echo "  停止        ./start_native.sh --stop   或  Ctrl-C"
