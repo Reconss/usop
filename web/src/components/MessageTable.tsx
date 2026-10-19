@@ -79,10 +79,12 @@ const SEVERITY_LABEL: Record<string, string> = {
 
 const STATUS_META: Record<string, { state: string; label: string }> = {
   new: { state: 'new', label: '新告警' },
+  open: { state: 'open', label: '待处置' },
+  acknowledged: { state: 'acknowledged', label: '已确认' },
   investigating: { state: 'investigating', label: '调查中' },
   active: { state: 'investigating', label: '调查中' },
   closed: { state: 'closed', label: '已关闭' },
-  resolved: { state: 'closed', label: '已关闭' },
+  resolved: { state: 'resolved', label: '已解决' },
   false_positive: { state: 'false_positive', label: '误报' },
 };
 
@@ -263,8 +265,9 @@ export const MessageTable: React.FC<MessageTableProps> = ({
     }
 
     if (col.key === 'status') {
-      const meta = STATUS_META[val] || STATUS_META.new;
-      return <StateBadge state={meta.state} label={meta.label} />;
+      // 未登记的状态显示原值，避免误报为「新告警」
+      const meta = STATUS_META[val];
+      return <StateBadge state={meta?.state || val} label={meta?.label} />;
     }
 
     if (col.key === 'id') {

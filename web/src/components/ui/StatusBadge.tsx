@@ -100,6 +100,7 @@ export const SeverityBadge: React.FC<{ severity?: string; className?: string }> 
 const STATUS_TONE: Record<string, BadgeTone> = {
   new: 'info',
   open: 'info',
+  acknowledged: 'info',
   pending: 'warning',
   investigating: 'warning',
   processing: 'primary',

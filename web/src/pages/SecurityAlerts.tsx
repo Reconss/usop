@@ -100,7 +100,9 @@ const statusConfig: Record<string, { icon: React.ElementType; color: string; bg:
   closed: { icon: CheckCircle, color: 'text-success', bg: 'bg-success/10', label: '已关闭' },
   false_positive: { icon: XCircle, color: 'text-text-muted', bg: 'bg-surface-3', label: '误报' },
   active: { icon: Clock3, color: 'text-warning', bg: 'bg-warning/10', label: '调查中' },
-  resolved: { icon: CheckCircle, color: 'text-success', bg: 'bg-success/10', label: '已关闭' },
+  acknowledged: { icon: Eye, color: 'text-info', bg: 'bg-info/10', label: '已确认' },
+  open: { icon: Bell, color: 'text-info', bg: 'bg-info/10', label: '待处置' },
+  resolved: { icon: CheckCircle2, color: 'text-success', bg: 'bg-success/10', label: '已解决' },
 };
 
 const productIcons: Record<string, { icon: React.ElementType; color: string }> = {
