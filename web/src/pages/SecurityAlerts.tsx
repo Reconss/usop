@@ -859,6 +859,7 @@ export default function SecurityAlerts() {
               onFilterRemove={handleQuickFilterRemove}
               startTime={timeRange.start}
               endTime={timeRange.end}
+              query={buildQueryString()}
               className="h-full"
             />
           </div>

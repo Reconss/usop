@@ -1,5 +1,5 @@
 -- USOP 关联分析 Flink 作业（由「响应与自动化 → 规则管理 → 关联分析规则」自动生成）
--- 规则数：4
+-- 规则数：6
 -- 窗口时间属性：处理时间 PROCTIME（不依赖 first_seen 字段解析）
 -- 目标：Kafka valid-alerts → 窗口聚合 → PG events 表（JDBC sink）
 
@@ -186,4 +186,66 @@ FROM (
 -- A 不晚于 B 即算命中：PROCTIME 是毫秒精度，同毫秒到达的消息按并列处理，
 -- 用严格 < 会把「同一批上报里的先扫后打」全部漏掉
 WHERE `a_cnt` >= 1 AND `b_cnt` >= 1 AND `a_at` <= `b_at`;
+
+INSERT INTO corr_events
+SELECT
+  CONCAT('CE', CAST(7 AS STRING), '-', DATE_FORMAT(`w_start`, 'yyMMddHHmm'), '-', SUBSTR(MD5(CAST(`grp` AS STRING)), 1, 4)),
+  '目标主机高频告警聚合事件',
+  CONCAT('关联分析「同目标高频告警聚合」：', '目的 IP', ' = ',
+         COALESCE(CAST(`grp` AS STRING), '-'), ' 在 300 秒窗口内触发 ',
+         CAST(`hit_cnt` AS STRING), ' 次（阈值 ', CAST(10.0 AS STRING), '）；样本告警 ',
+         COALESCE(`sample_code`, '-'), ' / ', COALESCE(`sample_title`, '-')),
+  'high',
+  'correlation',
+  'flink-correlation', 'new', CAST(`sample_src_ip` AS STRING),
+  CONCAT('rule_id=', CAST(7 AS STRING), '; type=frequency; group=', 'dst_ip',
+         '; window_start=', CAST(`w_start` AS STRING), '; window_end=', CAST(`w_end` AS STRING),
+         '; count=', CAST(`hit_cnt` AS STRING), '; threshold=', CAST(10.0 AS STRING)),
+  CAST(NULL AS STRING),
+  `w_end`, `w_end`, `w_end`
+FROM (
+  SELECT
+    TUMBLE_START(`proc_time`, INTERVAL '5' MINUTE) AS `w_start`,
+    TUMBLE_END(`proc_time`, INTERVAL '5' MINUTE)   AS `w_end`,
+    `dst_ip` AS `grp`,
+    COUNT(*)             AS `hit_cnt`,
+    MIN(`src_ip`)     AS `sample_src_ip`,
+    MIN(`alert_code`)    AS `sample_code`,
+    MIN(`title`)         AS `sample_title`
+  FROM corr_src
+  WHERE `dst_ip` IS NOT NULL
+  GROUP BY TUMBLE(`proc_time`, INTERVAL '5' MINUTE), `dst_ip`
+)
+WHERE `hit_cnt` >= 10.0;
+
+INSERT INTO corr_events
+SELECT
+  CONCAT('CE', CAST(8 AS STRING), '-', DATE_FORMAT(`w_start`, 'yyMMddHHmm'), '-', SUBSTR(MD5(CAST(`grp` AS STRING)), 1, 4)),
+  '高威胁源 IP 聚合事件',
+  CONCAT('关联分析「同源高频告警聚合」：', '源 IP', ' = ',
+         COALESCE(CAST(`grp` AS STRING), '-'), ' 在 300 秒窗口内触发 ',
+         CAST(`hit_cnt` AS STRING), ' 次（阈值 ', CAST(10.0 AS STRING), '）；样本告警 ',
+         COALESCE(`sample_code`, '-'), ' / ', COALESCE(`sample_title`, '-')),
+  'high',
+  'correlation',
+  'flink-correlation', 'new', CAST(`grp` AS STRING),
+  CONCAT('rule_id=', CAST(8 AS STRING), '; type=frequency; group=', 'src_ip',
+         '; window_start=', CAST(`w_start` AS STRING), '; window_end=', CAST(`w_end` AS STRING),
+         '; count=', CAST(`hit_cnt` AS STRING), '; threshold=', CAST(10.0 AS STRING)),
+  CAST(NULL AS STRING),
+  `w_end`, `w_end`, `w_end`
+FROM (
+  SELECT
+    TUMBLE_START(`proc_time`, INTERVAL '5' MINUTE) AS `w_start`,
+    TUMBLE_END(`proc_time`, INTERVAL '5' MINUTE)   AS `w_end`,
+    `src_ip` AS `grp`,
+    COUNT(*)             AS `hit_cnt`,
+    MIN(`src_ip`)     AS `sample_src_ip`,
+    MIN(`alert_code`)    AS `sample_code`,
+    MIN(`title`)         AS `sample_title`
+  FROM corr_src
+  WHERE `src_ip` IS NOT NULL
+  GROUP BY TUMBLE(`proc_time`, INTERVAL '5' MINUTE), `src_ip`
+)
+WHERE `hit_cnt` >= 10.0;
 END;

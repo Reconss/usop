@@ -57,11 +57,13 @@ interface QuickValuesPanelProps {
   onFilterRemove?: (field: string, value: string) => void;
   startTime?: string;
   endTime?: string;
+  /** 与列表同源的查询串（搜索词 + Tab + 筛选）；不传则聚合全量，会与列表对不上 */
+  query?: string;
   className?: string;
 }
 
 export const QuickValuesPanel: React.FC<QuickValuesPanelProps> = ({
-  onFilterAdd, activeFilters = [], onFilterRemove, startTime, endTime, className = '',
+  onFilterAdd, activeFilters = [], onFilterRemove, startTime, endTime, query, className = '',
 }) => {
   const [expandedFields, setExpandedFields] = useState<Set<string>>(
     new Set(AVAILABLE_FIELDS.filter(f => f.defaultExpanded).map(f => f.key))
@@ -72,7 +74,7 @@ export const QuickValuesPanel: React.FC<QuickValuesPanelProps> = ({
   const fetchFieldValues = useCallback(async (field: string) => {
     setLoadingFields(prev => new Set(prev).add(field));
     try {
-      const resp = await alertsApi.quickValues(field, startTime, endTime);
+      const resp = await alertsApi.quickValues(field, startTime, endTime, query);
       const data = resp?.data || resp;
       const items = Array.isArray(data) ? data : [];
       setFieldValues(prev => ({ ...prev, [field]: items }));
@@ -81,7 +83,7 @@ export const QuickValuesPanel: React.FC<QuickValuesPanelProps> = ({
     } finally {
       setLoadingFields(prev => { const n = new Set(prev); n.delete(field); return n; });
     }
-  }, [startTime, endTime]);
+  }, [startTime, endTime, query]);
 
   // Fetch values for expanded fields
   useEffect(() => {
@@ -91,6 +93,15 @@ export const QuickValuesPanel: React.FC<QuickValuesPanelProps> = ({
       }
     }
   }, [expandedFields, fetchFieldValues]);
+
+  // 查询串/时间范围变化 → 缓存失效，重新拉取所有已展开字段（保持与列表同步）
+  useEffect(() => {
+    setFieldValues({});
+    for (const field of expandedFields) {
+      fetchFieldValues(field);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, startTime, endTime]);
 
   const toggleField = (field: string) => {
     setExpandedFields(prev => {

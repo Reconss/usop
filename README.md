@@ -1,12 +1,48 @@
-# USOP — 统一安全运营平台
+<p align="center">
+  <img src="docs/images/alerts-list-demo.png" width="860">
+</p>
+
+<p align="center">
+  <b>USOP</b> · 统一安全运营平台（Unified Security Operations Platform）
+</p>
+
+<p align="center">
+  一套前后端分离的一体化安全运营平台，覆盖从日志接入、解析标准化、检测关联、AI 研判到事件处置闭环的完整安全运营链路。
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Stack-React%20%7C%20Flask%20%7C%20Kafka%20%7C%20Flink%20%7C%20ES-blue">
+  <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-0db7a3">
+  <img src="https://img.shields.io/badge/Status-本地部署-brightgreen">
+</p>
+
+---
+
+## What is USOP?
 
 USOP（Unified Security Operations Platform）是一套前后端分离的一体化安全运营平台，覆盖从**日志接入、解析标准化、检测关联、AI 研判到事件处置闭环**的完整安全运营链路。
 
 > 核心数据流：`日志源 → Kafka → 解析管道（标准化/过滤/去重）→ Elasticsearch（告警唯一真相源）→ Flink 关联分析 → PostgreSQL（事件/业务）`
 
----
+## Why USOP?
 
-## 功能总览
+- **一体化运营闭环**：日志接入、检测、研判、响应、资产/漏洞管理在一个平台内完成，无需在多套工具间切换。
+- **告警唯一真相源 = Elasticsearch**：所有告警以 ES 为权威存储，PG 仅存业务关联，避免双写不一致与 `Alert.query` 死路。
+- **自动化响应剧本**：可视化编排 + 审批流 + 执行记录，把 response playbook 变成可复用、可审计的运营资产。
+- **可扩展接入**：Kafka 接入 + ParseProfile 字段映射，支持 9 种解析方式，新设备 / 新日志源即接即用。
+
+## Features
+
+| 能力 | 说明 |
+| --- | --- |
+| 安全告警与 AI 研判 | 告警检索、详情研判、聚合分析、AI 批量研判（自动闭环 / 误报标记 / 高危建事件） |
+| 事件工作台 | 五节点状态机流转（new → acknowledged → investigating → resolved → closed） |
+| 响应剧本与自动化 | 剧本编排、审批流、执行记录、封堵名单、通知与 HTTP 集成 |
+| 资产与漏洞管理 | 资产盘点 / 攻击面 / 扫描；主机 · 应用漏洞全生命周期、重评、附件 |
+| 数据采集与解析 | Kafka 接入、ParseProfile 映射、9 种解析方式 |
+| 权限与系统 | RBAC（4 系统角色 + 集中式写守卫）、AD 域认证、审计、全局配置 |
+
+## 模块与路由
 
 | 模块     | 路由                       | 说明                                                                      |
 | ------ | ------------------------ | ----------------------------------------------------------------------- |
@@ -364,3 +400,9 @@ MessageTable 列选择与列宽持久化到 localStorage（`usop.alerts.visible-
 - **防重复**：列表按「重评等级 ?? 原始等级」排序（危急→低危），服务端分页 + search（编号/CVE/名称/IP）+ severity/status 过滤；`/stats` 按类型返回等级/状态分布。
 - **处置跟踪**：责任人/处置方案/计划完成时间/备注（`PUT /vulnerabilities/<id>`），详情弹窗展示处置跟踪块 + 重评历史 + 完整时间线。
 - **附件（截图/报告）**：漏洞详情弹窗可上传多个附件（`POST /vulnerabilities/<id>/attachments`，multipart 字段 `file`）——图片（png/jpg/jpeg/gif/webp/bmp）自动归类为「截图」并生成缩略图与大图预览，其余（pdf/word/excel/csv/txt/md/log/json/zip）归为「报告」，限 20MB。落盘目录 `server-python/app/uploads/vuln_attachments/`（容器内 `/app/app/uploads/...`，bind mount 持久化），下载/预览走 `GET .../attachments/<att_id>`（带 JWT，前端 fetch+blob）。上传/删除写入处置时间线；删除漏洞时级联清理附件文件与记录（`vulnerability_attachments` 表）。
+
+---
+
+## License
+
+本项目为**内部安全运营平台**，仓库当前未包含公开授权文件（LICENSE）。未经授权请勿将代码用于商业或对外分发。平台对接第三方组件（如 Tracecat、Shuffle、Elasticsearch、Flink）时请各自遵守其对应许可证条款。

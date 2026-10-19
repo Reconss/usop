@@ -251,11 +251,13 @@ export const alertsApi = {
     return request(`/alerts-api/alerts/search?${sp.toString()}`);
   },
 
-  quickValues: (field: string, start_time?: string, end_time?: string) => {
+  quickValues: (field: string, start_time?: string, end_time?: string, query?: string) => {
     const sp = new URLSearchParams();
     sp.append('field', field);
     if (start_time) sp.append('start_time', start_time);
     if (end_time) sp.append('end_time', end_time);
+    // 聚合必须与列表同源：带上当前搜索词/筛选，否则面板分布与列表对不上
+    if (query) sp.append('query', query);
     return request(`/alerts-api/alerts/quick-values?${sp.toString()}`);
   },
 
