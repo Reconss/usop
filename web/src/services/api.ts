@@ -588,6 +588,7 @@ export const rolesApi = {
   createRole: (data: any) => request('/roles-api/roles', { method: 'POST', body: data }),
   updateRole: (id: string, data: any) => request(`/roles-api/roles/${id}`, { method: 'PUT', body: data }),
   deleteRole: (id: string) => request(`/roles-api/roles/${id}`, { method: 'DELETE' }),
+  seedRoles: () => request('/roles-api/roles/seed', { method: 'POST', body: {} }),
 };
 
 // Data Sources API

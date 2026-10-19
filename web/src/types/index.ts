@@ -35,6 +35,8 @@ export interface User {
   authType?: 'local' | 'ad';
   adUpn?: string | null;
   adDomain?: string | null;
+  /** 角色权限点（登录/me 响应按数据库实际角色解析，缺失时前端放行全部菜单） */
+  permissions?: string[];
 }
 
 export interface AuditLog {

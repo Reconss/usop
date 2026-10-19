@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   Shield, Users, Key, Check, Plus, Edit2, Trash2, ChevronDown,
-  Settings, Bell, Database, Server, Activity, RefreshCw, Lock,
+  Settings, Bell, Database, Server, Activity, RefreshCw, Lock, ShieldAlert, RotateCcw,
 } from 'lucide-react';
 import { rolesApi, request as apiRequest } from '../services/api';
 import {
@@ -38,6 +38,7 @@ interface Role {
 const modules = [
   { id: 'dashboard', name: '仪表盘', icon: Activity },
   { id: 'detection', name: '检测与分析', icon: Shield },
+  { id: 'vulnerabilities', name: '漏洞管理', icon: ShieldAlert },
   { id: 'response', name: '响应与自动化', icon: Bell },
   { id: 'assets', name: '资产与攻击面', icon: Server },
   { id: 'data', name: '日志配置', icon: Database },
@@ -54,6 +55,8 @@ const allPermissions: Permission[] = [
   { id: 'alerts.manage', name: '管理告警', description: '确认、关闭、标记误报', module: 'detection', actions: ['edit'] },
   { id: 'hunting.view', name: '威胁狩猎', description: '执行威胁狩猎查询', module: 'detection', actions: ['view', 'execute'] },
   { id: 'ai.view', name: 'AI中心', description: '使用AI分析功能', module: 'detection', actions: ['view', 'execute'] },
+  { id: 'vulns.view', name: '查看漏洞', description: '查看主机/应用漏洞清单与详情', module: 'vulnerabilities', actions: ['view'] },
+  { id: 'vulns.manage', name: '管理漏洞', description: '录入、派修、重评、关闭漏洞', module: 'vulnerabilities', actions: ['create', 'edit', 'delete'] },
   { id: 'playbooks.view', name: '查看剧本', description: '查看剧本编排', module: 'response', actions: ['view'] },
   { id: 'playbooks.manage', name: '管理剧本', description: '创建、编辑、删除剧本', module: 'response', actions: ['create', 'edit', 'delete'] },
   { id: 'playbooks.execute', name: '执行剧本', description: '手动触发剧本执行', module: 'response', actions: ['execute'] },
@@ -82,6 +85,64 @@ const actionLabels: Record<string, string> = {
   execute: '执行',
 };
 
+/** 系统角色默认权限分配（与后端 app/utils/permissions.py SYSTEM_ROLES 对齐，用于恢复默认） */
+const SYSTEM_ROLE_DEFAULTS: Record<string, { name: string; permissions: string[] }> = {
+  admin: {
+    name: '系统管理员',
+    permissions: allPermissions.map((p) => p.id),
+  },
+  operator: {
+    name: '安全运营',
+    permissions: [
+      'dashboard.view',
+      'events.view', 'events.create', 'events.edit',
+      'alerts.view', 'alerts.manage',
+      'hunting.view', 'ai.view',
+      'vulns.view', 'vulns.manage',
+      'assets.view', 'assets.manage',
+      'scans.view', 'scans.manage',
+      'playbooks.view', 'playbooks.execute',
+      'rules.view', 'rules.manage',
+      'data.view', 'data.manage',
+      'users.view', 'roles.view', 'audit.view', 'config.view',
+    ],
+  },
+  analyst: {
+    name: '安全分析师',
+    permissions: [
+      'dashboard.view',
+      'events.view', 'events.create', 'events.edit',
+      'alerts.view', 'alerts.manage',
+      'hunting.view', 'ai.view',
+      'vulns.view',
+      'assets.view', 'scans.view',
+      'playbooks.view',
+      'rules.view',
+    ],
+  },
+  auditor: {
+    name: '审计员',
+    permissions: [
+      'dashboard.view',
+      'events.view', 'alerts.view',
+      'hunting.view', 'ai.view',
+      'vulns.view',
+      'assets.view', 'scans.view',
+      'playbooks.view', 'rules.view',
+      'data.view',
+      'users.view', 'roles.view', 'audit.view', 'config.view',
+    ],
+  },
+};
+
+/** 系统角色当前权限是否与默认一致 */
+const isDefaultSystemRole = (roleId: string, permissions: string[]): boolean => {
+  const def = SYSTEM_ROLE_DEFAULTS[roleId];
+  if (!def) return true;
+  if (def.permissions.length !== permissions.length) return false;
+  return def.permissions.every((p) => permissions.includes(p));
+};
+
 export default function RoleManagement() {
   const [roles, setRoles] = useState<Role[]>([]);
   const [loading, setLoading] = useState(true);
@@ -89,10 +150,13 @@ export default function RoleManagement() {
   const [selectedRole, setSelectedRole] = useState<Role | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [editingRole, setEditingRole] = useState<Role | null>(null);
-  const [expandedModules, setExpandedModules] = useState<string[]>(['detection', 'response', 'assets']);
+  const [expandedModules, setExpandedModules] = useState<string[]>(['detection', 'vulnerabilities', 'response', 'assets']);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<Role | null>(null);
+  /** 恢复默认：单角色 = restoreTarget；全部系统角色 = seedAllOpen */
+  const [restoreTarget, setRestoreTarget] = useState<Role | null>(null);
+  const [seedAllOpen, setSeedAllOpen] = useState(false);
   const [toast, setToast] = useState<{ type: string; message: string } | null>(null);
   const [formData, setFormData] = useState({
     name: '',
@@ -203,16 +267,21 @@ export default function RoleManagement() {
     setSaving(true);
     setFormError('');
     try {
-      const payload = {
-        name: formData.name.trim(),
-        description: formData.description.trim(),
+      const payload: Record<string, unknown> = {
         permissions: formData.permissions,
       };
+      // 系统内置角色仅允许调整权限点，名称/描述锁定
+      if (!editingRole?.isSystem) {
+        payload.name = formData.name.trim();
+        payload.description = formData.description.trim();
+      }
       const res: any = editingRole
         ? await rolesApi.updateRole(editingRole.id, payload)
         : await rolesApi.createRole({
             ...payload,
-            id: payload.name.toLowerCase().replace(/[^a-z0-9_-]+/g, '-') || `role-${Date.now()}`,
+            name: formData.name.trim(),
+            description: formData.description.trim(),
+            id: formData.name.toLowerCase().replace(/[^a-z0-9_-]+/g, '-') || `role-${Date.now()}`,
           });
       if (res.success) {
         addToast('success', editingRole ? '角色已更新' : '角色已创建');
@@ -242,6 +311,52 @@ export default function RoleManagement() {
     await fetchRoles();
   };
 
+  /** 单角色恢复默认权限（只改选中角色，写回 SYSTEM_ROLE_DEFAULTS 默认分配） */
+  const handleRestoreDefault = async () => {
+    if (!restoreTarget) return;
+    setSaving(true);
+    try {
+      const def = SYSTEM_ROLE_DEFAULTS[restoreTarget.id];
+      if (!def) {
+        addToast('error', '该角色不在系统角色清单内');
+        return;
+      }
+      const res: any = await rolesApi.updateRole(restoreTarget.id, { permissions: def.permissions });
+      if (res.success) {
+        addToast('success', `已恢复「${restoreTarget.name}」默认权限`);
+        await fetchRoles();
+        setSelectedRole(null);
+      } else {
+        addToast('error', res.error || '恢复默认失败');
+      }
+    } catch (e: any) {
+      addToast('error', e?.message || '恢复默认失败');
+    } finally {
+      setSaving(false);
+      setRestoreTarget(null);
+    }
+  };
+
+  /** 恢复全部系统角色默认权限（服务端 force 重置 4 个内置角色） */
+  const handleSeedAll = async () => {
+    setSaving(true);
+    try {
+      const res: any = await rolesApi.seedRoles();
+      if (res.success) {
+        addToast('success', '已恢复 4 个系统角色的默认权限分配');
+        await fetchRoles();
+        setSelectedRole(null);
+      } else {
+        addToast('error', res.error || '恢复默认失败');
+      }
+    } catch (e: any) {
+      addToast('error', e?.message || '恢复默认失败');
+    } finally {
+      setSaving(false);
+      setSeedAllOpen(false);
+    }
+  };
+
   const getPermissionCount = (moduleId: string, rolePermissions: string[]) => {
     const modulePerms = allPermissions.filter((p) => p.module === moduleId);
     const granted = modulePerms.filter((p) => rolePermissions.includes(p.id)).length;
@@ -261,6 +376,9 @@ export default function RoleManagement() {
           <>
             <Button variant="secondary" icon={RefreshCw} onClick={fetchRoles}>
               刷新
+            </Button>
+            <Button variant="secondary" icon={RotateCcw} onClick={() => setSeedAllOpen(true)}>
+              恢复默认分配
             </Button>
             <Button variant="primary" icon={Plus} onClick={handleAdd}>
               新建角色
@@ -313,6 +431,9 @@ export default function RoleManagement() {
                                 <Lock size={9} /> 系统
                               </StatusBadge>
                             )}
+                            {role.isSystem && !isDefaultSystemRole(role.id, role.permissions) && (
+                              <StatusBadge tone="warning">已定制</StatusBadge>
+                            )}
                           </div>
                           {role.description && (
                             <p className="mt-0.5 text-[11.5px] text-text-muted truncate-2">{role.description}</p>
@@ -343,9 +464,19 @@ export default function RoleManagement() {
                 description={selectedRole.description || '未填写角色说明'}
                 actions={
                   selectedRole.isSystem ? (
-                    <StatusBadge tone="primary">
-                      <Lock size={10} /> 系统内置角色
-                    </StatusBadge>
+                    <>
+                      <Button variant="ghost" size="sm" icon={Edit2} onClick={() => handleEdit(selectedRole)}>
+                        配置权限
+                      </Button>
+                      {!isDefaultSystemRole(selectedRole.id, selectedRole.permissions) && (
+                        <Button variant="secondary" size="sm" icon={RefreshCw} onClick={() => setRestoreTarget(selectedRole)}>
+                          恢复默认
+                        </Button>
+                      )}
+                      <StatusBadge tone="primary">
+                        <Lock size={10} /> 系统内置
+                      </StatusBadge>
+                    </>
                   ) : (
                     <>
                       <Button variant="ghost" size="sm" icon={Edit2} onClick={() => handleEdit(selectedRole)}>
@@ -445,7 +576,13 @@ export default function RoleManagement() {
         onClose={() => setShowForm(false)}
         width={860}
         title={editingRole ? '编辑角色' : '新建角色'}
-        description={editingRole ? `角色 ${editingRole.name}` : '角色 ID 依据名称自动生成，创建后按模块勾选权限'}
+        description={
+          editingRole?.isSystem
+            ? `系统内置角色 ${editingRole.name}：可调整权限点，名称与说明锁定`
+            : editingRole
+              ? `角色 ${editingRole.name}`
+              : '角色 ID 依据名称自动生成，创建后按模块勾选权限'
+        }
         footer={
           <>
             <Button variant="secondary" onClick={() => setShowForm(false)}>取消</Button>
@@ -461,18 +598,20 @@ export default function RoleManagement() {
               <input
                 type="text"
                 value={formData.name}
+                readOnly={Boolean(editingRole?.isSystem)}
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                 placeholder="输入角色名称"
-                className="app-input"
+                className={`app-input${editingRole?.isSystem ? ' opacity-60 cursor-not-allowed' : ''}`}
               />
             </Field>
             <Field label="描述">
               <input
                 type="text"
                 value={formData.description}
+                readOnly={Boolean(editingRole?.isSystem)}
                 onChange={(e) => setFormData({ ...formData, description: e.target.value })}
                 placeholder="输入角色描述"
-                className="app-input"
+                className={`app-input${editingRole?.isSystem ? ' opacity-60 cursor-not-allowed' : ''}`}
               />
             </Field>
           </div>
@@ -564,6 +703,45 @@ export default function RoleManagement() {
         <p className="text-body text-text-secondary">
           确定要删除角色 <strong className="text-text-primary">{deleteTarget?.name}</strong> 吗？
           已绑定该角色的用户将失去对应权限，操作不可撤销。
+        </p>
+      </Modal>
+
+      {/* ── 单角色恢复默认确认 ───────────────────────── */}
+      <Modal
+        open={Boolean(restoreTarget)}
+        onClose={() => setRestoreTarget(null)}
+        width={420}
+        title="恢复默认权限"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setRestoreTarget(null)}>取消</Button>
+            <Button variant="primary" icon={RotateCcw} loading={saving} onClick={handleRestoreDefault}>确认恢复</Button>
+          </>
+        }
+      >
+        <p className="text-body text-text-secondary">
+          将把系统角色 <strong className="text-text-primary">{restoreTarget?.name}</strong> 的权限恢复为默认分配
+          （<span className="num">{SYSTEM_ROLE_DEFAULTS[restoreTarget?.id || '']?.permissions.length ?? 0}</span> 项），
+          当前的自定义调整将被覆盖。
+        </p>
+      </Modal>
+
+      {/* ── 全部系统角色恢复默认确认 ─────────────────── */}
+      <Modal
+        open={seedAllOpen}
+        onClose={() => setSeedAllOpen(false)}
+        width={460}
+        title="恢复默认分配"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setSeedAllOpen(false)}>取消</Button>
+            <Button variant="primary" icon={RotateCcw} loading={saving} onClick={handleSeedAll}>全部恢复</Button>
+          </>
+        }
+      >
+        <p className="text-body text-text-secondary">
+          将把 <strong className="text-text-primary">系统管理员 / 安全运营 / 安全分析师 / 审计员</strong> 四个系统角色的权限
+          一键恢复为默认分配，此前在页面上的自定义调整将被覆盖。自定义（非系统）角色不受影响。
         </p>
       </Modal>
 
