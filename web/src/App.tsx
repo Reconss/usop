@@ -25,7 +25,6 @@ const RoleManagement = lazy(() => import('./pages/RoleManagement'));
 const GlobalConfig = lazy(() => import('./pages/GlobalConfig'));
 const VulnerabilityManagement = lazy(() => import('./pages/VulnerabilityManagement'));
 const VulnerabilityAssessment = lazy(() => import('./pages/VulnerabilityAssessment'));
-const OperationsKPI = lazy(() => import('./pages/OperationsKPI'));
 const SystemBackup = lazy(() => import('./pages/SystemBackup'));
 const Login = lazy(() => import('./pages/Login'));
 const Profile = lazy(() => import('./pages/Profile'));
@@ -96,7 +95,9 @@ function AppContent() {
               {/* AI 研判 / 告警协作已并入安全告警工作台（旧路径兼容跳转） */}
               <Route path="/detection/ai-judgment" element={<Navigate to="/detection/investigation" replace />} />
               <Route path="/detection/collaboration" element={<Navigate to="/detection/investigation" replace />} />
-              <Route path="/operations/kpi" element={<OperationsKPI />} />
+              {/* 运营总览已下线（旧路径兼容跳转到仪表盘） */}
+              <Route path="/operations/kpi" element={<Navigate to="/" replace />} />
+              <Route path="/operations/*" element={<Navigate to="/" replace />} />
               <Route path="/system/backup" element={<SystemBackup />} />
               <Route path="/profile" element={<Profile />} />
               <Route path="/login" element={<Navigate to="/" replace />} />

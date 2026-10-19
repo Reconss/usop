@@ -271,8 +271,23 @@ title:"暴力破解 登录"                           # 短语（引号整体匹
 前端对应处理：剧本卡片与编辑器「运行」按钮对事件触发剧本置灰（提示到事件工作台执行）；
 声明了必填入参的剧本在卡片直跑时引导到编辑器填写；事件工作台执行弹窗按同一规则校验后才发出请求。
 
-## 告警 ↔ 事件 状态联动
+## 告警源 IP 语义（主机类 vs 网络类）
 
+主机类告警（HIDS/EDR，`source_type=host|endpoint`）中受控主机是**告警目标**而非攻击来源：
+
+- **解析器**（`app/utils/alert_parsers.py`）：Wazuh 不再把 `agent.ip` 回退进 `src_ip`
+  （受控主机 IP 进 `dst_ip`）；CrowdStrike 的 `LocalIP/SensorIP` 同样进 `dst_ip`，`src_ip` 留空。
+- **详情面板**（SecurityAlerts）：主机类告警网络区显示「涉及主机」（中性色）+
+  真实远程来源「来源地址」（红色，存在且不同于主机 IP 时）；网络类告警保持
+  「源地址/目的地址」原语义。
+- **存量修正**：青藤 HIDS 种子告警本机 IP 已从 `src_ip` 迁到 `dst_ip`（一次性脚本执行）。
+
+## 安全告警列选择持久化
+
+MessageTable 列选择与列宽持久化到 localStorage（`usop.alerts.visible-columns` /
+`usop.alerts.col-widths`），刷新与重进后保留；列选择器带「重置」恢复默认列。
+
+## 告警 ↔ 事件 状态联动
 告警转成事件后，其状态跟随事件生命周期自动流转（唯一实现 `app/utils/event_alert_link.py`），
 避免已转事件的告警反复出现在「待分析」队列被重复研判：
 

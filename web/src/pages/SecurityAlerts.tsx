@@ -51,6 +51,7 @@ interface Alert {
   status: AlertStatus;
   source: string;
   sourceProduct?: string;
+  sourceType?: string;
   srcIp: string;
   srcPort?: number;
   dstIp: string;
@@ -399,6 +400,7 @@ export default function SecurityAlerts() {
         status: a.status || 'new',
         source: a.source || 'Other',
         sourceProduct: a.source_product || a.source || '',
+        sourceType: a.source_type || a.sourceType || '',
         srcIp: a.src_ip || a.srcIp || '',
         srcPort: a.src_port || a.srcPort,
         dstIp: a.dst_ip || a.dstIp || '',
@@ -926,32 +928,47 @@ export default function SecurityAlerts() {
                     </div>
                   ))}
                 </div>
-                {/* 网络信息（仅网络类告警显示） */}
-                {(showDetail.srcIp || showDetail.dstIp || showDetail.protocol) && (
-                  <div className="grid grid-cols-5 gap-2">
-                    {[
-                      { label: '源地址', value: showDetail.srcIp, tone: 'danger' },
-                      { label: '源端口', value: showDetail.srcPort, tone: 'danger' },
-                      { label: '目的地址', value: showDetail.dstIp, tone: 'info' },
-                      { label: '目的端口', value: showDetail.dstPort, tone: 'info' },
-                      { label: '协议', value: showDetail.protocol, tone: 'success' },
-                    ].map(item => (
-                      <div
-                        key={item.label}
-                        className={
-                          item.tone === 'danger'
-                            ? 'rounded-input border border-danger/25 bg-danger/10 px-2 py-1.5 text-center'
-                            : item.tone === 'info'
-                              ? 'rounded-input border border-info/25 bg-info/10 px-2 py-1.5 text-center'
-                              : 'rounded-input border border-success/25 bg-success/10 px-2 py-1.5 text-center'
-                        }
-                      >
-                        <div className="mb-0.5 text-[10px] text-text-muted">{item.label}</div>
-                        <div className="truncate font-mono text-[11.5px] text-text-primary">{item.value || '-'}</div>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                {/* 网络信息（网络类=源/目的地址；主机类=涉及主机，避免把受控主机当攻击源显示） */}
+                {(showDetail.srcIp || showDetail.dstIp || showDetail.protocol) && (() => {
+                  const isHostType = ['host', 'endpoint'].includes(showDetail.sourceType || '');
+                  const items = isHostType
+                    ? [
+                        // 历史数据里本机 IP 存在 srcIp，新数据在 dstIp——任一取到即涉及主机
+                        { label: '涉及主机', value: showDetail.dstIp || showDetail.srcIp, tone: 'amber' },
+                        // 真实的远程来源（如 Wazuh srcip）与主机 IP 不同时才单独展示
+                        ...(showDetail.srcIp && showDetail.srcIp !== (showDetail.dstIp || showDetail.srcIp)
+                          ? [{ label: '来源地址', value: showDetail.srcIp, tone: 'danger' }]
+                          : []),
+                        ...(showDetail.protocol ? [{ label: '协议', value: showDetail.protocol, tone: 'success' }] : []),
+                      ]
+                    : [
+                        { label: '源地址', value: showDetail.srcIp, tone: 'danger' },
+                        { label: '源端口', value: showDetail.srcPort, tone: 'danger' },
+                        { label: '目的地址', value: showDetail.dstIp, tone: 'info' },
+                        { label: '目的端口', value: showDetail.dstPort, tone: 'info' },
+                        { label: '协议', value: showDetail.protocol, tone: 'success' },
+                      ];
+                  const toneCls: Record<string, string> = {
+                    danger: 'rounded-input border border-danger/25 bg-danger/10 px-2 py-1.5 text-center',
+                    info: 'rounded-input border border-info/25 bg-info/10 px-2 py-1.5 text-center',
+                    success: 'rounded-input border border-success/25 bg-success/10 px-2 py-1.5 text-center',
+                    amber: 'rounded-input border border-warning/25 bg-warning/10 px-2 py-1.5 text-center',
+                  };
+                  const gridCls: Record<number, string> = {
+                    1: 'grid-cols-1', 2: 'grid-cols-2', 3: 'grid-cols-3',
+                    4: 'grid-cols-4', 5: 'grid-cols-5',
+                  };
+                  return (
+                    <div className={`grid gap-2 ${gridCls[items.length] || 'grid-cols-5'}`}>
+                      {items.map(item => (
+                        <div key={item.label} className={toneCls[item.tone] || toneCls.info}>
+                          <div className="mb-0.5 text-[10px] text-text-muted">{item.label}</div>
+                          <div className="truncate font-mono text-[11.5px] text-text-primary">{item.value || '-'}</div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Tab 切换 */}

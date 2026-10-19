@@ -196,7 +196,11 @@ def parse_wazuh(raw: dict) -> Optional[dict]:
     mitre_tactics = mitre.get('tactic', [])
     mitre_techniques = mitre.get('technique', [])
 
-    src_ip = data.get('srcip', '') or agent.get('ip', '')
+    # srcip 是真实的远程来源（如暴力破解来源）；缺失时留空。
+    # 受控主机(agent.ip)是告警目标而非来源，不得回退进 src_ip——否则面板上
+    # 受害主机会被当成攻击源显示。
+    src_ip = data.get('srcip', '') or ''
+    dst_ip = data.get('dstip', '') or agent.get('ip', '')
 
     return {
         'alert_code': _generate_alert_code('WZH', raw),
@@ -211,7 +215,7 @@ def parse_wazuh(raw: dict) -> Optional[dict]:
         'confidence': 85.0,
         'src_ip': src_ip,
         'src_port': int(data.get('srcport', 0)) if data.get('srcport') else None,
-        'dst_ip': data.get('dstip', '') or '',
+        'dst_ip': dst_ip,
         'dst_port': int(data.get('dstport', 0)) if data.get('dstport') else None,
         'protocol': 'SSH' if 'sshd' in str(rule.get('groups', [])) else '',
         'hostname': agent.get('name', ''),
@@ -339,8 +343,10 @@ def parse_crowdstrike(raw: dict) -> Optional[dict]:
     else:
         severity = 'high'
 
-    # 尝试从事件中提取 IP
-    src_ip = event.get('LocalIP', '') or event.get('SensorIP', '')
+    # Falcon DetectionSummaryEvent 只有受控端本机 IP（LocalIP/SensorIP），
+    # 它是告警目标而非攻击来源——放进 dst_ip，src_ip 留空，
+    # 避免面板把受害主机显示成红色「源地址」。
+    local_ip = event.get('LocalIP', '') or event.get('SensorIP', '')
 
     parsed = {
         'detect_name': detect_name,
@@ -373,9 +379,9 @@ def parse_crowdstrike(raw: dict) -> Optional[dict]:
         'source_type': 'endpoint',
         'category': '终端威胁',
         'confidence': 95.0,
-        'src_ip': src_ip,
+        'src_ip': '',
         'src_port': None,
-        'dst_ip': '',
+        'dst_ip': local_ip,
         'dst_port': None,
         'protocol': '',
         'hostname': event.get('ComputerName', '') or event.get('Hostname', ''),

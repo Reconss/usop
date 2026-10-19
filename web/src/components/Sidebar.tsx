@@ -30,8 +30,7 @@ import {
   Scroll,
   ShieldAlert,
   AppWindow,
-  Star,
-  Gauge
+  Star
 } from 'lucide-react';
 
 interface MenuItem {
@@ -54,7 +53,6 @@ export const menuItems: MenuItem[] = [
       { id: 'investigation', label: '安全告警', icon: FileSearch, path: '/detection/investigation' },
       { id: 'hunting', label: '威胁狩猎', icon: Target, path: '/detection/hunting' },
       { id: 'ai', label: 'AI中心', icon: Brain, path: '/detection/ai' },
-      { id: 'kpi', label: '运营总览', icon: Gauge, path: '/operations/kpi' }
     ]
   },
   {

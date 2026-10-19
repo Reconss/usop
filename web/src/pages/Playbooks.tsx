@@ -1196,25 +1196,6 @@ export default function Playbooks() {
     addNode(typeId, Math.max(10, x), Math.max(10, y));
   };
 
-  // ===== 模板 =====
-  const [showTemplates, setShowTemplates] = useState(false);
-  
-  const loadTemplate = (template: any) => {
-    const newPb: PlaybookData = {
-      id: `PB-${Date.now()}`,
-      name: template.name,
-      description: template.description,
-      triggerType: template.triggerType,
-      enabled: false,
-      nodes: template.nodes.map((n: any) => ({
-        ...n,
-        config: n.config || {}
-      })),
-    };
-    setPlaybooks(prev => [...prev, newPb]);
-    setShowTemplates(false);
-  };
-
   // 剧本统计
   const playbookStats = useMemo(() => {
     const total = playbooks.length;
@@ -1287,9 +1268,6 @@ export default function Playbooks() {
                   {pendingApprovalCount}
                 </span>
               )}
-            </Button>
-            <Button variant="secondary" icon={LayoutGrid} onClick={() => setShowTemplates(true)}>
-              模板库
             </Button>
             <Button variant="primary" icon={Plus} onClick={newPlaybook}>
               新建剧本
@@ -1485,51 +1463,6 @@ export default function Playbooks() {
         ))}
       </div>
       )}
-
-      {/* ========== 模板库弹窗 ========== */}
-      <AnimatePresence>
-        {showTemplates && (
-          <>
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-              className="overlay z-overlay motion-owned" onClick={() => setShowTemplates(false)} />
-            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
-              className="fixed inset-8 z-50 pointer-events-none">
-              <div className="w-full h-full bg-card-bg rounded-card border border-border-color overflow-hidden pointer-events-auto flex flex-col">
-                <div className="flex items-center justify-between px-5 py-3 border-b border-border-color bg-page-bg/50">
-                  <div className="flex items-center gap-2">
-                    <LayoutGrid className="w-5 h-5 text-primary" />
-                    <span className="text-base font-semibold text-text-primary">剧本模板库</span>
-                  </div>
-                  <button onClick={() => setShowTemplates(false)} className="p-1.5 text-text-muted hover:text-text-primary">
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-                <div className="flex-1 p-4 overflow-y-auto">
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {[
-                      { name: '恶意IP自动封禁', desc: '检测攻击行为自动封禁IP并通知', icon: '🔒' },
-                      { name: '主机异常隔离', desc: '检测主机异常自动隔离', icon: '🛡️' },
-                      { name: '工单自动创建', desc: '高危告警自动创建工单', icon: '📝' },
-                      { name: '情报丰富', desc: '自动查询威胁情报', icon: '🔍' },
-                      { name: '定时巡检', desc: '定时执行安全检查', icon: '⏰' },
-                      { name: 'Webhook联动', desc: '触发外部系统Webhook', icon: '🔗' }
-                    ].map((t, i) => (
-                      <div key={i} 
-                        className="p-4 bg-page-bg rounded-lg border border-border-color hover:border-primary/30 cursor-pointer transition-all group"
-                        onClick={() => loadTemplate({ name: t.name, description: t.desc, triggerType: '告警事件', nodes: [] })}
-                      >
-                        <div className="text-2xl mb-2">{t.icon}</div>
-                        <h4 className="text-sm font-medium text-text-primary group-hover:text-primary">{t.name}</h4>
-                        <p className="text-xs text-text-muted mt-1">{t.desc}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </motion.div>
-          </>
-        )}
-      </AnimatePresence>
 
       {/* ========== 编辑器弹窗 ========== */}
       <AnimatePresence>

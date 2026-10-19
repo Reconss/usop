@@ -1087,10 +1087,6 @@ export const aiJudgmentApi = {
 };
 
 // 运营 KPI API
-export const kpiApi = {
-  overview: (days?: number) => request(`/kpi/overview${days ? `?days=${days}` : ''}`),
-};
-
 // 系统备份 API
 export const backupApi = {
   exportBackup: () => request('/backup/export'),

@@ -131,6 +131,36 @@ interface MessageTableProps {
   className?: string;
 }
 
+// 列选择/列宽持久化 key（同页面唯一使用方，刷新与重进后保留用户选择）
+const COLS_STORAGE_KEY = 'usop.alerts.visible-columns';
+const WIDTHS_STORAGE_KEY = 'usop.alerts.col-widths';
+
+const loadPersistedCols = (): string[] => {
+  try {
+    const raw = localStorage.getItem(COLS_STORAGE_KEY);
+    if (!raw) return [];
+    const saved = JSON.parse(raw);
+    if (!Array.isArray(saved)) return [];
+    const valid = new Set(ALL_COLUMNS.map(c => c.key));
+    const filtered = saved.filter((k: unknown) => typeof k === 'string' && valid.has(k as string));
+    // 至少保留一列，避免存出全空表
+    return filtered.length ? filtered : [];
+  } catch {
+    return [];
+  }
+};
+
+const loadPersistedWidths = (): Record<string, number> => {
+  try {
+    const raw = localStorage.getItem(WIDTHS_STORAGE_KEY);
+    if (!raw) return {};
+    const saved = JSON.parse(raw);
+    return saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {};
+  } catch {
+    return {};
+  }
+};
+
 export const MessageTable: React.FC<MessageTableProps> = ({
   data, loading, total = 0, page = 1, pageSize = 20,
   onPageChange, onPageSizeChange, onSortChange,
@@ -138,12 +168,15 @@ export const MessageTable: React.FC<MessageTableProps> = ({
   selectedIds, onSelectionChange, className = '',
 }) => {
   const [visibleCols, setVisibleCols] = useState<string[]>(
-    DEFAULT_COLUMNS.map(c => c.key)
+    () => {
+      const persisted = loadPersistedCols();
+      return persisted.length ? persisted : DEFAULT_COLUMNS.map(c => c.key);
+    }
   );
   const [showColSelector, setShowColSelector] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
-  // 列宽自适应调节：初始用列定义的默认宽度，可拖拽列边界实时调整
-  const [colWidths, setColWidths] = useState<Record<string, number>>({});
+  // 列宽自适应调节：初始用列定义的默认宽度（叠加本地持久化），可拖拽列边界实时调整
+  const [colWidths, setColWidths] = useState<Record<string, number>>(() => loadPersistedWidths());
   const resizeStateRef = useRef<{ key: string; startX: number; startW: number } | null>(null);
 
   const handleResizeStart = (key: string) => (e: React.MouseEvent) => {
@@ -160,6 +193,10 @@ export const MessageTable: React.FC<MessageTableProps> = ({
     };
     const onUp = () => {
       resizeStateRef.current = null;
+      setColWidths(prev => {
+        try { localStorage.setItem(WIDTHS_STORAGE_KEY, JSON.stringify(prev)); } catch { /* 忽略 */ }
+        return prev;
+      });
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
       document.body.style.cursor = '';
@@ -188,9 +225,11 @@ export const MessageTable: React.FC<MessageTableProps> = ({
   };
 
   const handleToggleCol = (key: string) => {
-    setVisibleCols(prev =>
-      prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]
-    );
+    setVisibleCols(prev => {
+      const next = prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key];
+      try { localStorage.setItem(COLS_STORAGE_KEY, JSON.stringify(next)); } catch { /* 忽略配额错误 */ }
+      return next;
+    });
   };
 
   const handleSelectAll = () => {
@@ -323,8 +362,18 @@ export const MessageTable: React.FC<MessageTableProps> = ({
 
           {showColSelector && (
             <div className="absolute top-full right-0 mt-1 w-56 z-50 overflow-hidden app-card shadow-panel">
-              <div className="px-3 py-2 border-b border-border-color">
-                <span className="text-xs font-medium text-text-muted">显示列</span>
+              <div className="px-3 py-2 border-b border-border-color flex items-center justify-between">
+                <span className="text-xs font-medium text-text-muted">显示列（自动记忆）</span>
+                <button
+                  onClick={() => {
+                    const defaults = DEFAULT_COLUMNS.map(c => c.key);
+                    setVisibleCols(defaults);
+                    try { localStorage.setItem(COLS_STORAGE_KEY, JSON.stringify(defaults)); } catch { /* 忽略 */ }
+                  }}
+                  className="text-[10px] text-text-muted hover:text-primary"
+                >
+                  重置
+                </button>
               </div>
               <div className="p-2 max-h-[300px] overflow-y-auto scrollbar-thin">
                 {ALL_COLUMNS.map((col) => (
