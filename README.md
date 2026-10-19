@@ -116,12 +116,6 @@ usop/
 └── docker-compose.yml      # 基础设施编排
 ```
 
-## 文档索引
-
-> 详细的系统架构、功能模块与部署运维说明已整合进本 README 的各章节（数据采集接入 / 剧本与自动化 / 漏洞管理 / 目录结构 等），不再单独维护 `docs/` 文档目录。
-
----
-
 ## 数据采集接入（Beats / Logstash → Kafka）
 
 平台采集入口是 **Kafka**。采集端（Filebeat / Logstash / 其它生产者）把日志发到**设备 topic**，平台纳管该 topic 后经解析管道自动完成：标准化 → 过滤/去重 → 存入 ES（`valid-alerts` / `invalid-alerts`）。
