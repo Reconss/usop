@@ -13,10 +13,11 @@
 from flask import Blueprint, request, jsonify
 from app.routes.auth import login_required
 from app.database import db
-from app.models import Event
+from app.models import Event, SystemConfig
 from app.utils import es_alerts, event_enrichment
 from datetime import datetime
 import logging
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -476,17 +477,58 @@ def related_alerts(alert_id):
 
 
 # =============================================
-# Saved Search CRUD（简化：内存存储）
+# Saved Search CRUD（持久化到 system_config，按用户隔离）
 # =============================================
 
-_saved_searches: dict[int, dict] = []
+_saved_searches: dict[int, dict] = []  # 兼容旧进程内存数据（重启即弃）
 _ss_counter = [0]
+
+
+def _ss_config_key(user_id) -> str:
+    return f'alert_saved_searches_{user_id}'
+
+
+def _ss_normalize_query(data: dict) -> str:
+    """query 字段统一归一化为字符串（前端可能传字符串或 {query_string} 对象）"""
+    q = data.get('query_string')
+    if isinstance(q, str) and q:
+        return q
+    q = data.get('query')
+    if isinstance(q, dict):
+        return q.get('query_string') or ''
+    return q if isinstance(q, str) else ''
+
+
+def _ss_load(user_id) -> list:
+    """加载当前用户的已保存搜索（system_config 持久化，无则空）"""
+    try:
+        cfg = SystemConfig.query.filter_by(key=_ss_config_key(user_id)).first()
+        if cfg and cfg.value:
+            rows = json.loads(cfg.value)
+            if isinstance(rows, list):
+                return rows
+    except Exception as e:
+        logger.warning(f'load saved searches failed: {e}')
+    return []
+
+
+def _ss_save(user_id, rows: list):
+    cfg = SystemConfig.query.filter_by(key=_ss_config_key(user_id)).first()
+    if cfg:
+        cfg.value = json.dumps(rows, ensure_ascii=False)
+    else:
+        cfg = SystemConfig(key=_ss_config_key(user_id),
+                          value=json.dumps(rows, ensure_ascii=False),
+                          category='alerts')
+        db.session.add(cfg)
+    db.session.commit()
 
 
 @alerts_api_bp.route('/alerts/saved-searches', methods=['GET'])
 @login_required
 def list_saved_searches():
-    return jsonify({'success': True, 'data': _saved_searches})
+    rows = _ss_load(request.current_user['user_id'])
+    return jsonify({'success': True, 'data': rows})
 
 
 @alerts_api_bp.route('/alerts/saved-searches', methods=['POST'])
@@ -495,23 +537,31 @@ def create_saved_search_endpoint():
     data = request.get_json() or {}
     if not data.get('title'):
         return jsonify({'success': False, 'error': '缺少搜索名称'}), 400
-    _ss_counter[0] += 1
+    user_id = request.current_user['user_id']
+    rows = _ss_load(user_id)
+    new_id = max([int(r.get('id') or 0) for r in rows] + [_ss_counter[0]]) + 1
+    _ss_counter[0] = new_id
     entry = {
-        'id': str(_ss_counter[0]),
+        'id': str(new_id),
         'title': data['title'],
-        'query_string': data.get('query_string', ''),
-        'query': data.get('query', ''),
+        'query': _ss_normalize_query(data),
+        'query_string': _ss_normalize_query(data),
         'created_at': datetime.utcnow().isoformat(),
     }
-    _saved_searches.append(entry)
+    rows.append(entry)
+    _ss_save(user_id, rows)
     return jsonify({'success': True, 'data': {'id': entry['id']}}), 201
 
 
 @alerts_api_bp.route('/alerts/saved-searches/<search_id>', methods=['DELETE'])
 @login_required
 def delete_saved_search(search_id):
-    global _saved_searches
-    _saved_searches = [s for s in _saved_searches if s['id'] != search_id]
+    user_id = request.current_user['user_id']
+    rows = _ss_load(user_id)
+    remaining = [s for s in rows if str(s.get('id')) != str(search_id)]
+    if len(rows) == len(remaining):
+        return jsonify({'success': False, 'error': '不存在'}), 404
+    _ss_save(user_id, remaining)
     return jsonify({'success': True})
 
 

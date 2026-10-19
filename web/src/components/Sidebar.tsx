@@ -166,9 +166,12 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, onCollapse }) => {
     () => filterMenuByPermissions(menuItems, user?.permissions),
     [user?.permissions]
   );
-  // 当前路径若无权访问（菜单被过滤），回落到第一个可见页面
+  // 当前路径若无权访问（菜单被过滤），回落到第一个可见页面。
+  // 注意豁免不在侧边栏菜单里的合法页面（/profile 个人中心）——否则从 Header/侧边栏
+  // 用户区进入个人中心时，会被本守卫误判为「不可达路径」重定向回仪表盘。
   useEffect(() => {
     if (!user?.permissions) return;
+    if (location.pathname === '/profile' || location.pathname.startsWith('/profile/')) return;
     const accessible = visibleMenuItems.some((g) =>
       g.path
         ? location.pathname === g.path || location.pathname.startsWith(g.path + '/')

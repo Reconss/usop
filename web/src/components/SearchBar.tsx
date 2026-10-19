@@ -19,7 +19,8 @@ import { Button, Field, Modal } from './ui';
 interface SavedSearch {
   id?: string;
   title: string;
-  query: string;
+  // 后端存储的 query 可能是纯字符串，也可能是 { query_string } 对象（历史/双写）
+  query: string | { query_string?: string; [key: string]: any } | null;
   timeRange?: { start: string; end: string; label?: string };
   createdAt?: string;
 }
@@ -35,6 +36,14 @@ interface SearchBarProps {
   onDeleteSearch?: (id: string) => void;
   className?: string;
 }
+
+// savedSearches 的 query 可能是字符串或 { query_string } 对象，渲染前统一转为字符串
+const queryToText = (q: SavedSearch['query']): string => {
+  if (q == null) return '';
+  if (typeof q === 'string') return q;
+  if (typeof q === 'object' && typeof q.query_string === 'string') return q.query_string;
+  return JSON.stringify(q);
+};
 
 const SYNTAX_HINTS = [
   { syntax: 'field:value', example: 'severity:critical', desc: '精确字段匹配' },
@@ -187,7 +196,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
                       }}
                     >
                       <div className="text-sm text-text-primary truncate">{s.title}</div>
-                      <div className="text-xs text-text-muted font-mono truncate">{s.query}</div>
+                      <div className="text-xs text-text-muted font-mono truncate">{queryToText(s.query)}</div>
                     </div>
                     {onDeleteSearch && s.id && (
                       <Button
