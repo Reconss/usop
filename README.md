@@ -112,16 +112,13 @@ usop/
 │   │   └── engine/         # playbook 引擎 / 检测动作
 │   └── migrations/         # 手写幂等迁移脚本（无 Alembic）
 ├── flink-jobs/             # Flink 作业（关联分析 / 告警引擎 / 日志解析）
-├── docs/                   # 系统文档
 ├── postgres/               # 数据库初始化脚本
 └── docker-compose.yml      # 基础设施编排
 ```
 
 ## 文档索引
 
-- [系统架构](docs/ARCHITECTURE.md) — 容器拓扑、数据流水线、存储底座、认证体系
-- [功能模块](docs/MODULES.md) — 各模块功能与前后端对应关系
-- [部署运维](docs/OPERATIONS.md) — 构建、发版、迁移、常见问题
+> 详细的系统架构、功能模块与部署运维说明已整合进本 README 的各章节（数据采集接入 / 剧本与自动化 / 漏洞管理 / 目录结构 等），不再单独维护 `docs/` 文档目录。
 
 ---
 

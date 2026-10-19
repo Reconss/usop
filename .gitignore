@@ -64,3 +64,6 @@ deploy/backups/
 # 敏感环境文件（含密钥）不进版本控制
 .env
 server-python/.env
+
+# 运行时上传目录（漏洞附件等用户数据，bind mount 持久化，不进版本控制）
+server-python/app/uploads/
