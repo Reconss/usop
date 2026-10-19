@@ -1,0 +1,173 @@
+# =============================================================================
+# USOP 基础设施编排（非容器部署专用）
+# -----------------------------------------------------------------------------
+# 仅运行「基础设施」：PostgreSQL / Redis / Elasticsearch / Kafka / Flink。
+# 应用（Flask + React）由 start_native.sh 在宿主机原生启动，通过下面暴露的
+# 宿主机端口连接这些组件 —— 因此应用侧连接地址一律填 localhost:<端口>。
+#
+# 用法：
+#   docker compose -f docker-compose.infra.yml up -d
+#   docker compose -f docker-compose.infra.yml down
+#
+# 与根目录 docker-compose.yml 的区别：
+#   - 不含 usop 应用服务、不挂载源码
+#   - PG 宿主机端口可用 PG_HOST_PORT 覆盖（默认 5432；macOS 上若被 Homebrew
+#     PostgreSQL 占用，start_native.sh 会自动改 5433；手动改：PG_HOST_PORT=5433）
+#   - Flink 容器内仍用服务名互访（kafka / postgres），与应用侧 host 地址解耦
+# =============================================================================
+name: usop-infra
+
+networks:
+  usop-infra:
+    driver: bridge
+
+services:
+  postgres:
+    container_name: usop_infra_pg
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: usop_security
+      POSTGRES_USER: usop
+      POSTGRES_PASSWORD: usop_password
+    ports:
+      # 宿主机端口（应用用）：默认 5432，冲突时改 PG_HOST_PORT=5433
+      - "${PG_HOST_PORT:-5432}:5432"
+    volumes:
+      - ./data/infra/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U usop -d usop_security"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [usop-infra]
+
+  redis:
+    container_name: usop_infra_redis
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./data/infra/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [usop-infra]
+
+  elasticsearch:
+    container_name: usop_infra_es
+    image: elasticsearch:8.11.0
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+    volumes:
+      - ./data/infra/elasticsearch:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [usop-infra]
+
+  kafka:
+    container_name: usop_infra_kafka
+    image: confluentinc/cp-kafka:7.5.0
+    restart: unless-stopped
+    environment:
+      CLUSTER_ID: TUMghNssTfuY70MTwaCWkQ
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT_INTERNAL://0.0.0.0:29092
+      # 对外通告用宿主机可达地址：应用通过 localhost:9092 接入；容器间用 kafka:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    volumes:
+      - ./data/infra/kafka:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+    networks: [usop-infra]
+
+  flink-jobmanager:
+    container_name: usop_infra_flink_jm
+    image: flink:1.18.1-scala_2.12-java11
+    restart: unless-stopped
+    command: jobmanager
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./flink-jobs:/opt/flink/jobs:ro
+      - ./data/infra/flink:/opt/flink/checkpoints
+      - ./flink-conf/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml:ro
+      - ./flink-jars/flink-connector-kafka-3.2.0-1.18.jar:/opt/flink/lib/flink-connector-kafka-3.2.0-1.18.jar
+      - ./flink-jars/kafka-clients-3.4.0.jar:/opt/flink/lib/kafka-clients-3.4.0.jar
+      - ./flink-jars/flink-connector-jdbc-3.2.0-1.18.jar:/opt/flink/lib/flink-connector-jdbc-3.2.0-1.18.jar
+      - ./flink-jars/postgresql-42.6.0.jar:/opt/flink/lib/postgresql-42.6.0.jar
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://127.0.0.1:8081/overview || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+    networks: [usop-infra]
+
+  flink-taskmanager:
+    container_name: usop_infra_flink_tm
+    image: flink:1.18.1-scala_2.12-java11
+    restart: unless-stopped
+    command: taskmanager
+    depends_on:
+      - flink-jobmanager
+    volumes:
+      - ./flink-jobs:/opt/flink/jobs:ro
+      - ./data/infra/flink:/opt/flink/checkpoints
+      - ./flink-conf/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml:ro
+      - ./flink-jars/flink-connector-kafka-3.2.0-1.18.jar:/opt/flink/lib/flink-connector-kafka-3.2.0-1.18.jar
+      - ./flink-jars/kafka-clients-3.4.0.jar:/opt/flink/lib/kafka-clients-3.4.0.jar
+      - ./flink-jars/flink-connector-jdbc-3.2.0-1.18.jar:/opt/flink/lib/flink-connector-jdbc-3.2.0-1.18.jar
+      - ./flink-jars/postgresql-42.6.0.jar:/opt/flink/lib/postgresql-42.6.0.jar
+    networks: [usop-infra]
+
+  flink-sql-gateway:
+    container_name: usop_infra_flink_gw
+    image: flink:1.18.1-scala_2.12-java11
+    restart: unless-stopped
+    depends_on:
+      - flink-jobmanager
+    ports:
+      - "8083:8083"
+    command: >
+      bash -c "/opt/flink/bin/sql-gateway.sh start-foreground
+      -D sql-gateway.endpoint.rest.address=0.0.0.0
+      -D sql-gateway.endpoint.rest.port=8083
+      -D sql-gateway.session.idle-timeout=365d
+      -D sql-gateway.session.max-num=200
+      -D rest.address=flink-jobmanager
+      -D rest.port=8081"
+    volumes:
+      - ./flink-jobs:/opt/flink/jobs:ro
+      - ./flink-conf/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml:ro
+      - ./flink-jars/flink-connector-kafka-3.2.0-1.18.jar:/opt/flink/lib/flink-connector-kafka-3.2.0-1.18.jar
+      - ./flink-jars/kafka-clients-3.4.0.jar:/opt/flink/lib/kafka-clients-3.4.0.jar
+      - ./flink-jars/flink-connector-jdbc-3.2.0-1.18.jar:/opt/flink/lib/flink-connector-jdbc-3.2.0-1.18.jar
+      - ./flink-jars/postgresql-42.6.0.jar:/opt/flink/lib/postgresql-42.6.0.jar
+    networks: [usop-infra]

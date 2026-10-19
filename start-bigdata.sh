@@ -1,292 +1,73 @@
-#!/bin/bash
-# 大数据组件启动脚本
+#!/usr/bin/env bash
+# =============================================================================
+# USOP 基础设施管理脚本（对应 docker-compose.infra.yml）
+# -----------------------------------------------------------------------------
+# 仅管理大数据 / 存储组件：PostgreSQL / Redis / Elasticsearch / Kafka / Flink。
+# 应用本身请用 start_native.sh 原生启动。
+#
+# 用法:
+#   ./start-bigdata.sh up                # 启动全部基础设施（后台）
+#   ./start-bigdata.sh down              # 停止并移除容器（数据保留在 data/infra）
+#   ./start-bigdata.sh restart           # 重启
+#   ./start-bigdata.sh status            # 查看状态与健康检查
+#   ./start-bigdata.sh logs [服务]        # 跟踪日志
+#   ./start-bigdata.sh init-topics       # 初始化 Kafka topics
+#   ./start-bigdata.sh help              # 帮助
+# =============================================================================
+set -euo pipefail
 
-set -e
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+COMPOSE_FILE="$SCRIPT_DIR/docker-compose.infra.yml"
+CMD="${1:-up}"
 
-echo "=========================================="
-echo "  USOP 日志平台 - 大数据组件管理"
-echo "=========================================="
-echo ""
+if [ -t 1 ]; then C_G=$'\033[1;32m'; C_R=$'\033[1;31m'; C_Y=$'\033[1;33m'; C_0=$'\033[0m'; else C_G=""; C_R=""; C_Y=""; C_0=""; fi
+log(){ printf '%s==>%s %s\n' "$C_G" "$C_0" "$*"; }
+warn(){ printf '%s  !%s %s\n' "$C_Y" "$C_0" "$*"; }
+die(){ printf '%s  ✗%s %s\n' "$C_R" "$C_0" "$*" >&2; exit 1; }
 
-# 检查 Docker 是否运行
-if ! docker info > /dev/null 2>&1; then
-    echo "错误: Docker 未运行，请先启动 Docker"
-    exit 1
-fi
+command -v docker >/dev/null 2>&1 || die "未安装 docker"
+docker compose version >/dev/null 2>&1 || die "缺少 docker compose（v2+）"
+docker info >/dev/null 2>&1 || die "无法连接 docker daemon"
 
-# 检查 docker-compose 是否安装
-if ! command -v docker-compose &> /dev/null; then
-    echo "提示: 使用 docker compose"
-    COMPOSE_CMD="docker compose"
-else
-    COMPOSE_CMD="docker-compose"
-fi
-
-# 解析参数
-COMMAND=${1:-"up"}
-
-wait_for_service() {
-    local service=$1
-    local port=$2
-    local name=$3
-    echo "等待 $name 启动..."
-    local max_attempts=30
-    local attempt=1
-    while [ $attempt -le $max_attempts ]; do
-        if docker exec $service echo "ok" > /dev/null 2>&1 || nc -z localhost $port > /dev/null 2>&1; then
-            echo "  ✓ $name 已启动"
-            return 0
-        fi
-        sleep 2
-        attempt=$((attempt + 1))
+case "$CMD" in
+  up|start)
+    log "启动基础设施（docker-compose.infra.yml）"
+    docker compose -f "$COMPOSE_FILE" up -d
+    log "等待就绪..."
+    sleep 8
+    "$0" status
+    ;;
+  down|stop)
+    log "停止基础设施（数据保留在 data/infra）"
+    docker compose -f "$COMPOSE_FILE" down
+    ;;
+  restart)
+    docker compose -f "$COMPOSE_FILE" restart
+    "$0" status
+    ;;
+  status)
+    docker compose -f "$COMPOSE_FILE" ps -a
+    echo
+    for svc in usop_infra_pg usop_infra_redis usop_infra_es usop_infra_kafka usop_infra_flink_jm; do
+      st=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$svc" 2>/dev/null || echo missing)
+      printf '  %-20s %s\n' "$svc" "$st"
     done
-    echo "  ✗ $name 启动超时"
-    return 1
-}
-
-case $COMMAND in
-    up|start)
-        echo "启动大数据组件..."
-        $COMPOSE_CMD -f docker-compose.yml up -d
-        
-        echo ""
-        echo "等待服务启动..."
-        sleep 15
-        
-        # 等待关键服务
-        wait_for_service zookeeper 2181 "Zookeeper"
-        wait_for_service kafka 9092 "Kafka"
-        wait_for_service redis 6379 "Redis"
-        
-        echo ""
-        echo "初始化 Kafka Topics..."
-        bash scripts/init-kafka-topics.sh
-        
-        echo ""
-        echo "初始化 TimescaleDB 表..."
-        docker exec -i timescale psql -U postgres -d timescale < postgres/init.d/01-init-timescale.sql 2>/dev/null || echo "  (表可能已存在)"
-        
-        echo ""
-        echo "=========================================="
-        echo "  服务启动完成！"
-        echo "=========================================="
-        echo ""
-        echo "服务访问地址:"
-        echo "  - Kafka:         localhost:9092"
-        echo "  - Kafka UI:      http://localhost:8080"
-        echo "  - Flink UI:      http://localhost:8081"
-        echo "  - TimescaleDB:   localhost:5432"
-        echo "  - Redis:         localhost:6379"
-        echo ""
-        echo "快速命令:"
-        echo "  $0 status          - 查看服务状态"
-        echo "  $0 flink-submit    - 提交 Flink Jobs"
-        echo "  $0 logs            - 查看日志"
-        echo ""
-        ;;
-        
-    down|stop)
-        echo "停止大数据组件..."
-        $COMPOSE_CMD -f docker-compose.yml down
-        echo "服务已停止"
-        ;;
-        
-    restart)
-        echo "重启大数据组件..."
-        $COMPOSE_CMD -f docker-compose.yml restart
-        echo "服务已重启"
-        ;;
-        
-    logs)
-        SERVICE=${2:-""}
-        if [ -z "$SERVICE" ]; then
-            $COMPOSE_CMD -f docker-compose.yml logs -f
-        else
-            $COMPOSE_CMD -f docker-compose.yml logs -f $SERVICE
-        fi
-        ;;
-        
-    status)
-        echo "检查服务状态..."
-        echo ""
-        $COMPOSE_CMD -f docker-compose.yml ps
-        
-        echo ""
-        echo "健康检查:"
-        echo ""
-        
-        # 检查 TimescaleDB
-        if docker exec timescale pg_isready -U postgres > /dev/null 2>&1; then
-            echo "  ✓ TimescaleDB 运行中"
-        else
-            echo "  ✗ TimescaleDB 未运行"
-        fi
-        
-        # 检查 Kafka
-        if nc -z localhost 9092 > /dev/null 2>&1; then
-            echo "  ✓ Kafka 运行中"
-            docker exec kafka kafka-topics --list --bootstrap-server localhost:9092 2>/dev/null | head -5 | sed 's/^/    /'
-        else
-            echo "  ✗ Kafka 未运行"
-        fi
-        
-        # 检查 Flink
-        if curl -s http://localhost:8081/healthz > /dev/null 2>&1; then
-            echo "  ✓ Flink JobManager 运行中"
-            echo "    Jobs: $(curl -s http://localhost:8081/jobs 2>/dev/null | grep -o '"jobs":[0-9]*' | head -1 || echo 'N/A')"
-        else
-            echo "  ✗ Flink JobManager 未运行"
-        fi
-        
-        # 检查 Redis
-        if nc -z localhost 6379 > /dev/null 2>&1; then
-            echo "  ✓ Redis 运行中"
-        else
-            echo "  ✗ Redis 未运行"
-        fi
-        echo ""
-        ;;
-        
-    flink-submit)
-        echo "提交 Flink Jobs..."
-        echo ""
-        
-        # 等待 Flink 就绪
-        echo "等待 Flink JobManager 就绪..."
-        until curl -s http://localhost:8081/available-job-depth > /dev/null 2>&1; do
-            sleep 2
-        done
-        echo "  ✓ Flink JobManager 就绪"
-        
-        # 检查 Job 列表
-        JOBS=$(curl -s http://localhost:8081/jobs 2>/dev/null | grep -o '"id":"[^"]*"' | wc -l)
-        echo "  当前运行 Jobs: $JOBS"
-        
-        if [ -d "flink-jobs" ]; then
-            echo ""
-            echo "可用的 Flink Jobs:"
-            for job in flink-jobs/*.py; do
-                [ -f "$job" ] && echo "  - $(basename $job)"
-            done
-            echo ""
-            
-            # 提交 Log Parser Job
-            if [ -f "flink-jobs/log_parser_job.py" ]; then
-                echo "提交 Log Parser Job..."
-                docker exec flink-jobmanager python /opt/flink/jobs/log_parser_job.py &
-            fi
-            
-            # 提交 Alert Engine Job
-            if [ -f "flink-jobs/alert_engine_job.py" ]; then
-                echo "提交 Alert Engine Job..."
-                docker exec flink-jobmanager python /opt/flink/jobs/alert_engine_job.py &
-            fi
-            
-            sleep 5
-        else
-            echo "  Flink Jobs 目录不存在"
-        fi
-        echo ""
-        ;;
-        
-    rule-sync)
-        echo "启动规则同步服务..."
-        echo ""
-        
-        if [ -f "flink-jobs/rule_sync_service.py" ]; then
-            cd server-python
-            python ../flink-jobs/rule_sync_service.py --mode sync
-            cd ..
-        else
-            echo "  规则同步脚本不存在"
-        fi
-        ;;
-        
-    deploy-all)
-        echo "=========================================="
-        echo "  完整部署 USOP 平台"
-        echo "=========================================="
-        echo ""
-        
-        echo "1. 启动基础服务..."
-        $0 up
-        
-        echo ""
-        echo "2. 启动后端 API..."
-        cd server-python
-        source venv/bin/activate
-        python run.py &
-        cd ..
-        
-        echo ""
-        echo "3. 启动规则同步服务..."
-        $0 rule-sync
-        
-        echo ""
-        echo "4. 提交 Flink Jobs..."
-        $0 flink-submit
-        
-        echo ""
-        echo "=========================================="
-        echo "  部署完成!"
-        echo "=========================================="
-        echo ""
-        echo "访问地址:"
-        echo "  - 前端:     http://localhost:3266"
-        echo "  - 后端 API: http://localhost:5000"
-        echo "  - Flink:    http://localhost:8081"
-        echo "  - Kafka UI: http://localhost:8080"
-        echo ""
-        ;;
-        
-    init-topics)
-        echo "初始化 Kafka Topics..."
-        bash scripts/init-kafka-topics.sh
-        ;;
-        
-    init-db)
-        echo "初始化 TimescaleDB 表..."
-        docker exec -i timescale psql -U postgres -d timescale < postgres/init.d/01-init-timescale.sql
-        echo "完成!"
-        ;;
-        
-    clean)
-        echo "清理所有数据（包含 Volumes）..."
-        read -p "确定要删除所有数据吗? (y/N): " confirm
-        if [ "$confirm" = "y" ] || [ "$confirm" = "Y" ]; then
-            $COMPOSE_CMD -f docker-compose.yml down -v
-            echo "已清理所有数据和 Volumes"
-        else
-            echo "取消清理"
-        fi
-        ;;
-        
-    test)
-        echo "测试日志摄入..."
-        echo '{"source":"test","message":"Test log message","timestamp":"'$(date -Iseconds)'"}' | \
-        docker exec -i kafka kafka-console-producer --broker-list localhost:9092 --topic raw-logs
-        echo ""
-        echo "检查消费:"
-        docker exec kafka kafka-console-consumer --topic raw-logs --from-beginning --bootstrap-server localhost:9092 --max-messages 1
-        ;;
-        
-    help|*)
-        echo "用法: $0 [命令]"
-        echo ""
-        echo "命令:"
-        echo "  up|start        启动所有服务"
-        echo "  down|stop       停止所有服务"
-        echo "  restart         重启所有服务"
-        echo "  logs [服务]     查看日志"
-        echo "  status          查看服务状态"
-        echo "  flink-submit    提交 Flink Jobs"
-        echo "  rule-sync       同步规则到 Flink"
-        echo "  init-topics     初始化 Kafka Topics"
-        echo "  init-db         初始化 TimescaleDB 表"
-        echo "  deploy-all      完整部署所有服务"
-        echo "  test            测试日志摄入"
-        echo "  clean           清理所有数据"
-        echo "  help            显示帮助"
-        echo ""
-        ;;
+    ;;
+  logs)
+    shift
+    docker compose -f "$COMPOSE_FILE" logs --tail=120 -f "$@"
+    ;;
+  init-topics)
+    log "初始化 Kafka topics"
+    [ -f "$SCRIPT_DIR/scripts/init-kafka-topics.sh" ] || die "缺少 scripts/init-kafka-topics.sh"
+    # 确保 kafka 已起
+    docker compose -f "$COMPOSE_FILE" ps usop_infra_kafka | grep -q "running" || docker compose -f "$COMPOSE_FILE" up -d kafka
+    bash "$SCRIPT_DIR/scripts/init-kafka-topics.sh"
+    ;;
+  help|-h|--help)
+    sed -n '3,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    ;;
+  *)
+    die "未知命令: $CMD（help 查看用法）"
+    ;;
 esac

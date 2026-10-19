@@ -64,6 +64,14 @@ deploy/backups/
 # 敏感环境文件（含密钥）不进版本控制
 .env
 server-python/.env
+# 非容器模式生成的连接配置（首次从 .env.native.example 复制，含本机地址）
+deploy/.env.native
+
+# 非容器启动器运行时产物
+.usop_native.pids
+.usop_native_backend.log
+.usop_native_web.log
+.usop_static_server.py
 
 # 运行时上传目录（漏洞附件等用户数据，bind mount 持久化，不进版本控制）
 server-python/app/uploads/

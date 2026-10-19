@@ -125,7 +125,9 @@ services:
     networks:
     - log-platform
     ports:
-    - 5432:5432
+    # 宿主机 5432 已被本地 Homebrew PostgreSQL 占用（监听 127.0.0.1，优先级高于 0.0.0.0），
+    # 容器改映射到 5433，避免 GUI 客户端误连本地空库。后端走容器网络 postgres:5432 不受影响。
+    - 5433:5432
     restart: unless-stopped
     volumes:
     - ./data/postgres:/var/lib/postgresql/data

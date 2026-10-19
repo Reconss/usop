@@ -78,21 +78,49 @@ USOP（Unified Security Operations Platform）是一套前后端分离的一体�
 
 ## 快速开始
 
+USOP 支持两种部署形态，按场景选择：
+
+### 方式一：全容器（最省事，推荐新手 / 生产）
+
+所有组件（含应用）都跑在 Docker。开发用根目录编排，生产用多角色编排。
+
 ```bash
-# 1. 启动全部容器（usop_all / usop_postgres / redis / kafka / elasticsearch / flink*）
+# 开发：一条命令拉起全栈（usop_all / postgres / redis / kafka / elasticsearch / flink*）
 ./start.sh
+# 等价于：docker compose up -d
 
-# 2. 访问
-#    前端（nginx）:  http://localhost:3266
-#    后端 API:       http://localhost:5001（经 3266 反代 /api/*）
-#    Flink UI:       http://localhost:8081
-#    Elasticsearch:  http://localhost:9200
+# 生产：多机分角色一键部署（all-in-one | app | data | es）
+./deploy.sh all-in-one                 # 单机全栈
+./deploy.sh app  --data-host 10.0.0.12 --es-host 10.0.0.13   # 应用节点连远端数据/检索
+./deploy.sh status | logs | verify | upgrade | backup | stop  # 运维子命令
+```
 
-# 3. 前端开发模式（热更新）
-cd web && npm run dev    # webpack dev server :9000
+访问：前端 `http://localhost:3266`、后端 `http://localhost:5001`、Flink UI `:8081`、ES `:9200`。
 
-# 4. 前端生产构建发版
-cd web && ./node_modules/.bin/webpack --mode production
+### 方式二：非容器（基础设施 Docker + 应用原生，便于开发调试）
+
+基础设施（PG / Redis / ES / Kafka / Flink）仍在 Docker，但 **Flask 后端与 React 前端在宿主机原生运行**（热更新、断点调试）。所有组件连接信息集中在 `deploy/.env.native`（模板 `deploy/.env.native.example`），首次运行自动生成。
+
+```bash
+# 基础设施走 Docker + 应用原生启动（后端 :5001，前端 :9000）
+./start_native.sh
+
+# 变体
+./start_native.sh --no-infra   # 基础设施已在别处，仅连 .env 中配置的远端地址
+./start_native.sh --build      # 前端改用生产构建并静态托管在 :3266
+./start_native.sh --stop       # 停止基础设施并杀掉应用进程
+./start_native.sh --status     # 查看组件 / 应用就绪情况
+./start_native.sh --logs       # 跟踪基础设施日志（应用日志落本地文件）
+```
+
+> 非容器模式下，应用侧连组件用 `localhost` 地址；Flink 关联作业内嵌 SQL 用容器网内地址
+> （`kafka:29092` / `postgres:5432`），两者在 `deploy/.env.native` 中已分别配好，一般无需改动。
+> 单纯管理基础设施可用 `./start-bigdata.sh up|down|status|logs|init-topics`。
+
+### 前端发版（全容器模式）
+
+```bash
+cd web && npm run build                       # 产物到 web/dist
 docker exec usop_all sh -c 'rm -rf /app/static/*'
 docker cp web/dist/. usop_all:/app/static/
 ```
@@ -113,7 +141,17 @@ usop/
 │   └── migrations/         # 手写幂等迁移脚本（无 Alembic）
 ├── flink-jobs/             # Flink 作业（关联分析 / 告警引擎 / 日志解析）
 ├── postgres/               # 数据库初始化脚本
-└── docker-compose.yml      # 基础设施编排
+├── deploy/                 # 生产编排与一键部署脚本
+│   ├── docker-compose.prod.yml   # 多角色编排（allinone/app/data/search）
+│   ├── usop-deploy.sh            # 一键部署 / 运维（init|verify|status|logs|backup|...）
+│   ├── usop.env.example          # 生产连接配置模板
+│   └── .env.native.example       # 非容器模式组件连接信息模板
+├── docker-compose.yml      # 全容器开发编排（应用 + 基础设施）
+├── docker-compose.infra.yml# 非容器模式基础设施编排（不含应用）
+├── start.sh                # 入口：全容器启动（→ start_native.sh）
+├── start_native.sh         # 非容器启动编排（基础设施 Docker + 应用原生）
+├── start-bigdata.sh        # 仅管理基础设施（up/down/status/logs/init-topics）
+└── Dockerfile.all          # 应用镜像（nginx + Flask 二合一）
 ```
 
 ## 文档索引

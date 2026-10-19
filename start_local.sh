@@ -1,22 +1,5 @@
-#!/bin/bash
-echo "🛡️  USOP 安全运营平台启动中..."
-
-# 启动后端
-echo "[1/2] 启动后端服务..."
-cd /Users/codes/usop/server-python
-source .venv/bin/activate
-export SKIP_BIGDATA_CHECK=1
-export FLASK_PORT=5001
-python run.py &
-
-# 启动前端
-echo "[2/2] 启动前端服务..."
-cd /Users/codes/usop/web
-pnpm dev &
-
-echo ""
-echo "✅ 启动完成!"
-echo "   前端: http://localhost:3266"
-echo "   后端: http://localhost:5001"
-echo "   账号: admin / admin123"
-wait
+#!/usr/bin/env bash
+# 本地快速启动（非容器）—— 直接复用 start_native.sh。
+# 默认会拉起基础设施（Docker）并原生启动后端 + 前端。
+# 若基础设施已在别处运行，用:  ./start_local.sh --no-infra
+exec "$(cd "$(dirname "$0")" && pwd)/start_native.sh" "$@"
