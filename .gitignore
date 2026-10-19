@@ -60,3 +60,7 @@ _archive/
 deploy/usop.env
 deploy/conf/
 deploy/backups/
+
+# 敏感环境文件（含密钥）不进版本控制
+.env
+server-python/.env
