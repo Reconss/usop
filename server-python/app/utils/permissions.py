@@ -298,7 +298,13 @@ def register_write_guard(app):
         payload = decode_token(token) if token else None
         if not payload:
             return None  # 未登录场景交给 login_required 返回 401
-        role_key = payload.get('role') or 'analyst'
+        # 角色解析：payload.role（部分签发链路带）→ DB users.role（真相源）→ 回退 analyst
+        # 注意：登录签发的 JWT 仅含 user_id/username，必须回表查真实角色
+        role_key = payload.get('role')
+        if not role_key:
+            from app.models import User
+            user = User.query.get(payload.get('user_id'))
+            role_key = user.role if user else 'analyst'
         if not has_permission(role_key, perm):
             resp = jsonify({
                 'success': False,
