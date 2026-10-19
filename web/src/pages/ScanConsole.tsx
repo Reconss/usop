@@ -1,11 +1,29 @@
+/**
+ * 扫描控制台
+ * 攻击面发现 / 资产探测：创建扫描任务、控制任务启停、查看结果并同步到资产。
+ * 任务列表每 5 秒轮询一次，进度由后端返回的任务状态驱动。
+ */
 import React, { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Plus, Play, Pause, RotateCcw, FileText, X, Globe, Shield, Server, Target,
-  Clock, Check, AlertTriangle, Loader2, Zap, Activity, BarChart3, Eye,
-  Trash2, Search, RefreshCw, ChevronRight, Bookmark, Layers, Wifi, Bug, Upload
+  Play, Pause, Globe, Server, Target, Check, AlertTriangle, Zap,
+  Activity, Eye, Trash2, Search, Layers, Wifi, Bug, Upload,
+  Radar, ListChecks, Plus,
 } from 'lucide-react';
 import { scansApi, request } from '../services/api';
+import {
+  Button,
+  ContentContainer,
+  EmptyState,
+  Field,
+  LoadingState,
+  Modal,
+  PageHeader,
+  SectionCard,
+  StatCard,
+  StateBadge,
+  StatusBadge,
+  TableWrap,
+} from '../components/ui';
 
 // ==================== ARL 风格的任务创建 ====================
 
@@ -16,7 +34,7 @@ export default function ScanConsole() {
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [showNewTask, setShowNewTask] = useState(false);
   const [showResults, setShowResults] = useState(false);
-  
+
   const [selectedTask, setSelectedTask] = useState<any>(null);
   const [scanResults, setScanResults] = useState<any[]>([]);
   const [resultsLoading, setResultsLoading] = useState(false);
@@ -126,7 +144,6 @@ export default function ScanConsole() {
 
   // ==================== 状态工具 ====================
 
-  const getStatusBadge = (s: string) => ({ running: 'bg-blue-500/20 text-blue-400', completed: 'bg-emerald-500/20 text-emerald-400', queued: 'bg-amber-500/20 text-amber-400', failed: 'bg-rose-500/20 text-rose-400', paused: 'bg-gray-500/20 text-gray-400' })[s] || 'bg-gray-500/20 text-gray-400';
   const getStatusText = (s: string) => ({ running: '运行中', completed: '已完成', queued: '等待中', failed: '失败', paused: '已暂停' })[s] || s;
 
   const stats = { total: tasks.length, running: tasks.filter(t => t.status === 'running').length, completed: tasks.filter(t => t.status === 'completed').length, failed: tasks.filter(t => t.status === 'failed').length };
@@ -134,210 +151,291 @@ export default function ScanConsole() {
   // ==================== 模块配置 ====================
 
   const modules = [
-    { key: 'subdomain_passive', label: '域名收集(被动)', icon: Search, desc: '从 crt.sh 证书透明度日志收集', color: 'text-purple-400', bg: 'bg-purple-500/10' },
-    { key: 'subdomain_active', label: '域名收集(主动)', icon: Layers, desc: 'DNS 字典爆破', color: 'text-indigo-400', bg: 'bg-indigo-500/10' },
-    { key: 'port_scan', label: '端口扫描', icon: Server, desc: 'TCP 连接扫描', color: 'text-blue-400', bg: 'bg-blue-500/10' },
-    { key: 'fingerprint', label: '指纹识别', icon: Globe, desc: 'HTTP 标题/技术栈识别', color: 'text-cyan-400', bg: 'bg-cyan-500/10' },
-    { key: 'dir_scan', label: '目录扫描', icon: Wifi, desc: 'Web 路径爆破', color: 'text-orange-400', bg: 'bg-orange-500/10' },
-    { key: 'vuln_scan', label: '漏洞扫描', icon: Bug, desc: 'Nuclei 模板扫描', color: 'text-rose-400', bg: 'bg-rose-500/10' },
+    { key: 'subdomain_passive', label: '域名收集(被动)', icon: Search, desc: '从 crt.sh 证书透明度日志收集' },
+    { key: 'subdomain_active', label: '域名收集(主动)', icon: Layers, desc: 'DNS 字典爆破' },
+    { key: 'port_scan', label: '端口扫描', icon: Server, desc: 'TCP 连接扫描' },
+    { key: 'fingerprint', label: '指纹识别', icon: Globe, desc: 'HTTP 标题/技术栈识别' },
+    { key: 'dir_scan', label: '目录扫描', icon: Wifi, desc: 'Web 路径爆破' },
+    { key: 'vuln_scan', label: '漏洞扫描', icon: Bug, desc: 'Nuclei 模板扫描' },
   ];
 
   // ==================== 渲染 ====================
 
   return (
-    <div className="space-y-6">
-      {/* 头部 */}
-      <div className="flex items-center justify-between">
-        <div><h1 className="text-2xl font-semibold text-text-primary">扫描控制台</h1><p className="text-text-secondary text-sm mt-1">攻击面发现 · 资产探测 · 综合评估</p></div>
-        <div className="flex items-center gap-3">
-          <span className="text-xs text-text-muted">运行中: {stats.running} | 完成: {stats.completed}</span>
-          <button onClick={() => setShowNewTask(true)} className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-xl text-sm font-medium hover:bg-primary-hover transition-all">
-            <Plus className="w-4 h-4" />新建任务
-          </button>
-        </div>
-      </div>
+    <ContentContainer>
+      <PageHeader
+        icon={Radar}
+        title="扫描控制台"        meta={
+          <span className="text-[11px] text-text-muted num">
+            运行中 {stats.running} · 已完成 {stats.completed}
+          </span>
+        }
+        actions={
+          <Button variant="primary" icon={Plus} onClick={() => setShowNewTask(true)}>
+            新建任务
+          </Button>
+        }
+      />
 
       {/* ==================== 统计卡片 ==================== */}
-      <div className="grid grid-cols-4 gap-4">
-        {[
-          { label: '总任务', value: stats.total, icon: Activity, color: 'text-blue-400', bg: 'bg-blue-500/10' },
-          { label: '运行中', value: stats.running, icon: Loader2, color: 'text-blue-400', bg: 'bg-blue-500/10', pulse: stats.running > 0 },
-          { label: '已完成', value: stats.completed, icon: Check, color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
-          { label: '失败', value: stats.failed, icon: AlertTriangle, color: 'text-rose-400', bg: 'bg-rose-500/10' },
-        ].map((s, i) => (
-          <div key={i} className="bg-card-bg border border-border-color rounded-xl p-4">
-            <div className="flex items-center gap-3">
-              <div className={`w-10 h-10 rounded-lg ${s.bg} flex items-center justify-center`}><s.icon className={`w-5 h-5 ${s.color} ${s.pulse ? 'animate-pulse' : ''}`} /></div>
-              <div><div className="text-2xl font-bold text-text-primary">{s.value}</div><div className="text-xs text-text-muted">{s.label}</div></div>
-            </div>
-          </div>
-        ))}
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+        <StatCard label="总任务" value={stats.total} icon={ListChecks} tone="neutral" loading={loading} />
+        <StatCard label="运行中" value={stats.running} icon={Activity} tone="info" loading={loading} />
+        <StatCard label="已完成" value={stats.completed} icon={Check} tone="success" loading={loading} />
+        <StatCard label="失败" value={stats.failed} icon={AlertTriangle} tone="danger" loading={loading} />
       </div>
 
       {/* ==================== 任务列表 ==================== */}
-      <div className="glass-card rounded-xl overflow-hidden">
-        <table className="w-full">
-          <thead className="bg-page-bg/50 border-b border-border-color">
-            <tr>
-              <th className="text-left py-3 px-4 text-text-secondary font-medium text-xs">目标</th>
-              <th className="text-left py-3 px-4 text-text-secondary font-medium text-xs">模块</th>
-              <th className="text-left py-3 px-4 text-text-secondary font-medium text-xs">状态</th>
-              <th className="text-left py-3 px-4 text-text-secondary font-medium text-xs">进度</th>
-              <th className="text-left py-3 px-4 text-text-secondary font-medium text-xs">时间</th>
-              <th className="text-right py-3 px-4 text-text-secondary font-medium text-xs">操作</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border-color/50">
-            {tasks.length === 0 && (
-              <tr><td colSpan={6} className="py-12 text-center text-text-muted text-sm">
-                <Activity className="w-8 h-8 mx-auto mb-2 opacity-50" /><p>暂无任务</p>
-                <button onClick={() => setShowNewTask(true)} className="text-primary text-xs mt-1 hover:underline">新建扫描任务</button>
-              </td></tr>
-            )}
-            {tasks.map(t => (
-              <tr key={t.id} className="hover:bg-primary/5 transition-colors">
-                <td className="py-3 px-4"><span className="text-sm font-mono text-text-primary">{t.target}</span></td>
-                <td className="py-3 px-4"><span className="text-xs text-text-secondary">{t.type}</span></td>
-                <td className="py-3 px-4"><span className={`px-2 py-0.5 rounded text-xs font-medium ${getStatusBadge(t.status)}`}>{getStatusText(t.status)}</span></td>
-                <td className="py-3 px-4">
-                  {t.status === 'running' ? (
-                    <div className="flex items-center gap-2"><div className="w-16 h-1.5 bg-page-bg rounded-full overflow-hidden"><div className="h-full bg-primary rounded-full" style={{ width: `${t.progress}%` }} /></div><span className="text-xs text-text-muted">{t.progress}%</span></div>
-                  ) : t.status === 'completed' ? <span className="text-xs text-emerald-400">✓ 完成</span> : <span className="text-xs text-text-muted">-</span>}
-                </td>
-                <td className="py-3 px-4"><span className="text-xs text-text-muted">{t.createdAt ? new Date(t.createdAt).toLocaleString() : '-'}</span></td>
-                <td className="py-3 px-4">
-                  <div className="flex items-center justify-end gap-1">
-                    {t.status === 'running' && <button onClick={() => handleStopTask(Number(t.id))} className="p-1.5 hover:bg-yellow-500/20 text-yellow-500 rounded-lg" title="暂停"><Pause className="w-3.5 h-3.5" /></button>}
-                    {t.status === 'queued' && <button onClick={() => handleStartTask(Number(t.id))} className="p-1.5 hover:bg-blue-500/20 text-blue-500 rounded-lg" title="启动"><Play className="w-3.5 h-3.5" /></button>}
-                    {t.status === 'paused' && <button onClick={() => handleResumeTask(Number(t.id))} className="p-1.5 hover:bg-blue-500/20 text-blue-500 rounded-lg" title="恢复"><Play className="w-3.5 h-3.5" /></button>}
-                    {t.status === 'completed' && <button onClick={() => openResultViewer(t)} className="p-1.5 hover:bg-blue-500/20 text-blue-500 rounded-lg" title="查看结果"><Eye className="w-3.5 h-3.5" /></button>}
-                    {t.status === 'completed' && <button onClick={() => handleSyncToAssets(Number(t.id))} className="p-1.5 hover:bg-green-500/20 text-green-500 rounded-lg" title="同步到资产"><Upload className="w-3.5 h-3.5" /></button>}
-                    <button onClick={() => setDeleteConfirm(t.id)} className="p-1.5 hover:bg-red-500/20 text-text-secondary hover:text-red-500 rounded-lg" title="删除"><Trash2 className="w-3.5 h-3.5" /></button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <SectionCard flush>
+        {loading ? (
+          <LoadingState label="正在加载扫描任务…" />
+        ) : tasks.length === 0 ? (
+          <EmptyState
+            icon={Radar}
+            title="暂无扫描任务"
+            description="新建扫描任务，对目标执行子域名收集、端口扫描、指纹识别与漏洞扫描。"
+            action={
+              <Button variant="soft" icon={Plus} onClick={() => setShowNewTask(true)}>
+                新建扫描任务
+              </Button>
+            }
+          />
+        ) : (
+          <TableWrap>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th style={{ minWidth: 200 }}>目标</th>
+                  <th style={{ minWidth: 160 }}>模块</th>
+                  <th style={{ width: 100 }}>状态</th>
+                  <th style={{ width: 150 }}>进度</th>
+                  <th style={{ width: 170 }}>时间</th>
+                  <th style={{ width: 168 }} className="text-right">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tasks.map(t => (
+                  <tr key={t.id}>
+                    <td className="font-mono text-text-primary">{t.target}</td>
+                    <td className="text-text-secondary">{t.type}</td>
+                    <td>
+                      <StateBadge state={t.status} label={getStatusText(t.status)} />
+                    </td>
+                    <td>
+                      {t.status === 'running' ? (
+                        <div className="flex items-center gap-2">
+                          <div className="h-1.5 w-16 overflow-hidden rounded-full bg-surface-3">
+                            <div className="h-full rounded-full bg-primary" style={{ width: `${t.progress}%` }} />
+                          </div>
+                          <span className="text-caption text-text-muted num">{t.progress}%</span>
+                        </div>
+                      ) : t.status === 'completed' ? (
+                        <span className="inline-flex items-center gap-1 text-caption text-success">
+                          <Check size={11} />完成
+                        </span>
+                      ) : (
+                        <span className="text-caption text-text-muted">-</span>
+                      )}
+                    </td>
+                    <td className="text-caption text-text-muted num">
+                      {t.createdAt ? new Date(t.createdAt).toLocaleString() : '-'}
+                    </td>
+                    <td>
+                      <div className="flex items-center justify-end gap-1">
+                        {t.status === 'running' && (
+                          <Button
+                            variant="ghost" size="sm" icon={Pause} className="w-8 px-0 text-warning"
+                            onClick={() => handleStopTask(Number(t.id))} title="暂停"
+                          />
+                        )}
+                        {t.status === 'queued' && (
+                          <Button
+                            variant="ghost" size="sm" icon={Play} className="w-8 px-0 text-info"
+                            onClick={() => handleStartTask(Number(t.id))} title="启动"
+                          />
+                        )}
+                        {t.status === 'paused' && (
+                          <Button
+                            variant="ghost" size="sm" icon={Play} className="w-8 px-0 text-info"
+                            onClick={() => handleResumeTask(Number(t.id))} title="恢复"
+                          />
+                        )}
+                        {t.status === 'completed' && (
+                          <Button
+                            variant="ghost" size="sm" icon={Eye} className="w-8 px-0 text-info"
+                            onClick={() => openResultViewer(t)} title="查看结果"
+                          />
+                        )}
+                        {t.status === 'completed' && (
+                          <Button
+                            variant="ghost" size="sm" icon={Upload} className="w-8 px-0 text-success"
+                            onClick={() => handleSyncToAssets(Number(t.id))} title="同步到资产"
+                          />
+                        )}
+                        <Button
+                          variant="danger-ghost" size="sm" icon={Trash2} className="w-8 px-0"
+                          onClick={() => setDeleteConfirm(t.id)} title="删除"
+                        />
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableWrap>
+        )}
+      </SectionCard>
 
       {/* ==================== 新建任务弹窗 ==================== */}
-      <AnimatePresence>{showNewTask && (
-        <>
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/50 z-40" onClick={() => setShowNewTask(false)} />
-          <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none">
-            <div className="bg-card-bg border border-border-color rounded-xl p-6 w-[580px] pointer-events-auto max-h-[85vh] overflow-auto" onClick={e => e.stopPropagation()}>
-              <div className="flex items-center justify-between mb-5">
-                <h2 className="text-lg font-semibold text-text-primary flex items-center gap-2"><Zap className="w-5 h-5 text-primary" />新建扫描任务</h2>
-                <button onClick={() => setShowNewTask(false)} className="p-1 text-text-secondary hover:text-text-primary"><X className="w-5 h-5" /></button>
-              </div>
-              <div className="space-y-5">
-                {/* 目标输入 */}
-                <div>
-                  <label className="block text-sm font-medium text-text-secondary mb-1.5">扫描目标 <span className="text-critical">*</span></label>
-                  <input value={taskForm.target} onChange={e => setTaskForm({ ...taskForm, target: e.target.value })}
-                    placeholder="example.com 或 192.168.1.1"
-                    className="w-full px-3 py-2.5 bg-page-bg border border-border-color rounded-lg text-sm text-text-primary focus:border-primary focus:outline-none font-mono" />
-                  <p className="text-xs text-text-muted mt-1">支持域名、IP 地址</p>
-                </div>
+      <Modal
+        open={showNewTask}
+        onClose={() => setShowNewTask(false)}
+        width={580}
+        title="新建扫描任务"
+        description="选择扫描模块后立即创建并启动任务"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setShowNewTask(false)}>取消</Button>
+            <Button variant="primary" icon={Zap} onClick={handleCreateTask}>开始扫描</Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-5">
+          <Field label="扫描目标" required help="支持域名、IP 地址">
+            <input
+              value={taskForm.target}
+              onChange={e => setTaskForm({ ...taskForm, target: e.target.value })}
+              placeholder="example.com 或 192.168.1.1"
+              className="app-input font-mono"
+            />
+          </Field>
 
-                {/* 扫描模块 — 参考 ARL 设计 */}
-                <div>
-                  <label className="block text-sm font-medium text-text-secondary mb-3">扫描模块</label>
-                  <div className="grid grid-cols-2 gap-3">
-                    {modules.map(m => {
-                      const Icon = m.icon;
-                      const checked = (taskForm as any)[m.key];
-                      return (
-                        <label key={m.key} className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${checked ? 'border-primary bg-primary/5' : 'border-border-color hover:border-primary/30'}`}>
-                          <input type="checkbox" checked={checked} onChange={e => setTaskForm({ ...taskForm, [m.key]: e.target.checked })} className="mt-0.5 w-4 h-4 rounded border-border-color text-primary focus:ring-primary" />
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2">
-                              <div className={`w-6 h-6 rounded-lg ${m.bg} flex items-center justify-center`}><Icon className={`w-3.5 h-3.5 ${m.color}`} /></div>
-                              <span className="text-sm font-medium text-text-primary">{m.label}</span>
-                            </div>
-                            <p className="text-[10px] text-text-muted mt-1 leading-relaxed">{m.desc}</p>
-                          </div>
-                        </label>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* 操作按钮 */}
-                <div className="flex justify-end gap-3 pt-3 border-t border-border-color">
-                  <button onClick={() => setShowNewTask(false)} className="px-4 py-2 text-sm text-text-secondary rounded-lg hover:bg-card-bg-hover">取消</button>
-                  <button onClick={handleCreateTask} className="px-5 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary-hover flex items-center gap-2">
-                    <Zap className="w-4 h-4" />开始扫描
-                  </button>
-                </div>
-              </div>
+          {/* 扫描模块 — 参考 ARL 设计 */}
+          <div>
+            <div className="mb-2 flex items-center justify-between">
+              <span className="app-label mb-0">扫描模块</span>
+              <span className="text-[11px] text-text-muted num">
+                已选 {modules.filter(m => (taskForm as any)[m.key]).length} / {modules.length}
+              </span>
             </div>
-          </motion.div>
-        </>
-      )}</AnimatePresence>
-
-      {showResults && selectedTask && (
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="fixed inset-0 bg-black/50 z-40" onClick={() => setShowResults(false)} />
-      )}
-      {showResults && selectedTask && (
-        <motion.div initial={{ x: '100%' }} animate={{ x: 0 }} className="fixed right-0 top-0 h-full w-[620px] bg-card-bg border-l border-border-color z-50 overflow-auto">
-          <div className="p-5">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-base font-semibold text-text-primary">扫描结果: {selectedTask.target}</h3>
-              <button onClick={() => setShowResults(false)} className="p-1 text-text-secondary hover:text-text-primary"><X className="w-5 h-5" /></button>
-            </div>
-            <button onClick={() => { handleSyncToAssets(Number(selectedTask.id)); setShowResults(false); }}
-              className="w-full mb-4 px-4 py-2 bg-primary/10 text-primary rounded-lg text-xs font-medium hover:bg-primary/20 flex items-center justify-center gap-2"><Upload className="w-3.5 h-3.5" />同步到资产</button>
-            {resultsLoading ? <div className="flex items-center justify-center py-12"><Loader2 className="w-6 h-6 animate-spin text-primary" /></div> : scanResults.length === 0 ? (
-              <div className="text-center py-10 text-text-muted"><BarChart3 className="w-8 h-8 mx-auto mb-2 opacity-50" /><p className="text-sm">暂无结果数据</p></div>
-            ) : (
-              <div>
-                <div className="text-xs text-text-muted mb-2">共 {scanResults.length} 条结果</div>
-                <div className="space-y-2">
-                  {scanResults.map((r: any, i: number) => {
-                    const data = r.result_data || {};
-                    const typeLabel: Record<string, string> = { dns: '子域名', port: '端口', web: 'Web服务', service: '服务', vuln: '漏洞', webpath: '路径' };
-                    return (
-                      <div key={i} className="p-3 bg-page-bg rounded-lg border border-border-color">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-primary/10 text-primary">{typeLabel[r.result_type] || r.result_type}</span>
-                          <span className="text-xs text-text-secondary font-mono">{data.subdomain || (data.port ? ':' + data.port : '') || data.url || data.path || ''}</span>
-                          {data.ip && <span className="text-xs text-text-muted font-mono">({data.ip})</span>}
-                        </div>
-                        <pre className="text-xs text-text-muted font-mono whitespace-pre-wrap break-all bg-[#0d1117] p-2 rounded mt-1 max-h-24 overflow-auto">{JSON.stringify(data, null, 2)}</pre>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {modules.map(m => {
+                const Icon = m.icon;
+                const checked = (taskForm as any)[m.key];
+                return (
+                  <label
+                    key={m.key}
+                    className={`flex cursor-pointer items-start gap-2.5 rounded-input border p-2.5 transition-colors ${
+                      checked
+                        ? 'border-primary/35 bg-primary/10'
+                        : 'border-border-color bg-card-bg hover:border-border-strong'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={e => setTaskForm({ ...taskForm, [m.key]: e.target.checked })}
+                      className="app-checkbox mt-0.5"
+                    />
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <Icon size={13} className={checked ? 'text-primary' : 'text-text-muted'} />
+                        <span className="text-[12.5px] font-medium text-text-primary">{m.label}</span>
                       </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
-        </motion.div>
-      )}
-
-      {/* Toast */}
-      {toast && (
-        <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }}
-          className={`fixed top-4 right-4 z-50 px-4 py-3 rounded-lg shadow-lg flex items-center gap-2 ${toast.type === 'success' ? 'bg-emerald-500 text-white' : 'bg-rose-500 text-white'}`}>
-          {toast.type === 'success' ? <Check className="w-5 h-5" /> : <AlertTriangle className="w-5 h-5" />}
-          <span className="text-sm font-medium">{toast.message}</span>
-        </motion.div>
-      )}
-
-      {/* 删除确认 */}
-      {deleteConfirm && (
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center" onClick={() => setDeleteConfirm(null)}>
-          <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} className="bg-card-bg border border-border-color rounded-xl p-6 max-w-sm w-full mx-4 shadow-xl" onClick={e => e.stopPropagation()}>
-            <h3 className="text-base font-semibold text-text-primary mb-2">确认删除</h3>
-            <p className="text-sm text-text-secondary mb-5">确定要删除该任务吗？</p>
-            <div className="flex justify-end gap-3">
-              <button onClick={() => setDeleteConfirm(null)} className="px-4 py-2 text-sm text-text-secondary rounded-lg hover:bg-card-bg-hover">取消</button>
-              <button onClick={() => handleDeleteTask(deleteConfirm)} className="px-4 py-2 text-sm bg-rose-600 text-white rounded-lg hover:bg-rose-500">删除</button>
+                      <p className="mt-0.5 text-[10.5px] leading-relaxed text-text-muted">{m.desc}</p>
+                    </div>
+                  </label>
+                );
+              })}
             </div>
-          </motion.div>
-        </motion.div>
+          </div>
+        </div>
+      </Modal>
+
+      {/* ==================== 扫描结果 ==================== */}
+      <Modal
+        open={showResults && Boolean(selectedTask)}
+        onClose={() => setShowResults(false)}
+        width={640}
+        title={selectedTask ? `扫描结果: ${selectedTask.target}` : '扫描结果'}
+        description={!resultsLoading && scanResults.length > 0 ? `共 ${scanResults.length} 条结果` : undefined}
+        footer={
+          <Button
+            variant="secondary"
+            icon={Upload}
+            onClick={() => {
+              if (!selectedTask) return;
+              handleSyncToAssets(Number(selectedTask.id));
+              setShowResults(false);
+            }}
+          >
+            同步到资产
+          </Button>
+        }
+      >
+        {resultsLoading ? (
+          <LoadingState label="正在加载结果…" />
+        ) : scanResults.length === 0 ? (
+          <EmptyState icon={Target} title="暂无结果数据" description="任务完成后结果会在这里展示。" />
+        ) : (
+          <div className="flex flex-col gap-2">
+            {scanResults.map((r: any, i: number) => {
+              const data = r.result_data || {};
+              const typeLabel: Record<string, string> = { dns: '子域名', port: '端口', web: 'Web服务', service: '服务', vuln: '漏洞', webpath: '路径' };
+              return (
+                <div key={i} className="rounded-input border border-border-color bg-surface-2 p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <StatusBadge tone="primary">{typeLabel[r.result_type] || r.result_type}</StatusBadge>
+                    <span className="font-mono text-[12px] text-text-secondary">
+                      {data.subdomain || (data.port ? ':' + data.port : '') || data.url || data.path || ''}
+                    </span>
+                    {data.ip && <span className="font-mono text-[11px] text-text-muted">({data.ip})</span>}
+                  </div>
+                  <pre className="mt-2 max-h-24 overflow-auto whitespace-pre-wrap break-all rounded border border-border-color bg-page-bg-subtle p-2 font-mono text-[11px] text-text-muted">
+                    {JSON.stringify(data, null, 2)}
+                  </pre>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Modal>
+
+      {/* ==================== 删除确认 ==================== */}
+      <Modal
+        open={Boolean(deleteConfirm)}
+        onClose={() => setDeleteConfirm(null)}
+        width={420}
+        title="确认删除"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setDeleteConfirm(null)}>取消</Button>
+            <Button
+              variant="danger"
+              icon={Trash2}
+              onClick={() => deleteConfirm && handleDeleteTask(deleteConfirm)}
+            >
+              删除
+            </Button>
+          </>
+        }
+      >
+        <p className="text-body text-text-secondary">确定要删除该任务吗？</p>
+      </Modal>
+
+      {/* ==================== Toast ==================== */}
+      {toast && (
+        <div
+          className={`fixed right-4 top-16 z-toast flex items-center gap-2 rounded-card border px-3.5 py-2.5 text-[12.5px] shadow-panel ${
+            toast.type === 'error'
+              ? 'border-danger/30 bg-danger/10 text-danger'
+              : 'border-success/30 bg-success/10 text-success'
+          }`}
+        >
+          {toast.type === 'success' ? <Check size={14} /> : <AlertTriangle size={14} />}
+          {toast.message}
+        </div>
       )}
-    </div>
+    </ContentContainer>
   );
 }

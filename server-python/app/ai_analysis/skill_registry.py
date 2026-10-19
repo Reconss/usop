@@ -190,12 +190,9 @@ class SkillRegistry:
 
     def _builtin_query_alert(self, alert_code):
         try:
-            from app.timescaledb import get_tsdb
-            from sqlalchemy import text
-            tsdb = get_tsdb(); sess = tsdb.get_session()
-            row = sess.execute(text("SELECT * FROM alerts WHERE alert_code=:code"),{"code":alert_code}).fetchone()
-            tsdb.close_session(sess)
-            if row: return {"success": True, "data": dict(row._mapping)}
+            from app.utils import es_alerts
+            a = es_alerts.get_alert(alert_code)
+            if a: return {"success": True, "data": a}
             return {"success": False, "error": "告警不存在"}
         except Exception as e:
             return {"success": False, "error": f"查询失败: {str(e)}"}

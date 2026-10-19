@@ -215,7 +215,6 @@ def list_datasource_types():
     return jsonify({
         'success': True,
         'data': [
-            {'id': 'timescaledb', 'name': 'TimescaleDB'},
             {'id': 'postgresql', 'name': 'PostgreSQL'},
             {'id': 'kafka', 'name': 'Kafka'},
             {'id': 'syslog', 'name': 'Syslog'},

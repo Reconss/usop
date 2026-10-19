@@ -3,30 +3,36 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#0b1020">
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16x16.png">
+  <link rel="shortcut icon" href="/icons/favicon.ico">
+  <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="apple-mobile-web-app-title" content="USOP">
   <title>USOP统一安全运营平台</title>
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <style>
-    /* 内联样式确保主题色立即生效，避免闪烁 */
+    /* 首屏兜底：颜色与设计令牌保持同值，仅用于 React 挂载前的瞬间，
+       不放 !important，避免覆盖 :root.light / :root 的完整令牌。 */
     html, body {
       margin: 0;
       padding: 0;
       width: 100%;
       height: 100%;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+        'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC',
+        Roboto, sans-serif;
     }
-    html.light, html.light body {
-      background-color: #ffffff !important;
-      color: #000000;
-    }
-    html.dark, html.dark body {
-      background-color: #1a1a1a !important;
-      color: #ffffff;
-    }
+    html.dark, html.dark body { background-color: #0b1020; color: #f1f5f9; }
+    html.light, html.light body { background-color: #f5f7fb; color: #0f172a; }
   </style>
   <script>
-    // 在 React 加载前立即设置主题，避免闪烁
-    (function() {
-      const isInIframe = window.self !== window.top;
+    // 在 React 加载前立即确定主题，避免闪烁。
+    // 平台主视觉为深色科技风，因此默认 dark；用户手动切换后写入 localStorage。
+    (function () {
+      var isInIframe = window.self !== window.top;
 
       function applyThemeToDOM(theme) {
         document.documentElement.classList.remove('light', 'dark');
@@ -34,20 +40,20 @@
         document.documentElement.setAttribute('data-theme', theme);
       }
 
-      if (isInIframe) {
-        // 监听父窗口主动推送的主题消息
-        window.addEventListener('message', function(event) {
+      var stored = null;
+      try { stored = localStorage.getItem('usop-theme'); } catch (e) { /* 忽略 */ }
+
+      if (isInIframe && !stored) {
+        // 嵌入场景下跟随宿主推送的主题
+        window.addEventListener('message', function (event) {
           if (event.data && typeof event.data.theme === 'string') {
-            const theme = event.data.theme;
-            if (theme === 'light' || theme === 'dark') {
-              applyThemeToDOM(theme);
-            }
+            var t = event.data.theme;
+            if (t === 'light' || t === 'dark') applyThemeToDOM(t);
           }
         });
-      } else {
-        // 非 iframe 环境，使用默认 light 主题
-        applyThemeToDOM('light');
       }
+
+      applyThemeToDOM(stored === 'light' ? 'light' : 'dark');
     })();
   </script>
 </head>

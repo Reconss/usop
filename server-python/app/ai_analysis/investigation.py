@@ -4,16 +4,15 @@
 """
 import json, logging
 from typing import Dict, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
 def investigate(event_code: str) -> dict:
     """溯源分析安全事件"""
-    from app.models import Event
+    from app.models import Event, Asset
     from app.routes.ai_api import _deepseek_request
-    from app.timescaledb import get_tsdb
-    from sqlalchemy import text
+    from app.utils import es_alerts
 
     # 获取事件
     event = Event.query.filter_by(event_code=event_code).first()
@@ -26,44 +25,55 @@ def investigate(event_code: str) -> dict:
         try: extra = json.loads(extra)
         except: extra = {}
 
-    # 获取关联告警 + 同一源IP的历史告警
+    # 获取关联告警 + 同一源IP的历史告警（ES 为告警唯一真相源）
     alert_codes = extra.get("source_alerts", extra.get("related_alerts", []))
-    tsdb = get_tsdb()
-    sess = tsdb.get_session()
 
     related_alerts = []
     src_ips = set()
     dst_ips = set()
 
     for code in alert_codes[:10]:
-        row = sess.execute(text(
-            "SELECT alert_code, title, severity, src_ip, dst_ip, attack_type, description, first_seen, status, risk_score FROM alerts WHERE alert_code = :code"
-        ), {"code": code}).fetchone()
-        if row:
-            ad = dict(row._mapping)
+        a = es_alerts.get_alert(code)
+        if a:
+            ad = {
+                'alert_code': a.get('alert_id') or code,
+                'title': a.get('title', ''),
+                'severity': a.get('severity', ''),
+                'src_ip': a.get('src_ip', ''),
+                'dst_ip': a.get('dst_ip', ''),
+                'attack_type': a.get('category', ''),
+                'first_seen': a.get('first_seen', ''),
+            }
             related_alerts.append(ad)
             if ad.get("src_ip"): src_ips.add(ad["src_ip"])
             if ad.get("dst_ip"): dst_ips.add(ad["dst_ip"])
 
-    # 查询同一源IP的历史告警
+    # 查询同一源IP的历史告警（近 7 天）
     history = []
+    since = (datetime.utcnow() - timedelta(days=7)).isoformat() + 'Z'
     for sip in list(src_ips)[:3]:
-        rows = sess.execute(text(
-            "SELECT alert_code, title, severity, attack_type, first_seen FROM alerts WHERE src_ip = :ip AND alert_time > NOW() - INTERVAL '7 days' ORDER BY first_seen DESC LIMIT 10"
-        ), {"ip": sip}).fetchall()
-        for r in rows:
-            history.append(dict(r._mapping))
+        res = es_alerts.search_alerts(filters={'src_ip': sip}, start=since, page_size=10)
+        for it in res.get('items', []):
+            history.append({
+                'alert_code': it.get('alert_id', ''),
+                'title': it.get('title', ''),
+                'severity': it.get('severity', ''),
+                'attack_type': it.get('category', ''),
+                'first_seen': it.get('first_seen', ''),
+            })
 
-    # 查询资产信息
+    # 查询资产信息（PG assets 表）
     assets = []
     for ip in list(src_ips | dst_ips)[:5]:
-        row = sess.execute(text(
-            "SELECT ip, hostname, os, service, is_important FROM assets WHERE ip = :ip"
-        ), {"ip": ip}).fetchone()
-        if row:
-            assets.append(dict(row._mapping))
-
-    tsdb.close_session(sess)
+        asset = Asset.query.filter_by(ip=ip).first()
+        if asset:
+            assets.append({
+                'ip': asset.ip or ip,
+                'hostname': asset.hostname or asset.name or '',
+                'os': asset.os_info or '',
+                'service': asset.type or '',
+                'is_important': (asset.risk_score or 0) >= 70,
+            })
 
     # 构建分析上下文
     alert_summary = "\n".join([

@@ -1,0 +1,11 @@
+{
+  "_说明": "飞书「自定义机器人」：在剧本里插入「手动 HTTP 节点」，按下面填写。安全设置选「自定义关键词」或「IP 白名单」；不要选「签名校验」——USOP 集成引擎不支持动态 HMAC 签名。注意飞书文本结构是 content.text（与企业微信/钉钉的 text.content 不同）。",
+  "method": "POST",
+  "url": "https://open.feishu.cn/open-apis/bot/v2/hook/替换为你的HOOK",
+  "headers": { "Content-Type": "application/json" },
+  "body": {
+    "msgtype": "text",
+    "content": { "text": "【告警】主机 $host 触发规则 $rule，请关注。" }
+  },
+  "备注": "飞书也支持 interactive（消息卡片），结构为 {\"msgtype\":\"interactive\",\"card\":{...}}，可自行替换 body。"
+}

@@ -12,8 +12,6 @@ def analyze_event(event_code: str, provider_id: str = None) -> dict:
     """分析安全事件：关联告警、研判、处置建议"""
     from app.models import Event
     from app.routes.ai_api import _deepseek_request
-    from app.timescaledb import get_tsdb
-    from sqlalchemy import text
 
     # 获取事件
     event = Event.query.filter_by(event_code=event_code).first()
@@ -29,18 +27,25 @@ def analyze_event(event_code: str, provider_id: str = None) -> dict:
         except: extra = {}
     related_alert_codes = extra.get("source_alerts", extra.get("related_alerts", []))
 
-    # 获取关联告警详情
+    # 获取关联告警详情（ES 为告警唯一真相源）
     alert_details = []
     if related_alert_codes:
-        tsdb = get_tsdb()
-        sess = tsdb.get_session()
+        from app.utils import es_alerts
         for code in related_alert_codes[:10]:
-            row = sess.execute(text(
-                "SELECT alert_code, title, severity, src_ip, dst_ip, attack_type, description, first_seen, status, risk_score FROM alerts WHERE alert_code = :code"
-            ), {"code": code}).fetchone()
-            if row:
-                alert_details.append(dict(row._mapping))
-        tsdb.close_session(sess)
+            a = es_alerts.get_alert(code)
+            if a:
+                alert_details.append({
+                    'alert_code': a.get('alert_id') or a.get('alert_code') or code,
+                    'title': a.get('title', ''),
+                    'severity': a.get('severity', ''),
+                    'src_ip': a.get('src_ip', ''),
+                    'dst_ip': a.get('dst_ip', ''),
+                    'attack_type': a.get('category', ''),
+                    'description': a.get('description', ''),
+                    'first_seen': a.get('first_seen', ''),
+                    'status': a.get('status', ''),
+                    'risk_score': a.get('risk_score'),
+                })
 
     # 构建分析上下文
     context = {

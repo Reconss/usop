@@ -1,10 +1,21 @@
 import React, { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Shield, Users, Key, Check, X, Plus, Search, Edit2, Trash2,
-  ChevronDown, Settings, Bell, Database, Server, Activity, UserCheck, UserX
+  Shield, Users, Key, Check, Plus, Edit2, Trash2, ChevronDown,
+  Settings, Bell, Database, Server, Activity, RefreshCw, Lock,
 } from 'lucide-react';
-import { rolesApi } from '../services/api';
+import { rolesApi, request as apiRequest } from '../services/api';
+import {
+  Button,
+  ContentContainer,
+  EmptyState,
+  Field,
+  LoadingState,
+  Modal,
+  PageHeader,
+  SearchInput,
+  SectionCard,
+  StatusBadge,
+} from '../components/ui';
 
 interface Permission {
   id: string;
@@ -20,7 +31,6 @@ interface Role {
   description: string;
   userCount: number;
   permissions: string[];
-  status: 'active' | 'inactive';
   createdAt: string;
   isSystem?: boolean;
 }
@@ -31,7 +41,7 @@ const modules = [
   { id: 'response', name: '响应与自动化', icon: Bell },
   { id: 'assets', name: '资产与攻击面', icon: Server },
   { id: 'data', name: '日志配置', icon: Database },
-  { id: 'system', name: '系统管理', icon: Settings }
+  { id: 'system', name: '系统管理', icon: Settings },
 ];
 
 const allPermissions: Permission[] = [
@@ -61,7 +71,7 @@ const allPermissions: Permission[] = [
   { id: 'roles.manage', name: '管理角色', description: '创建、编辑角色', module: 'system', actions: ['create', 'edit', 'delete'] },
   { id: 'audit.view', name: '查看审计', description: '查看审计日志', module: 'system', actions: ['view'] },
   { id: 'config.view', name: '查看配置', description: '查看系统配置', module: 'system', actions: ['view'] },
-  { id: 'config.manage', name: '管理配置', description: '修改系统配置', module: 'system', actions: ['edit'] }
+  { id: 'config.manage', name: '管理配置', description: '修改系统配置', module: 'system', actions: ['edit'] },
 ];
 
 const actionLabels: Record<string, string> = {
@@ -69,7 +79,7 @@ const actionLabels: Record<string, string> = {
   create: '创建',
   edit: '编辑',
   delete: '删除',
-  execute: '执行'
+  execute: '执行',
 };
 
 export default function RoleManagement() {
@@ -80,27 +90,47 @@ export default function RoleManagement() {
   const [showForm, setShowForm] = useState(false);
   const [editingRole, setEditingRole] = useState<Role | null>(null);
   const [expandedModules, setExpandedModules] = useState<string[]>(['detection', 'response', 'assets']);
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState<Role | null>(null);
+  const [toast, setToast] = useState<{ type: string; message: string } | null>(null);
   const [formData, setFormData] = useState({
     name: '',
     description: '',
-    permissions: [] as string[]
+    permissions: [] as string[],
   });
+
+  const addToast = (type: string, message: string) => {
+    setToast({ type, message });
+    setTimeout(() => setToast(null), 3000);
+  };
 
   const fetchRoles = async () => {
     setLoading(true);
     try {
-      const res = await rolesApi.getRoles();
+      // 角色列表 + 用户列表并行拉取，用户数按 role 字段真实统计（不再恒为 0）
+      const [res, usersRes]: any[] = await Promise.all([
+        rolesApi.getRoles(),
+        apiRequest('/users-api/users?page_size=200').catch(() => ({ success: false })),
+      ]);
+      const countByRole: Record<string, number> = {};
+      if (usersRes?.success) {
+        const items = Array.isArray(usersRes.data) ? usersRes.data : usersRes.data?.items || [];
+        items.forEach((u: any) => {
+          const key = String(u.role ?? '');
+          countByRole[key] = (countByRole[key] || 0) + 1;
+        });
+      }
       if (res.success && res.data) {
         const rolesData = Array.isArray(res.data) ? res.data : [];
         setRoles(rolesData.map((r: any) => ({
           id: r.id,
           name: r.name,
           description: r.description || '',
-          userCount: 0,
+          userCount: countByRole[String(r.id)] || 0,
           permissions: r.permissions || [],
-          status: 'active' as const,
           createdAt: r.created_at || new Date().toISOString(),
-          isSystem: r.is_system
+          isSystem: r.is_system,
         })));
       } else {
         setRoles([]);
@@ -117,39 +147,40 @@ export default function RoleManagement() {
     fetchRoles();
   }, []);
 
-  const filteredRoles = roles.filter(r =>
+  const filteredRoles = roles.filter((r) =>
     r.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
     r.description.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   const toggleModule = (moduleId: string) => {
-    setExpandedModules(prev =>
-      prev.includes(moduleId) ? prev.filter(id => id !== moduleId) : [...prev, moduleId]
+    setExpandedModules((prev) =>
+      prev.includes(moduleId) ? prev.filter((id) => id !== moduleId) : [...prev, moduleId]
     );
   };
 
   const togglePermission = (permissionId: string) => {
-    setFormData(prev => ({
+    setFormData((prev) => ({
       ...prev,
       permissions: prev.permissions.includes(permissionId)
-        ? prev.permissions.filter(id => id !== permissionId)
-        : [...prev.permissions, permissionId]
+        ? prev.permissions.filter((id) => id !== permissionId)
+        : [...prev.permissions, permissionId],
     }));
   };
 
   const toggleAllInModule = (moduleId: string, checked: boolean) => {
-    const modulePermissions = allPermissions.filter(p => p.module === moduleId).map(p => p.id);
-    setFormData(prev => ({
+    const modulePermissions = allPermissions.filter((p) => p.module === moduleId).map((p) => p.id);
+    setFormData((prev) => ({
       ...prev,
       permissions: checked
         ? [...new Set([...prev.permissions, ...modulePermissions])]
-        : prev.permissions.filter(id => !modulePermissions.includes(id))
+        : prev.permissions.filter((id) => !modulePermissions.includes(id)),
     }));
   };
 
   const handleAdd = () => {
     setEditingRole(null);
     setFormData({ name: '', description: '', permissions: [] });
+    setFormError('');
     setShowForm(true);
   };
 
@@ -158,213 +189,227 @@ export default function RoleManagement() {
     setFormData({
       name: role.name,
       description: role.description,
-      permissions: role.permissions
+      permissions: role.permissions,
     });
+    setFormError('');
     setShowForm(true);
   };
 
-  const handleSave = () => {
-    if (!formData.name) return;
-
-    if (editingRole) {
-      setRoles(prev => prev.map(r =>
-        r.id === editingRole.id
-          ? { ...r, ...formData }
-          : r
-      ));
-    } else {
-      const newRole: Role = {
-        id: String(roles.length + 1),
-        name: formData.name,
-        description: formData.description,
-        userCount: 0,
-        permissions: formData.permissions,
-        status: 'active',
-        createdAt: new Date().toISOString()
-      };
-      setRoles(prev => [...prev, newRole]);
+  const handleSave = async () => {
+    if (!formData.name.trim()) {
+      setFormError('角色名称不能为空');
+      return;
     }
-    setShowForm(false);
+    setSaving(true);
+    setFormError('');
+    try {
+      const payload = {
+        name: formData.name.trim(),
+        description: formData.description.trim(),
+        permissions: formData.permissions,
+      };
+      const res: any = editingRole
+        ? await rolesApi.updateRole(editingRole.id, payload)
+        : await rolesApi.createRole({
+            ...payload,
+            id: payload.name.toLowerCase().replace(/[^a-z0-9_-]+/g, '-') || `role-${Date.now()}`,
+          });
+      if (res.success) {
+        addToast('success', editingRole ? '角色已更新' : '角色已创建');
+        setShowForm(false);
+        await fetchRoles();
+      } else {
+        setFormError(res.error || '保存失败');
+      }
+    } catch (e: any) {
+      setFormError(e?.message || '保存失败');
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const handleDelete = (id: string) => {
-    setRoles(prev => prev.filter(r => r.id !== id));
-    if (selectedRole?.id === id) setSelectedRole(null);
-  };
-
-  const toggleStatus = (id: string) => {
-    setRoles(prev => prev.map(r =>
-      r.id === id ? { ...r, status: r.status === 'active' ? 'inactive' : 'active' } : r
-    ));
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    try {
+      const res: any = await rolesApi.deleteRole(deleteTarget.id);
+      if (res.success) addToast('success', `已删除角色 ${deleteTarget.name}`);
+      else addToast('error', res.error || '删除失败');
+    } catch (e: any) {
+      addToast('error', e?.message || '删除失败');
+    }
+    if (selectedRole?.id === deleteTarget.id) setSelectedRole(null);
+    setDeleteTarget(null);
+    await fetchRoles();
   };
 
   const getPermissionCount = (moduleId: string, rolePermissions: string[]) => {
-    const modulePerms = allPermissions.filter(p => p.module === moduleId);
-    const granted = modulePerms.filter(p => rolePermissions.includes(p.id)).length;
+    const modulePerms = allPermissions.filter((p) => p.module === moduleId);
+    const granted = modulePerms.filter((p) => rolePermissions.includes(p.id)).length;
     return { granted, total: modulePerms.length };
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold text-text-primary">角色权限</h1>
-          <p className="text-text-secondary mt-1">管理角色和权限配置</p>
-        </div>
-        <motion.button
-          whileHover={{ scale: 1.02 }}
-          whileTap={{ scale: 0.98 }}
-          onClick={handleAdd}
-          className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
-        >
-          <Plus className="w-4 h-4" />
-          新建角色
-        </motion.button>
-      </div>
+    <ContentContainer>
+      <PageHeader
+        icon={Shield}
+        title="角色权限"        meta={
+          roles.length > 0 ? (
+            <span className="text-[11px] text-text-muted num">共 {roles.length} 个角色</span>
+          ) : undefined
+        }
+        actions={
+          <>
+            <Button variant="secondary" icon={RefreshCw} onClick={fetchRoles}>
+              刷新
+            </Button>
+            <Button variant="primary" icon={Plus} onClick={handleAdd}>
+              新建角色
+            </Button>
+          </>
+        }
+      />
 
-      <div className="grid grid-cols-3 gap-6">
-        <div className="space-y-4">
-          <div className="glass-card rounded-xl p-4">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
-              <input
-                type="text"
-                placeholder="搜索角色..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-10 pr-4 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary focus:outline-none focus:border-primary"
-              />
-            </div>
-          </div>
+      {loading ? (
+        <SectionCard>
+          <LoadingState label="正在加载角色…" />
+        </SectionCard>
+      ) : (
+        <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)] items-start">
+          {/* ── 左：角色列表 ─────────────────────────── */}
+          <div className="flex flex-col gap-3">
+            <SearchInput value={searchTerm} onChange={setSearchTerm} width="full" placeholder="搜索角色…" />
 
-          <div className="space-y-2">
-            {filteredRoles.map((role) => (
-              <motion.div
-                key={role.id}
-                whileHover={{ scale: 1.01 }}
-                onClick={() => setSelectedRole(role)}
-                className={`p-4 rounded-xl cursor-pointer transition-all ${
-                  selectedRole?.id === role.id
-                    ? 'bg-primary/10 border border-primary/30'
-                    : 'bg-card-bg border border-border-color hover:border-primary/50'
-                }`}
-              >
-                <div className="flex items-start justify-between">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h3 className="font-medium text-text-primary">{role.name}</h3>
-                      {role.isSystem && (
-                        <span className="px-1.5 py-0.5 bg-primary/20 text-primary text-xs rounded">系统</span>
-                      )}
-                    </div>
-                    <p className="text-text-secondary text-sm mt-1">{role.description}</p>
-                  </div>
-                  <span className={`px-2 py-1 rounded text-xs ${
-                    role.status === 'active' ? 'bg-green-500/20 text-green-400' : 'bg-gray-500/20 text-gray-400'
-                  }`}>
-                    {role.status === 'active' ? '启用' : '禁用'}
-                  </span>
-                </div>
-                <div className="flex items-center gap-4 mt-3 text-xs text-text-muted">
-                  <span className="flex items-center gap-1">
-                    <Users className="w-3.5 h-3.5" />
-                    {role.userCount} 用户
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <Key className="w-3.5 h-3.5" />
-                    {role.permissions.length} 权限
-                  </span>
-                </div>
-              </motion.div>
-            ))}
-          </div>
-        </div>
-
-        <div className="col-span-2">
-          {selectedRole ? (
-            <div className="glass-card rounded-xl p-6">
-              <div className="flex items-center justify-between mb-6">
-                <div>
-                  <h2 className="text-xl font-semibold text-text-primary">{selectedRole.name}</h2>
-                  <p className="text-text-secondary">{selectedRole.description}</p>
-                </div>
-                <div className="flex items-center gap-2">
-                  {!selectedRole.isSystem && (
-                    <>
-                      <button
-                        onClick={() => handleEdit(selectedRole)}
-                        className="p-2 text-text-secondary hover:text-primary rounded-lg hover:bg-primary/10"
-                      >
-                        <Edit2 className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={() => toggleStatus(selectedRole.id)}
-                        className="p-2 text-text-secondary hover:text-primary rounded-lg hover:bg-primary/10"
-                      >
-                        {selectedRole.status === 'active' ? <UserX className="w-4 h-4" /> : <UserCheck className="w-4 h-4" />}
-                      </button>
-                      <button
-                        onClick={() => handleDelete(selectedRole.id)}
-                        className="p-2 text-text-secondary hover:text-critical rounded-lg hover:bg-critical/10"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </>
-                  )}
-                </div>
-              </div>
-
-              <div className="space-y-4">
-                {modules.map((module) => {
-                  const Icon = module.icon;
-                  const { granted, total } = getPermissionCount(module.id, selectedRole.permissions);
-                  const isExpanded = expandedModules.includes(module.id);
-                  const modulePermissions = allPermissions.filter(p => p.module === module.id);
-
+            {filteredRoles.length === 0 ? (
+              <SectionCard padding="none">
+                <EmptyState
+                  compact
+                  icon={Shield}
+                  title={searchTerm ? '没有匹配的角色' : '暂无角色'}
+                  description={searchTerm ? undefined : '创建角色后可为其分配权限组合'}
+                />
+              </SectionCard>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {filteredRoles.map((role) => {
+                  const active = selectedRole?.id === role.id;
                   return (
-                    <div key={module.id} className="border border-border-color rounded-lg">
-                      <button
-                        onClick={() => toggleModule(module.id)}
-                        className="w-full flex items-center justify-between p-4 hover:bg-page-bg/50 transition-colors"
-                      >
-                        <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
-                            <Icon className="w-5 h-5 text-primary" />
+                    <button
+                      key={role.id}
+                      type="button"
+                      onClick={() => setSelectedRole(role)}
+                      className={[
+                        'w-full rounded-card border px-3.5 py-3 text-left transition-colors',
+                        active
+                          ? 'border-primary/40 bg-primary/10'
+                          : 'border-border-color bg-card-bg hover:border-border-strong hover:bg-surface-2',
+                      ].join(' ')}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[13px] font-medium text-text-primary truncate-1">{role.name}</span>
+                            {role.isSystem && (
+                              <StatusBadge tone="primary">
+                                <Lock size={9} /> 系统
+                              </StatusBadge>
+                            )}
                           </div>
-                          <div>
-                            <h3 className="font-medium text-text-primary">{module.name}</h3>
-                            <p className="text-text-secondary text-sm">{granted}/{total} 权限</p>
-                          </div>
+                          {role.description && (
+                            <p className="mt-0.5 text-[11.5px] text-text-muted truncate-2">{role.description}</p>
+                          )}
                         </div>
-                        <ChevronDown className={`w-5 h-5 text-text-secondary transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
-                      </button>
+                      </div>
+                      <div className="mt-2 flex items-center gap-3 text-[11px] text-text-muted num">
+                        <span className="inline-flex items-center gap-1">
+                          <Users size={11} /> {role.userCount} 用户
+                        </span>
+                        <span className="inline-flex items-center gap-1">
+                          <Key size={11} /> {role.permissions.length} 权限
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
 
-                      <AnimatePresence>
+          {/* ── 右：权限详情 ─────────────────────────── */}
+          <div className="min-w-0">
+            {selectedRole ? (
+              <SectionCard
+                icon={Shield}
+                title={selectedRole.name}
+                description={selectedRole.description || '未填写角色说明'}
+                actions={
+                  selectedRole.isSystem ? (
+                    <StatusBadge tone="primary">
+                      <Lock size={10} /> 系统内置角色
+                    </StatusBadge>
+                  ) : (
+                    <>
+                      <Button variant="ghost" size="sm" icon={Edit2} onClick={() => handleEdit(selectedRole)}>
+                        编辑
+                      </Button>
+                      <Button variant="danger-ghost" size="sm" icon={Trash2} onClick={() => setDeleteTarget(selectedRole)}>
+                        删除
+                      </Button>
+                    </>
+                  )
+                }
+              >
+                <div className="flex flex-col gap-2.5">
+                  {modules.map((module) => {
+                    const Icon = module.icon;
+                    const { granted, total } = getPermissionCount(module.id, selectedRole.permissions);
+                    const isExpanded = expandedModules.includes(module.id);
+                    const modulePermissions = allPermissions.filter((p) => p.module === module.id);
+
+                    return (
+                      <div key={module.id} className="rounded-card border border-border-color overflow-hidden">
+                        <button
+                          type="button"
+                          onClick={() => toggleModule(module.id)}
+                          className="flex w-full items-center justify-between gap-3 px-3.5 py-2.5 text-left transition-colors hover:bg-surface-2"
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-input bg-primary/12 text-primary">
+                              <Icon size={14} />
+                            </span>
+                            <span className="text-[13px] font-medium text-text-primary truncate-1">{module.name}</span>
+                            <span
+                              className={`text-[11px] num ${granted === 0 ? 'text-text-muted' : 'text-primary'}`}
+                            >
+                              {granted}/{total}
+                            </span>
+                          </div>
+                          <ChevronDown
+                            size={15}
+                            className={`shrink-0 text-text-muted transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                          />
+                        </button>
+
                         {isExpanded && (
-                          <motion.div
-                            initial={{ height: 0 }}
-                            animate={{ height: 'auto' }}
-                            exit={{ height: 0 }}
-                            className="overflow-hidden"
-                          >
-                            <div className="p-4 border-t border-border-color space-y-2">
-                              {modulePermissions.map((perm) => (
+                          <div className="border-t border-border-color divide-y divide-border-color">
+                            {modulePermissions.map((perm) => {
+                              const has = selectedRole.permissions.includes(perm.id);
+                              return (
                                 <div
                                   key={perm.id}
-                                  className="flex items-center justify-between p-3 bg-page-bg rounded-lg"
+                                  className="flex items-center justify-between gap-3 px-3.5 py-2"
                                 >
-                                  <div>
-                                    <p className="text-text-primary font-medium">{perm.name}</p>
-                                    <p className="text-text-secondary text-sm">{perm.description}</p>
+                                  <div className="min-w-0">
+                                    <div className="text-[12.5px] text-text-primary truncate-1">{perm.name}</div>
+                                    <div className="text-[11px] text-text-muted truncate-1">{perm.description}</div>
                                   </div>
-                                  <div className="flex items-center gap-2">
-                                    {perm.actions.map(action => (
+                                  <div className="flex items-center gap-1.5 shrink-0">
+                                    {perm.actions.map((action) => (
                                       <span
                                         key={action}
-                                        className={`px-2 py-1 text-xs rounded ${
-                                          selectedRole.permissions.includes(perm.id)
-                                            ? 'bg-primary/20 text-primary'
-                                            : 'bg-border-color text-text-muted'
+                                        className={`rounded px-1.5 py-0.5 text-[10px] ${
+                                          has
+                                            ? 'bg-primary/14 text-primary'
+                                            : 'bg-surface-3 text-text-muted'
                                         }`}
                                       >
                                         {actionLabels[action]}
@@ -372,158 +417,168 @@ export default function RoleManagement() {
                                     ))}
                                   </div>
                                 </div>
-                              ))}
-                            </div>
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          ) : (
-            <div className="glass-card rounded-xl p-12 text-center">
-              <Shield className="w-16 h-16 text-text-muted mx-auto mb-4" />
-              <h3 className="text-text-primary font-medium mb-2">选择角色查看详情</h3>
-              <p className="text-text-secondary">从左侧列表选择一个角色查看权限配置</p>
-            </div>
-          )}
-        </div>
-      </div>
-
-      <AnimatePresence>
-        {showForm && (
-          <>
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 bg-black/50 z-50"
-              onClick={() => setShowForm(false)}
-            />
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none"
-            >
-              <div
-                className="glass-card rounded-xl p-6 w-[800px] pointer-events-auto max-h-[85vh] overflow-auto"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div className="flex items-center justify-between mb-6">
-                  <h2 className="text-xl font-semibold text-text-primary">
-                    {editingRole ? '编辑角色' : '新建角色'}
-                  </h2>
-                  <button
-                    onClick={() => setShowForm(false)}
-                    className="p-2 text-text-secondary hover:text-text-primary"
-                  >
-                    <X className="w-5 h-5" />
-                  </button>
-                </div>
-
-                <div className="space-y-6">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-text-secondary text-sm mb-2">角色名称</label>
-                      <input
-                        type="text"
-                        value={formData.name}
-                        onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                        placeholder="输入角色名称"
-                        className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary focus:border-primary focus:outline-none"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-text-secondary text-sm mb-2">描述</label>
-                      <input
-                        type="text"
-                        value={formData.description}
-                        onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                        placeholder="输入角色描述"
-                        className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary focus:border-primary focus:outline-none"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-text-secondary text-sm mb-4">权限配置</label>
-                    <div className="space-y-3">
-                      {modules.map((module) => {
-                        const Icon = module.icon;
-                        const modulePermissions = allPermissions.filter(p => p.module === module.id);
-                        const grantedCount = modulePermissions.filter(p => formData.permissions.includes(p.id)).length;
-                        const allGranted = grantedCount === modulePermissions.length && modulePermissions.length > 0;
-
-                        return (
-                          <div key={module.id} className="border border-border-color rounded-lg">
-                            <div className="flex items-center justify-between p-3 bg-page-bg/50">
-                              <div className="flex items-center gap-3">
-                                <Icon className="w-4 h-4 text-primary" />
-                                <span className="font-medium text-text-primary">{module.name}</span>
-                                <span className="text-text-secondary text-sm">({grantedCount}/{modulePermissions.length})</span>
-                              </div>
-                              <button
-                                onClick={() => toggleAllInModule(module.id, !allGranted)}
-                                className={`text-xs px-2 py-1 rounded ${
-                                  allGranted ? 'bg-primary text-white' : 'bg-border-color text-text-secondary'
-                                }`}
-                              >
-                                {allGranted ? '取消全选' : '全选'}
-                              </button>
-                            </div>
-                            <div className="p-3 grid grid-cols-2 gap-2">
-                              {modulePermissions.map((perm) => (
-                                <button
-                                  key={perm.id}
-                                  onClick={() => togglePermission(perm.id)}
-                                  className={`flex items-start gap-2 p-2 rounded-lg text-left transition-colors ${
-                                    formData.permissions.includes(perm.id)
-                                      ? 'bg-primary/10 border border-primary/30'
-                                      : 'bg-page-bg border border-border-color hover:border-primary/50'
-                                  }`}
-                                >
-                                  <div className={`w-4 h-4 rounded border flex items-center justify-center mt-0.5 ${
-                                    formData.permissions.includes(perm.id) ? 'bg-primary border-primary' : 'border-text-muted'
-                                  }`}>
-                                    {formData.permissions.includes(perm.id) && <Check className="w-3 h-3 text-white" />}
-                                  </div>
-                                  <div>
-                                    <p className="text-sm text-text-primary">{perm.name}</p>
-                                    <p className="text-xs text-text-muted">{perm.description}</p>
-                                  </div>
-                                </button>
-                              ))}
-                            </div>
+                              );
+                            })}
                           </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </SectionCard>
+            ) : (
+              <SectionCard>
+                <EmptyState
+                  icon={Shield}
+                  title="选择角色查看权限详情"
+                  description="从左侧列表选择一个角色，右侧会展示它在该模块下拥有的权限。"
+                />
+              </SectionCard>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── 新建 / 编辑角色 ─────────────────────────── */}
+      <Modal
+        open={showForm}
+        onClose={() => setShowForm(false)}
+        width={860}
+        title={editingRole ? '编辑角色' : '新建角色'}
+        description={editingRole ? `角色 ${editingRole.name}` : '角色 ID 依据名称自动生成，创建后按模块勾选权限'}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setShowForm(false)}>取消</Button>
+            <Button variant="primary" icon={editingRole ? Edit2 : Plus} loading={saving} disabled={!formData.name} onClick={handleSave}>
+              {editingRole ? '保存' : '创建'}
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          <div className="app-form-grid">
+            <Field label="角色名称" required>
+              <input
+                type="text"
+                value={formData.name}
+                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                placeholder="输入角色名称"
+                className="app-input"
+              />
+            </Field>
+            <Field label="描述">
+              <input
+                type="text"
+                value={formData.description}
+                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                placeholder="输入角色描述"
+                className="app-input"
+              />
+            </Field>
+          </div>
+
+          <div>
+            <div className="mb-2 flex items-center justify-between">
+              <span className="app-label mb-0">权限配置</span>
+              <span className="text-[11px] text-text-muted num">已选 {formData.permissions.length} 项</span>
+            </div>
+
+            <div className="flex flex-col gap-2.5">
+              {modules.map((module) => {
+                const Icon = module.icon;
+                const modulePermissions = allPermissions.filter((p) => p.module === module.id);
+                const grantedCount = modulePermissions.filter((p) => formData.permissions.includes(p.id)).length;
+                const allGranted = grantedCount === modulePermissions.length && modulePermissions.length > 0;
+
+                return (
+                  <div key={module.id} className="rounded-card border border-border-color overflow-hidden">
+                    <div className="flex items-center justify-between gap-3 bg-surface-2 px-3.5 py-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <Icon size={14} className="text-primary shrink-0" />
+                        <span className="text-[12.5px] font-medium text-text-primary truncate-1">{module.name}</span>
+                        <span className="text-[11px] text-text-muted num">
+                          {grantedCount}/{modulePermissions.length}
+                        </span>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => toggleAllInModule(module.id, !allGranted)}
+                      >
+                        {allGranted ? '取消全选' : '全选'}
+                      </Button>
+                    </div>
+
+                    <div className="grid gap-1.5 p-2.5 sm:grid-cols-2">
+                      {modulePermissions.map((perm) => {
+                        const checked = formData.permissions.includes(perm.id);
+                        return (
+                          <button
+                            key={perm.id}
+                            type="button"
+                            onClick={() => togglePermission(perm.id)}
+                            className={`flex items-start gap-2 rounded-input border p-2 text-left transition-colors ${
+                              checked
+                                ? 'border-primary/35 bg-primary/10'
+                                : 'border-border-color bg-card-bg hover:border-border-strong'
+                            }`}
+                          >
+                            <span
+                              className={`mt-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border ${
+                                checked ? 'border-primary bg-primary text-white' : 'border-border-strong'
+                              }`}
+                            >
+                              {checked && <Check size={9} />}
+                            </span>
+                            <span className="min-w-0">
+                              <span className="block text-[12px] text-text-primary truncate-1">{perm.name}</span>
+                              <span className="block text-[10.5px] text-text-muted truncate-1">{perm.description}</span>
+                            </span>
+                          </button>
                         );
                       })}
                     </div>
                   </div>
-                </div>
+                );
+              })}
+            </div>
+          </div>
 
-                <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-border-color">
-                  <button
-                    onClick={() => setShowForm(false)}
-                    className="px-4 py-2 text-text-secondary hover:text-text-primary"
-                  >
-                    取消
-                  </button>
-                  <button
-                    onClick={handleSave}
-                    disabled={!formData.name}
-                    className="px-4 py-2 bg-primary hover:bg-primary-hover disabled:opacity-50 text-white rounded-lg"
-                  >
-                    {editingRole ? '保存' : '创建'}
-                  </button>
-                </div>
-              </div>
-            </motion.div>
+          {formError && <div className="callout callout-danger">{formError}</div>}
+        </div>
+      </Modal>
+
+      {/* ── 删除确认 ───────────────────────────────── */}
+      <Modal
+        open={Boolean(deleteTarget)}
+        onClose={() => setDeleteTarget(null)}
+        width={420}
+        title="删除角色"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setDeleteTarget(null)}>取消</Button>
+            <Button variant="danger" icon={Trash2} onClick={handleDelete}>确认删除</Button>
           </>
-        )}
-      </AnimatePresence>
-    </div>
+        }
+      >
+        <p className="text-body text-text-secondary">
+          确定要删除角色 <strong className="text-text-primary">{deleteTarget?.name}</strong> 吗？
+          已绑定该角色的用户将失去对应权限，操作不可撤销。
+        </p>
+      </Modal>
+
+      {/* ── Toast ─────────────────────────────────── */}
+      {toast && (
+        <div
+          className={`fixed right-4 top-16 z-toast max-w-xs rounded-card border px-3.5 py-2.5 text-[12.5px] shadow-panel ${
+            toast.type === 'error'
+              ? 'border-danger/30 bg-danger/10 text-danger'
+              : 'border-success/30 bg-success/10 text-success'
+          }`}
+        >
+          {toast.message}
+        </div>
+      )}
+    </ContentContainer>
   );
 }

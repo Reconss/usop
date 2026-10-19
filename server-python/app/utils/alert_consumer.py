@@ -12,12 +12,15 @@
 import json
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict
 
 logger = logging.getLogger(__name__)
 
 _app = None
+
+# 去重时间窗口：窗口内同指纹告警视为重复，仅刷新既有记录
+DEDUP_WINDOW_MINUTES = 60
 
 # 产品类型 → topic 映射
 PRODUCT_TOPIC_MAP = {
@@ -62,8 +65,56 @@ class AlertConsumerManager:
             with _app.app_context():
                 from app.database import db
                 from app.models import Alert
+                from app.utils.dedup import compute_dedup_hash
+
+                dedup_hash = compute_dedup_hash(alert_data)
+
+                # 幂等去重：时间窗口内同指纹告警 → 刷新 last_seen/次数，不重复插入
+                window_start = datetime.utcnow() - timedelta(minutes=DEDUP_WINDOW_MINUTES)
+                existing = (Alert.query
+                            .filter(Alert.dedup_hash == dedup_hash,
+                                    Alert.last_seen >= window_start)
+                            .order_by(Alert.last_seen.desc())
+                            .first())
+                if existing:
+                    existing.last_seen = alert_data.get('last_seen') or datetime.utcnow()
+                    # 必须用新 dict 赋值：原地改同一对象不会触发 SQLAlchemy JSON 列的 dirty 标记
+                    extra = dict(existing.extra_data or {})
+                    extra['occurrences'] = (extra.get('occurrences') or 1) + 1
+                    existing.extra_data = extra
+                    db.session.commit()
+                    logger.info(f"♻️ 重复告警已合并: {dedup_hash[:8]} → alert#{existing.id} "
+                                f"(累计 {extra['occurrences']} 次)")
+                    return False
+
+                # 标准告警字段自动填充（真实派生，拒绝占位/mock）：
+                # - alert_log_id: 与流水线 _normalize 生成的告警ID一致（ALT-{dedup_hash}），
+                #   可回链 ES valid-alerts / Kafka 中的原始告警记录
+                # - operation: 设备侧动作字段（如 Suricata alert.action = allowed/blocked），
+                #   设备未提供该字段时保持空值，不编造
+                log_id = alert_data.get('alert_id') or f"ALT-{dedup_hash}"
+                # operation 优先采用解析结果里已有的 operation（可能来自②日志解析配置把
+                # 设备侧的 act/action_N 等字段映射到该标准字段），其次回退设备原生 action
+                operation = ''
+                for _src in (alert_data, alert_data.get('parsed_data') or {},
+                             alert_data.get('extra_data') or {}):
+                    if not isinstance(_src, dict):
+                        continue
+                    _v = _src.get('operation') or _src.get('action')
+                    if _v:
+                        operation = str(_v)
+                        break
+
+                # 告警编号缺失时用告警ID/指纹兜底：alerts.alert_code 有唯一约束，
+                # 自定义解析配置解析出的告警常常不带编号，留空会导致整条告警入库失败
+                code = (alert_data.get('alert_code') or '').strip()
+                if not code:
+                    code = (alert_data.get('alert_id') or '').strip() or f'ALT-{dedup_hash[:16]}'
+
                 a = Alert(
-                    alert_code=alert_data.get('alert_code', ''),
+                    alert_code=code,
+                    alert_log_id=log_id,
+                    operation=operation,
                     title=alert_data.get('title', ''),
                     description=alert_data.get('description', ''),
                     severity=alert_data.get('severity', 'medium'),
@@ -85,9 +136,16 @@ class AlertConsumerManager:
                     parsed_data=alert_data.get('parsed_data', {}),
                     extra_data=alert_data.get('extra_data', {}),
                     tags=alert_data.get('tags', []),
+                    dedup_hash=dedup_hash,
                 )
                 db.session.add(a)
                 db.session.commit()
+                # 入库时自动调用模板：渲染 auto_render 模板写入 extra_data.rendered_templates
+                try:
+                    from app.routes.templates import render_templates_for_alert
+                    render_templates_for_alert(a.id)
+                except Exception as te:
+                    logger.warning(f"模板自动渲染失败(不影响入库): {te}")
                 return True
         except Exception as e:
             logger.error(f"写入告警失败: {e}")

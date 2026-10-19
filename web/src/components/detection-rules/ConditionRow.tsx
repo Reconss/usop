@@ -1,6 +1,7 @@
 import React from 'react';
-import { TrashIcon, Database } from 'lucide-react';
+import { Trash2 } from 'lucide-react';
 import DynamicFieldSelect from './DynamicFieldSelect';
+import { Button } from '../ui';
 
 export const OPERATOR_LABELS: Record<string, string> = {
   equals: '等于', not_equals: '不等于', contains: '包含',
@@ -31,22 +32,20 @@ export default function ConditionRow({
   onDataSourceChange, onRemove, onAdd
 }: Props) {
   return (
-    <div className="flex items-start gap-2 p-3 bg-page-bg rounded-lg border border-border-color">
-      <div className="flex-1 grid grid-cols-4 gap-2">
+    <div className="app-panel flex items-start gap-2 p-2.5">
+      <div className="flex-1 grid grid-cols-1 sm:grid-cols-4 gap-2">
         {dataSources && dataSources.length > 0 && onDataSourceChange && (
           <select
             value={dataSourceId != null ? String(dataSourceId) : ''}
             onChange={e => onDataSourceChange(e.target.value)}
-            className="px-2 py-1.5 bg-card-bg border border-border-color rounded text-xs text-text-primary focus:border-primary focus:outline-none"
+            className="app-select px-2 py-1.5 text-[12px]"
+            aria-label="限定数据源"
           >
             <option value="">所有数据源</option>
             {dataSources
               .filter(ds => selectedDataSources.includes(String(ds.id)))
               .map(ds => (
-                <option key={ds.id} value={String(ds.id)}>
-                  <Database className="w-3 h-3 inline mr-1" />
-                  {ds.name}
-                </option>
+                <option key={ds.id} value={String(ds.id)}>{ds.name}</option>
               ))}
           </select>
         )}
@@ -54,11 +53,13 @@ export default function ConditionRow({
           selectedDataSources={dataSourceId ? [dataSourceId] : selectedDataSources}
           value={field}
           onChange={onFieldChange}
+          className="py-1.5 text-[12px]"
         />
         <select
           value={operator}
           onChange={e => onOperatorChange(e.target.value)}
-          className="px-2 py-1.5 bg-card-bg border border-border-color rounded text-xs text-text-primary focus:border-primary focus:outline-none"
+          className="app-select px-2 py-1.5 text-[12px]"
+          aria-label="操作符"
         >
           {Object.entries(OPERATOR_LABELS).map(([k, v]) => (
             <option key={k} value={k}>{v}</option>
@@ -69,16 +70,19 @@ export default function ConditionRow({
           value={value}
           onChange={e => onValueChange(e.target.value)}
           placeholder="值"
-          className="px-2 py-1.5 bg-card-bg border border-border-color rounded text-xs text-text-primary focus:border-primary focus:outline-none"
+          className="app-input px-2 py-1.5 text-[12px]"
+          aria-label="字段值"
           onKeyDown={e => { if (e.key === 'Enter' && onAdd) onAdd(); }}
         />
       </div>
-      <button
+      <Button
+        variant="ghost"
+        size="sm"
+        icon={Trash2}
+        className="w-8 px-0 text-text-muted hover:text-danger"
+        title="移除条件"
         onClick={onRemove}
-        className="p-1.5 text-text-muted hover:text-critical transition-colors flex-shrink-0 mt-0.5"
-      >
-        <TrashIcon className="w-3.5 h-3.5" />
-      </button>
+      />
     </div>
   );
 }

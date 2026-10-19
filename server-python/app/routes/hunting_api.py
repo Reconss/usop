@@ -1,16 +1,55 @@
 """
-威胁狩猎 API - 查询 alerts 表进行威胁检测
+威胁狩猎 API
+
+⚠️ 第 15 波起告警的唯一真相源是 Elasticsearch（`alerts-valid` / `alerts-invalid`），
+PG 里那张 `alerts` 表只剩空壳。本模块原先全部按 `Alert.query` 写 SQL，
+迁移后所有统计恒为 0、检索恒为空，且「威胁狩猎」页拿到空的 stats 后
+`value.toLocaleString()` 抛 TypeError 把整页打崩。现统一改走 app.utils.es_alerts。
 """
 from flask import Blueprint, request, jsonify
 from app.routes.auth import login_required
 from app.database import db
-from app.models import Alert
+from app.utils import es_alerts
 from sqlalchemy import or_, and_, func, desc
 from datetime import datetime, timedelta
 import json
 import re
 
 hunting_api_bp = Blueprint('hunting_api', __name__)
+
+
+def _es_total(filters=None, query_string='', start=None, end=None):
+    """ES 里符合条件的告警条数（page_size=0 只取聚合，不取文档）。"""
+    try:
+        res = es_alerts.search_alerts(query_string=query_string, filters=filters or {},
+                                      start=start, end=end, page_size=0)
+        return int(res.get('total') or 0)
+    except Exception:
+        return 0
+
+
+def _es_dist(field, filters=None, size=12):
+    """字段取值分布 → {值: 条数}。"""
+    try:
+        res = es_alerts.quick_values(field=field, filters=filters or {}, size=size)
+        return {b.get('key'): b.get('count', 0) for b in (res.get('buckets') or []) if b.get('key')}
+    except Exception:
+        return {}
+
+
+def _es_top(field, filters=None, size=10):
+    """字段 TopN → [{value, count}]。
+
+    过滤掉 ES 的缺失值占位 'N/A' —— 那是「该字段没值」，不是真实指标，
+    展示成主机名/IP 会误导。
+    """
+    try:
+        res = es_alerts.quick_values(field=field, filters=filters or {}, size=size + 1)
+        return [{'value': b.get('key'), 'count': b.get('count', 0)}
+                for b in (res.get('buckets') or [])
+                if b.get('key') and b.get('key') != 'N/A'][:size]
+    except Exception:
+        return []
 
 # 预置威胁狩猎查询
 HUNTING_TEMPLATES = [
@@ -117,59 +156,9 @@ HUNTING_TEMPLATES = [
 ]
 
 
-def _parse_query_to_filters(query_string):
-    """将查询字符串转为 SQLAlchemy 过滤条件"""
-    if not query_string:
-        return []
-
-    conditions = []
-    # 按 OR 分割
-    or_groups = re.split(r'\s+OR\s+', query_string, flags=re.IGNORECASE)
-
-    for group in or_groups:
-        and_parts = re.split(r'\s+AND\s+', group.strip(), flags=re.IGNORECASE)
-        group_conditions = []
-
-        for part in and_parts:
-            part = part.strip()
-            if not part:
-                continue
-
-            # NOT field:value
-            not_match = re.match(r'NOT\s+(\w+):(.+)', part, re.IGNORECASE)
-            if not_match:
-                field, value = not_match.group(1), not_match.group(2).strip('"')
-                col = getattr(Alert, field, None)
-                if col:
-                    group_conditions.append(col != value)
-                continue
-
-            # field:value with wildcard
-            match = re.match(r'(\w+):(.+)', part)
-            if match:
-                field, value = match.group(1), match.group(2).strip('"')
-                col = getattr(Alert, field, None)
-                if col is None:
-                    continue
-                if '*' in value:
-                    group_conditions.append(col.like(value.replace('*', '%')))
-                else:
-                    # Exact term match on the column
-                    group_conditions.append(col == value)
-                continue
-
-            # 全文搜索
-            conditions.append(or_(
-                Alert.title.ilike(f'%{part}%'),
-                Alert.description.ilike(f'%{part}%'),
-                Alert.category.ilike(f'%{part}%'),
-            ))
-
-        if group_conditions:
-            conditions.append(and_(*group_conditions))
-
-    return conditions
-
+# 注：原先的 _parse_query_to_filters 把查询串手工翻译成 SQLAlchemy 条件。
+# 改走 ES 后不再需要——ES 的 query_string 原生支持 field:value / AND / OR / 通配符，
+# 且语义比手写的这版更完整。已删除，避免继续引用已废弃的 Alert 模型。
 
 @hunting_api_bp.route('/templates', methods=['GET'])
 @login_required
@@ -181,7 +170,7 @@ def get_templates():
 @hunting_api_bp.route('/search', methods=['POST'])
 @login_required
 def hunting_search():
-    """执行威胁狩猎搜索"""
+    """执行威胁狩猎搜索（走 ES alerts-valid）"""
     data = request.get_json() or {}
     query = data.get('query', '')
     page = int(data.get('page', 1))
@@ -191,43 +180,26 @@ def hunting_search():
     severity = data.get('severity')
     source = data.get('source')
 
+    filters = {}
+    if severity:
+        filters['severity'] = [s.strip() for s in str(severity).split(',') if s.strip()]
+
+    # source 是模糊匹配，ES 的 term 做不到子串，拼进 query_string
+    q = (query or '').strip()
+    if source:
+        src_clause = f'source_product:*{source}*'
+        q = f'({q}) AND {src_clause}' if q else src_clause
+
     try:
-        base = Alert.query
-
-        # 应用查询条件
-        if query:
-            filters = _parse_query_to_filters(query)
-            if filters:
-                base = base.filter(or_(*filters))
-
-        if severity:
-            if ',' in severity:
-                base = base.filter(Alert.severity.in_(severity.split(',')))
-            else:
-                base = base.filter(Alert.severity == severity)
-
-        if source:
-            base = base.filter(Alert.source_product.ilike(f'%{source}%'))
-
-        if start_time:
-            try:
-                base = base.filter(Alert.first_seen >= datetime.fromisoformat(start_time.replace('Z', '+00:00')))
-            except Exception:
-                pass
-        if end_time:
-            try:
-                base = base.filter(Alert.first_seen <= datetime.fromisoformat(end_time.replace('Z', '+00:00')))
-            except Exception:
-                pass
-
-        total = base.count()
-        results = base.order_by(desc(Alert.first_seen)).offset((page - 1) * page_size).limit(page_size).all()
-
+        res = es_alerts.search_alerts(
+            query_string=q, filters=filters,
+            start=start_time or None, end=end_time or None,
+            page=page, page_size=page_size, sort_field='first_seen', sort_order='desc')
         return jsonify({
             'success': True,
             'data': {
-                'items': [a.to_dict() for a in results],
-                'total': total,
+                'items': res.get('items') or [],
+                'total': int(res.get('total') or 0),
                 'page': page,
                 'page_size': page_size,
                 'query': query,
@@ -240,18 +212,13 @@ def hunting_search():
 @hunting_api_bp.route('/stats', methods=['GET'])
 @login_required
 def get_stats():
-    """威胁狩猎统计"""
-    total = Alert.query.count()
-    critical = Alert.query.filter(Alert.severity == 'critical').count()
-    high = Alert.query.filter(Alert.severity == 'high').count()
-    since_24h = datetime.utcnow() - timedelta(hours=24)
-    recent = Alert.query.filter(Alert.created_at >= since_24h).count()
+    """威胁狩猎统计（ES alerts-valid）"""
+    since_24h = es_alerts.to_iso(datetime.utcnow() - timedelta(hours=24))
 
-    # 按产品分布
-    products = db.session.query(Alert.source_product, func.count()).group_by(Alert.source_product).all()
-
-    # 按分类分布
-    categories = db.session.query(Alert.category, func.count()).group_by(Alert.category).all()
+    total = _es_total()
+    critical = _es_total(filters={'severity': 'critical'})
+    high = _es_total(filters={'severity': 'high'})
+    recent = _es_total(start=since_24h)
 
     return jsonify({
         'success': True,
@@ -260,8 +227,8 @@ def get_stats():
             'critical_alerts': critical,
             'high_alerts': high,
             'recent_24h': recent,
-            'product_distribution': {k: v for k, v in products if k},
-            'category_distribution': {k: v for k, v in categories if k},
+            'product_distribution': _es_dist('source_product'),
+            'category_distribution': _es_dist('category'),
         }
     })
 
@@ -269,33 +236,13 @@ def get_stats():
 @hunting_api_bp.route('/indicators', methods=['GET'])
 @login_required
 def get_indicators():
-    """获取高危指标（IP、域名等）"""
-    # 从 alerts 中提取高危 IP
-    top_src_ips = db.session.query(
-        Alert.src_ip, func.count().label('cnt')
-    ).filter(
-        Alert.severity.in_(['critical', 'high']),
-        Alert.src_ip != '', Alert.src_ip.isnot(None)
-    ).group_by(Alert.src_ip).order_by(desc('cnt')).limit(10).all()
-
-    top_dst_ips = db.session.query(
-        Alert.dst_ip, func.count().label('cnt')
-    ).filter(
-        Alert.severity.in_(['critical', 'high']),
-        Alert.dst_ip != '', Alert.dst_ip.isnot(None)
-    ).group_by(Alert.dst_ip).order_by(desc('cnt')).limit(10).all()
-
-    top_hosts = db.session.query(
-        Alert.hostname, func.count().label('cnt')
-    ).filter(
-        Alert.hostname != '', Alert.hostname.isnot(None)
-    ).group_by(Alert.hostname).order_by(desc('cnt')).limit(10).all()
-
+    """获取高危指标（IP、主机）——只统计 critical/high 告警"""
+    hot = {'severity': ['critical', 'high']}
     return jsonify({
         'success': True,
         'data': {
-            'src_ips': [{'value': ip, 'count': cnt} for ip, cnt in top_src_ips],
-            'dst_ips': [{'value': ip, 'count': cnt} for ip, cnt in top_dst_ips],
-            'hosts': [{'value': h, 'count': cnt} for h, cnt in top_hosts],
+            'src_ips': _es_top('src_ip', hot),
+            'dst_ips': _es_top('dst_ip', hot),
+            'hosts': _es_top('hostname', hot),
         }
     })

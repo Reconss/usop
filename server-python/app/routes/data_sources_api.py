@@ -7,7 +7,6 @@ from flask import Blueprint, request, jsonify
 from app.routes.auth import login_required
 from app.database import db
 from app.models import DataSource, Pipeline, FormatTemplate
-from app.timescaledb import get_tsdb
 import os
 import json
 import requests
@@ -160,31 +159,24 @@ def list_datasources():
         # 获取关联的管道信息
         result = []
         for s in sources:
-            # 从 alert_logs 表查询该数据源的统计信息
+            # 近 1 小时该数据源告警统计（ES 为告警唯一真相源：valid=解析成功, invalid=解析失败）
             stats = {'parsedSuccess': 0, 'parsedFailed': 0, 'eventsPerSecond': 0}
             try:
-                tsdb = get_tsdb()
-                if tsdb:
-                    sess = tsdb.get_session()
-                    from sqlalchemy import text
-                    from sqlalchemy import text
-                    row = tsdb.execute(
-                        text("""
-                            SELECT 
-                                COUNT(*) as total,
-                                COUNT(*) FILTER (WHERE status = 'success') as success,
-                                COUNT(*) FILTER (WHERE status = 'failed' OR status = 'error') as failed
-                            FROM alert_logs 
-                            WHERE source_product = :name 
-                              AND created_at > NOW() - INTERVAL '1 hour'
-                        """),
-                        {'name': s.name}
-                    ).fetchone()
-                    if row:
-                        stats['parsedSuccess'] = row.success or 0
-                        stats['parsedFailed'] = row.failed or 0
-                        stats['eventsPerSecond'] = round((row.total or 0) / 3600, 2)
-                    tsdb.close_session(sess)
+                from app.utils import es_alerts
+                from datetime import datetime, timedelta
+                since = (datetime.utcnow() - timedelta(hours=1)).isoformat() + 'Z'
+                product = s.product_type or s.name
+                valid_res = es_alerts.search_alerts(
+                    filters={'source_product': product}, start=since, page_size=0,
+                    index=es_alerts.INDEX_VALID)
+                invalid_res = es_alerts.search_alerts(
+                    filters={'source_product': product}, start=since, page_size=0,
+                    index=es_alerts.INDEX_INVALID)
+                ok = valid_res.get('total', 0) or 0
+                failed = invalid_res.get('total', 0) or 0
+                stats['parsedSuccess'] = ok
+                stats['parsedFailed'] = failed
+                stats['eventsPerSecond'] = round((ok + failed) / 3600, 2)
             except Exception as e:
                 logger.warning(f"查询数据源 {s.name} 统计信息失败: {e}")
 
@@ -285,7 +277,13 @@ def create_datasource():
         return jsonify({'success': False, 'error': '名称不能为空'}), 400
     if not data.get('protocol'):
         return jsonify({'success': False, 'error': '协议类型不能为空'}), 400
-    
+
+    # 系统保留 topic 防护：配为数据源 topic 会被流水线重复消费（如 raw-logs 双消费）
+    _SYSTEM_TOPICS = ('raw-logs', 'standardized-alerts', 'valid-alerts', 'invalid-alerts')
+    if (data.get('kafka_topic') or '') in _SYSTEM_TOPICS:
+        return jsonify({'success': False,
+                        'error': f'topic {data["kafka_topic"]} 为流水线系统 topic，禁止作为数据源接入'}), 400
+
     source = DataSource(
         name=data['name'],
         protocol=data['protocol'],
@@ -299,7 +297,16 @@ def create_datasource():
     
     db.session.add(source)
     db.session.commit()
-    
+
+    # 创建即接入：有 kafka_topic 且状态活跃时自动进入采集流水线（无需重启）
+    if (source.kafka_topic and source.status == 'active'
+            and os.getenv('ALERT_PIPELINE', '1') == '1'):
+        try:
+            from app.alert_pipeline.pipeline import alert_pipeline
+            alert_pipeline.start_topic(source.kafka_topic)
+        except Exception as e:
+            print(f"⚠ 数据源自动接入流水线失败: {e}")
+
     return jsonify({
         'success': True,
         'data': {
@@ -318,6 +325,12 @@ def update_datasource(id):
     source = DataSource.query.get_or_404(id)
     data = request.get_json()
     
+    # 系统保留 topic 防护（与创建接口一致）
+    _SYSTEM_TOPICS = ('raw-logs', 'standardized-alerts', 'valid-alerts', 'invalid-alerts')
+    if (data.get('kafka_topic') or '') in _SYSTEM_TOPICS:
+        return jsonify({'success': False,
+                        'error': f'topic {data["kafka_topic"]} 为流水线系统 topic，禁止作为数据源接入'}), 400
+
     if 'name' in data:
         source.name = data['name']
     if 'protocol' in data:
@@ -616,7 +629,7 @@ def test_datasource(id):
 @data_sources_api_bp.route('/datasources/<int:id>/send-test', methods=['POST'])
 @login_required
 def send_test_message(id):
-    """发送测试消息到数据源"""
+    """[已弃用] 发送测试消息到数据源。采集测试统一走 /api/pipeline/test-ingest（真实完整链路）。"""
     source = DataSource.query.get_or_404(id)
     data = request.get_json() or {}
     

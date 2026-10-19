@@ -34,15 +34,15 @@ def copilot_analyze_event():
     return jsonify(result)
 
 
-# ==================== 2. 告警批量分析 & 事件生成 ====================
+# ==================== 2. 告警批量研判 & 事件生成 ====================
 @ai_capabilities_bp.route('/alerts/analyze-batch', methods=['POST'])
 @login_required
 def alerts_analyze_batch():
-    """批量分析未处理的告警，自动创建事件"""
+    """批量结构化研判未闭环告警并自动闭环（与「告警监控」同一实现）"""
     data = request.get_json() or {}
-    limit = data.get('limit', 50)
-    from app.ai_analysis.alert_analyzer import analyze_alert_batch
-    result = analyze_alert_batch(limit=limit)
+    limit = int(data.get('limit', 50))
+    from app.routes.ai_judgment import run_batch_judgment
+    result = run_batch_judgment(limit=limit)
     return jsonify(result)
 
 
@@ -298,36 +298,36 @@ def natural_language_query():
     query_result = {}
 
     if intent_type == "query_alerts":
-        from app.timescaledb import get_tsdb
-        from sqlalchemy import text
-        tsdb = get_tsdb()
-        sess = tsdb.get_session()
-        time_filter = ""
+        from app.utils import es_alerts
+        from datetime import datetime, timedelta
+        kwargs = {}
         if "24h" in str(params):
-            time_filter = "AND first_seen >= NOW() - INTERVAL '24 hours'"
+            kwargs['start'] = (datetime.utcnow() - timedelta(hours=24)).isoformat() + 'Z'
         severity = params.get("severity", "")
-        sev_filter = f"AND severity = '{severity}'" if severity else ""
-        rows = sess.execute(text(f"""
-            SELECT alert_code, title, severity, src_ip, dst_ip, attack_type, first_seen
-            FROM alerts WHERE 1=1 {time_filter} {sev_filter}
-            ORDER BY first_seen DESC LIMIT 20
-        """)).fetchall()
-        query_result = {"alerts": [dict(r._mapping) for r in rows]}
-        tsdb.close_session(sess)
+        if severity:
+            kwargs['filters'] = {'severity': severity}
+        res = es_alerts.search_alerts(page_size=20, **kwargs)
+        query_result = {"alerts": [{
+            'alert_code': it.get('alert_code') or it.get('alert_id', ''),
+            'title': it.get('title', ''),
+            'severity': it.get('severity', ''),
+            'src_ip': it.get('src_ip', ''),
+            'dst_ip': it.get('dst_ip', ''),
+            'attack_type': it.get('category', ''),
+            'first_seen': it.get('first_seen', ''),
+        } for it in res.get('items', [])]}
 
     elif intent_type == "query_ip":
         ip = params.get("ip", "")
-        from app.timescaledb import get_tsdb
-        from sqlalchemy import text
-        tsdb = get_tsdb()
-        sess = tsdb.get_session()
-        rows = sess.execute(text("""
-            SELECT alert_code, title, severity, attack_type, first_seen
-            FROM alerts WHERE src_ip = :ip OR dst_ip = :ip
-            ORDER BY first_seen DESC LIMIT 20
-        """), {"ip": ip}).fetchall()
-        query_result = {"ip": ip, "alerts": [dict(r._mapping) for r in rows]}
-        tsdb.close_session(sess)
+        from app.utils import es_alerts
+        res = es_alerts.search_alerts(query_string=f'"{ip}"', page_size=20)
+        query_result = {"ip": ip, "alerts": [{
+            'alert_code': it.get('alert_code') or it.get('alert_id', ''),
+            'title': it.get('title', ''),
+            'severity': it.get('severity', ''),
+            'attack_type': it.get('category', ''),
+            'first_seen': it.get('first_seen', ''),
+        } for it in res.get('items', [])]}
 
     elif intent_type == "analyze" and params.get("event_code"):
         from app.ai_analysis.event_copilot import analyze_event
@@ -376,13 +376,11 @@ def record_feedback():
     human_correction = data.get('human_correction', {})
     is_accepted = data.get('is_accepted', True)
 
-    from app.timescaledb import get_tsdb
+    from app.database import db
     from sqlalchemy import text
 
     try:
-        tsdb = get_tsdb()
-        sess = tsdb.get_session()
-        sess.execute(text("""
+        db.session.execute(text("""
             CREATE TABLE IF NOT EXISTS ai_feedback (
                 id SERIAL PRIMARY KEY,
                 event_id VARCHAR(50),
@@ -392,7 +390,7 @@ def record_feedback():
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )
         """))
-        sess.execute(text("""
+        db.session.execute(text("""
             INSERT INTO ai_feedback (event_id, ai_decision, human_correction, is_accepted)
             VALUES (:event_id, :ai_dec, :human_corr, :accepted)
         """), {
@@ -401,26 +399,41 @@ def record_feedback():
             "human_corr": json.dumps(human_correction, ensure_ascii=False),
             "accepted": is_accepted
         })
-        sess.commit()
-        tsdb.close_session(sess)
+        db.session.commit()
         return jsonify({'success': True, 'message': '反馈已记录'})
     except Exception as e:
+        db.session.rollback()
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @ai_capabilities_bp.route('/feedback/stats', methods=['GET'])
 @login_required
 def feedback_stats():
-    """获取反馈统计"""
-    # TimescaleDB 已替换为 ES，暂时返回空统计
-    return jsonify({
-        "success": True,
-        "data": {
-            "total": 0,
-            "accepted": 0,
-            "rejected": 0,
-            "acceptance_rate": 0
-        }
-    })
+    """获取反馈统计（PG ai_feedback 表）"""
+    from app.database import db
+    from sqlalchemy import text
+    try:
+        row = db.session.execute(text("""
+            SELECT COUNT(*) AS total,
+                   COUNT(*) FILTER (WHERE is_accepted) AS accepted,
+                   COUNT(*) FILTER (WHERE NOT is_accepted) AS rejected
+            FROM ai_feedback
+        """)).fetchone()
+        total = row.total or 0
+        accepted = row.accepted or 0
+        return jsonify({
+            "success": True,
+            "data": {
+                "total": total,
+                "accepted": accepted,
+                "rejected": row.rejected or 0,
+                "acceptance_rate": round(accepted / total, 4) if total else 0
+            }
+        })
+    except Exception:
+        return jsonify({
+            "success": True,
+            "data": {"total": 0, "accepted": 0, "rejected": 0, "acceptance_rate": 0}
+        })
 
 

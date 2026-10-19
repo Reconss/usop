@@ -9,12 +9,20 @@
  *  - 分页
  */
 
-import React, { useState, useMemo, useCallback } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import React, { useState, useMemo, useRef } from 'react';
 import {
-  ArrowUpDown, ArrowUp, ArrowDown, ChevronDown, ChevronRight,
-  Settings2, Eye, Copy, Check, X, ChevronLeft, ChevronsLeft, ChevronsRight
+  ArrowUpDown, ArrowUp, ArrowDown,
+  Settings2, Copy, Check,
+  ChevronLeft, ChevronsLeft, ChevronsRight, ChevronRight,
 } from 'lucide-react';
+import {
+  Button,
+  EmptyState,
+  LoadingState,
+  SeverityBadge,
+  StateBadge,
+  TableWrap,
+} from './ui';
 
 // ==================== 列定义 ====================
 
@@ -27,7 +35,7 @@ interface ColumnDef {
 }
 
 const DEFAULT_COLUMNS: ColumnDef[] = [
-  { key: 'id', label: 'ID', width: '70px', sortable: true },
+  { key: 'id', label: 'ID', width: '122px', sortable: true },
   { key: 'title', label: '告警名称', sortable: true },
   { key: 'severity', label: '严重程度', width: '80px', sortable: true },
   { key: 'status', label: '状态', width: '80px', sortable: true },
@@ -47,24 +55,35 @@ const ALL_COLUMNS: ColumnDef[] = [
   { key: 'hostname', label: '主机', width: '130px', sortable: true },
   { key: 'source', label: '数据源', width: '90px' },
   { key: 'description', label: '描述' },
+  {
+    key: 'collab',
+    label: '研判',
+    width: '72px',
+    render: (_: any, row: any) => {
+      const analyzed = row?.extraData?.structured_analysis;
+      return analyzed ? (
+        <span className="chip !px-1.5 !py-0.5 !text-[10px] text-success">已研判</span>
+      ) : null;
+    },
+  },
 ];
 
-// ==================== 严重度/状态样式 ====================
+// ==================== 严重度/状态 ====================
 
-const severityStyle: Record<string, { bg: string; text: string; label: string }> = {
-  critical: { bg: 'bg-rose-500/15', text: 'text-rose-400', label: '危急' },
-  high: { bg: 'bg-orange-500/15', text: 'text-orange-400', label: '高危' },
-  medium: { bg: 'bg-amber-500/15', text: 'text-amber-400', label: '中危' },
-  low: { bg: 'bg-blue-500/15', text: 'text-blue-400', label: '低危' },
+const SEVERITY_LABEL: Record<string, string> = {
+  critical: '危急',
+  high: '高危',
+  medium: '中危',
+  low: '低危',
 };
 
-const statusStyle: Record<string, { bg: string; text: string; label: string }> = {
-  new: { bg: 'bg-blue-500/15', text: 'text-blue-400', label: '新告警' },
-  investigating: { bg: 'bg-amber-500/15', text: 'text-amber-400', label: '调查中' },
-  active: { bg: 'bg-amber-500/15', text: 'text-amber-400', label: '调查中' },
-  closed: { bg: 'bg-emerald-500/15', text: 'text-emerald-400', label: '已关闭' },
-  resolved: { bg: 'bg-emerald-500/15', text: 'text-emerald-400', label: '已关闭' },
-  false_positive: { bg: 'bg-gray-500/15', text: 'text-gray-400', label: '误报' },
+const STATUS_META: Record<string, { state: string; label: string }> = {
+  new: { state: 'new', label: '新告警' },
+  investigating: { state: 'investigating', label: '调查中' },
+  active: { state: 'investigating', label: '调查中' },
+  closed: { state: 'closed', label: '已关闭' },
+  resolved: { state: 'closed', label: '已关闭' },
+  false_positive: { state: 'false_positive', label: '误报' },
 };
 
 // ==================== 高亮工具 ====================
@@ -86,7 +105,7 @@ function highlightText(text: string, query: string): React.ReactNode {
 
   return parts.map((part, i) =>
     pattern.test(part)
-      ? <mark key={i} className="bg-yellow-400/30 text-yellow-200 rounded px-0.5">{part}</mark>
+      ? <mark key={i} className="bg-warning/25 text-warning rounded px-0.5">{part}</mark>
       : part
   );
 }
@@ -123,6 +142,34 @@ export const MessageTable: React.FC<MessageTableProps> = ({
   );
   const [showColSelector, setShowColSelector] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
+  // 列宽自适应调节：初始用列定义的默认宽度，可拖拽列边界实时调整
+  const [colWidths, setColWidths] = useState<Record<string, number>>({});
+  const resizeStateRef = useRef<{ key: string; startX: number; startW: number } | null>(null);
+
+  const handleResizeStart = (key: string) => (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const th = (e.currentTarget as HTMLElement).closest('th');
+    if (!th) return;
+    resizeStateRef.current = { key, startX: e.clientX, startW: th.getBoundingClientRect().width };
+    const onMove = (ev: MouseEvent) => {
+      const st = resizeStateRef.current;
+      if (!st) return;
+      const w = Math.max(56, st.startW + ev.clientX - st.startX);
+      setColWidths(prev => ({ ...prev, [st.key]: w }));
+    };
+    const onUp = () => {
+      resizeStateRef.current = null;
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
 
   const columns = useMemo(
     () => ALL_COLUMNS.filter(c => visibleCols.includes(c.key)),
@@ -173,27 +220,22 @@ export const MessageTable: React.FC<MessageTableProps> = ({
     const val = row[col.key];
 
     if (col.key === 'severity') {
-      const s = severityStyle[val] || severityStyle.medium;
-      return (
-        <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${s.bg} ${s.text}`}>
-          {s.label}
-        </span>
-      );
+      return <SeverityBadge severity={SEVERITY_LABEL[val] || '中危'} />;
     }
 
     if (col.key === 'status') {
-      const s = statusStyle[val] || statusStyle.new;
-      return (
-        <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${s.bg} ${s.text}`}>
-          {s.label}
-        </span>
-      );
+      const meta = STATUS_META[val] || STATUS_META.new;
+      return <StateBadge state={meta.state} label={meta.label} />;
     }
 
     if (col.key === 'id') {
+      const text = val == null ? '' : String(val);
       return (
-        <span className="text-xs font-mono text-text-muted">
-          {typeof val === 'string' ? val.slice(0, 8) : val}
+        <span
+          className="text-xs font-mono text-text-muted whitespace-nowrap"
+          title={text || undefined}
+        >
+          {text.slice(0, 12)}
         </span>
       );
     }
@@ -214,16 +256,27 @@ export const MessageTable: React.FC<MessageTableProps> = ({
     if (col.key === 'srcIp' || col.key === 'dstIp' || col.key === 'src_ip' || col.key === 'dst_ip') {
       if (!val) return <span className="text-xs text-text-muted">-</span>;
       return (
-        <span className="text-xs font-mono text-cyan-300">
+        <span className="text-xs font-mono text-info">
           {searchQuery ? highlightText(val, searchQuery) : val}
         </span>
       );
     }
 
     if (col.key === 'title') {
+      const linkedEvents: string[] = row?.eventIds || row?.event_ids || [];
       return (
-        <span className="text-xs text-text-primary truncate max-w-[300px] block">
-          {searchQuery ? highlightText(String(val || ''), searchQuery) : val}
+        <span className="flex items-center gap-1.5 min-w-0">
+          <span className="text-xs text-text-primary truncate max-w-[300px] block">
+            {searchQuery ? highlightText(String(val || ''), searchQuery) : val}
+          </span>
+          {linkedEvents.length > 0 && (
+            <span
+              className="chip !px-1.5 !py-0.5 !text-[10px] text-info shrink-0"
+              title={`已关联事件：${linkedEvents.join('、')}`}
+            >
+              已转事件
+            </span>
+          )}
         </span>
       );
     }
@@ -239,13 +292,15 @@ export const MessageTable: React.FC<MessageTableProps> = ({
     return <span className="text-xs text-text-secondary">{val ?? '-'}</span>;
   };
 
+  const colSpan = columns.length + (onSelectionChange ? 1 : 0);
+
   return (
-    <div className={`flex flex-col ${className}`}>
+    <div className={`flex flex-col min-h-0 ${className}`}>
       {/* 工具栏 */}
-      <div className="flex items-center justify-between px-4 py-2 border-b border-border-color">
-        <div className="flex items-center gap-3">
+      <div className="flex items-center justify-between gap-3 px-4 py-2 border-b border-border-color">
+        <div className="flex items-center gap-3 min-w-0">
           <span className="text-xs text-text-muted">
-            共 <span className="text-text-secondary font-medium">{total.toLocaleString()}</span> 条
+            共 <span className="text-text-secondary font-medium num">{total.toLocaleString()}</span> 条
           </span>
           {selectedIds && selectedIds.size > 0 && (
             <span className="text-xs text-primary">
@@ -254,87 +309,91 @@ export const MessageTable: React.FC<MessageTableProps> = ({
           )}
         </div>
 
-        <div className="flex items-center gap-2">
-          {/* 列选择器 */}
-          <div className="relative">
-            <button
-              onClick={() => setShowColSelector(!showColSelector)}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-text-muted hover:text-text-secondary
-                         bg-page-bg border border-border-color rounded-lg transition-colors"
-            >
-              <Settings2 className="w-3.5 h-3.5" />
-              列
-            </button>
+        {/* 列选择器 */}
+        <div className="relative shrink-0">
+          <Button
+            variant={showColSelector ? 'soft' : 'secondary'}
+            size="sm"
+            icon={Settings2}
+            onClick={() => setShowColSelector(!showColSelector)}
+            aria-expanded={showColSelector}
+          >
+            列
+          </Button>
 
-            <AnimatePresence>
-              {showColSelector && (
-                <motion.div
-                  initial={{ opacity: 0, y: -5 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -5 }}
-                  className="absolute top-full right-0 mt-1 w-56 bg-card-bg border border-border-color
-                             rounded-xl shadow-2xl z-50 overflow-hidden"
-                >
-                  <div className="px-3 py-2 border-b border-border-color">
-                    <span className="text-xs font-medium text-text-muted">显示列</span>
-                  </div>
-                  <div className="p-2 max-h-[300px] overflow-y-auto">
-                    {ALL_COLUMNS.map((col) => (
-                      <label
-                        key={col.key}
-                        className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-white/5 cursor-pointer"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={visibleCols.includes(col.key)}
-                          onChange={() => handleToggleCol(col.key)}
-                          className="w-3.5 h-3.5 rounded border-border-color text-primary focus:ring-primary/30 bg-page-bg"
-                        />
-                        <span className="text-xs text-text-primary">{col.label}</span>
-                      </label>
-                    ))}
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
+          {showColSelector && (
+            <div className="absolute top-full right-0 mt-1 w-56 z-50 overflow-hidden app-card shadow-panel">
+              <div className="px-3 py-2 border-b border-border-color">
+                <span className="text-xs font-medium text-text-muted">显示列</span>
+              </div>
+              <div className="p-2 max-h-[300px] overflow-y-auto scrollbar-thin">
+                {ALL_COLUMNS.map((col) => (
+                  <label
+                    key={col.key}
+                    className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-surface-2 cursor-pointer"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={visibleCols.includes(col.key)}
+                      onChange={() => handleToggleCol(col.key)}
+                      className="app-checkbox"
+                    />
+                    <span className="text-xs text-text-primary">{col.label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
       {/* 表格 */}
-      <div className="overflow-x-auto">
-        <table className="w-full">
+      <TableWrap className="flex-1 min-h-0 border-0 rounded-none">
+        <table className="data-table">
           <thead>
-            <tr className="border-b border-border-color">
+            <tr>
               {/* 复选框列 */}
               {onSelectionChange && (
-                <th className="w-10 px-3 py-2">
+                <th className="w-12" style={{ width: 48 }} aria-label="选择">
                   <input
                     type="checkbox"
                     checked={selectedIds ? selectedIds.size === data.length && data.length > 0 : false}
                     onChange={handleSelectAll}
-                    className="w-3.5 h-3.5 rounded border-border-color text-primary focus:ring-primary/30 bg-page-bg"
+                    className="app-checkbox"
                   />
                 </th>
               )}
               {columns.map((col) => (
                 <th
                   key={col.key}
-                  className={`px-3 py-2 text-left text-xs font-medium text-text-muted uppercase tracking-wide
-                    ${col.sortable ? 'cursor-pointer hover:text-text-secondary select-none' : ''}`}
-                  style={col.width ? { width: col.width, minWidth: col.width } : undefined}
+                  aria-sort={
+                    sortField === col.key
+                      ? sortOrder === 'asc' ? 'ascending' : 'descending'
+                      : undefined
+                  }
+                  className={`relative group/th ${col.sortable ? 'cursor-pointer select-none hover:text-text-secondary' : ''}`}
+                  style={{ width: colWidths[col.key] ?? col.width }}
                   onClick={() => col.sortable && handleSort(col.key)}
                 >
                   <div className="flex items-center gap-1">
                     {col.label}
                     {col.sortable && (
                       sortField === col.key ? (
-                        sortOrder === 'asc' ? <ArrowUp className="w-3 h-3 text-primary" /> : <ArrowDown className="w-3 h-3 text-primary" />
+                        sortOrder === 'asc'
+                          ? <ArrowUp className="w-3 h-3 text-primary" />
+                          : <ArrowDown className="w-3 h-3 text-primary" />
                       ) : (
                         <ArrowUpDown className="w-3 h-3 opacity-30" />
                       )
                     )}
                   </div>
+                  {/* 列宽拖拽手柄 */}
+                  <span
+                    aria-hidden="true"
+                    className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize opacity-0 group-hover/th:opacity-100 hover:!opacity-100 bg-primary/30 transition-opacity"
+                    onMouseDown={handleResizeStart(col.key)}
+                    onClick={(e) => e.stopPropagation()}
+                  />
                 </th>
               ))}
             </tr>
@@ -342,105 +401,98 @@ export const MessageTable: React.FC<MessageTableProps> = ({
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={columns.length + (onSelectionChange ? 1 : 0)} className="px-3 py-12 text-center">
-                  <div className="flex items-center justify-center gap-2 text-text-muted">
-                    <div className="w-4 h-4 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
-                    <span className="text-sm">加载中...</span>
-                  </div>
+                <td colSpan={colSpan} className="text-center">
+                  <LoadingState inline label="加载中…" />
                 </td>
               </tr>
             ) : data.length === 0 ? (
               <tr>
-                <td colSpan={columns.length + (onSelectionChange ? 1 : 0)} className="px-3 py-12 text-center text-text-muted text-sm">
-                  暂无告警数据
+                <td colSpan={colSpan}>
+                  <EmptyState compact title="暂无告警数据" />
                 </td>
               </tr>
             ) : (
               data.map((row, i) => {
                 const isExpanded = expandedRowId === row.id;
+                const isSelected = selectedIds?.has(row.id) || false;
                 return (
                   <React.Fragment key={row.id || i}>
                     <tr
                       onClick={() => onRowClick?.(row)}
-                      className={`border-b border-border-color/50 cursor-pointer transition-colors
-                        ${isExpanded ? 'bg-primary/5' : 'hover:bg-white/[0.02]'}`}
+                      className={[
+                        'cursor-pointer',
+                        isSelected ? 'is-selected' : '',
+                        isExpanded ? 'bg-primary/5' : '',
+                      ].filter(Boolean).join(' ')}
                     >
                       {onSelectionChange && (
-                        <td className="w-10 px-3 py-2" onClick={(e) => e.stopPropagation()}>
+                        <td onClick={(e) => e.stopPropagation()}>
                           <input
                             type="checkbox"
-                            checked={selectedIds?.has(row.id) || false}
+                            checked={isSelected}
                             onChange={() => handleSelectRow(row.id)}
-                            className="w-3.5 h-3.5 rounded border-border-color text-primary focus:ring-primary/30 bg-page-bg"
+                            className="app-checkbox"
+                            aria-label="选择该行"
                           />
                         </td>
                       )}
                       {columns.map((col) => (
-                        <td key={col.key} className="px-3 py-2.5">
-                          {renderCellValue(col, row)}
+                        <td key={col.key}>
+                          {col.render ? col.render(row[col.key], row) : renderCellValue(col, row)}
                         </td>
                       ))}
                     </tr>
 
                     {/* 展开行详情 */}
-                    <AnimatePresence>
-                      {isExpanded && (
-                        <tr>
-                          <td colSpan={columns.length + (onSelectionChange ? 1 : 0)}>
-                            <motion.div
-                              initial={{ height: 0, opacity: 0 }}
-                              animate={{ height: 'auto', opacity: 1 }}
-                              exit={{ height: 0, opacity: 0 }}
-                              className="overflow-hidden bg-page-bg/50"
-                            >
-                              <div className="px-6 py-4 grid grid-cols-2 md:grid-cols-4 gap-3">
-                                {Object.entries(row)
-                                  .filter(([k]) => !['id', '_score'].includes(k))
-                                  .map(([k, v]) => (
-                                    <div key={k} className="group">
-                                      <div className="text-[10px] text-text-muted uppercase tracking-wide mb-0.5">{k}</div>
-                                      <div className="flex items-center gap-1">
-                                        <span className="text-xs text-text-primary font-mono truncate max-w-[180px]">
-                                          {typeof v === 'object' ? JSON.stringify(v) : String(v ?? '-')}
-                                        </span>
-                                        <button
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            copyToClipboard(String(v ?? ''), k);
-                                          }}
-                                          className="opacity-0 group-hover:opacity-100 p-0.5 text-text-muted hover:text-primary transition-all"
-                                        >
-                                          {copiedField === k
-                                            ? <Check className="w-3 h-3 text-emerald-400" />
-                                            : <Copy className="w-3 h-3" />
-                                          }
-                                        </button>
-                                      </div>
-                                    </div>
-                                  ))}
-                              </div>
-                            </motion.div>
-                          </td>
-                        </tr>
-                      )}
-                    </AnimatePresence>
+                    {isExpanded && (
+                      <tr className="bg-surface-2/40 hover:bg-surface-2/40">
+                        <td colSpan={colSpan} className="!p-0">
+                          <div className="px-6 py-4 grid grid-cols-2 md:grid-cols-4 gap-3 bg-surface-2/40">
+                            {Object.entries(row)
+                              .filter(([k]) => !['id', '_score'].includes(k))
+                              .map(([k, v]) => (
+                                <div key={k} className="group min-w-0">
+                                  <div className="text-[10px] text-text-muted uppercase tracking-wide mb-0.5">{k}</div>
+                                  <div className="flex items-center gap-1">
+                                    <span className="text-xs text-text-primary font-mono truncate max-w-[180px]">
+                                      {typeof v === 'object' ? JSON.stringify(v) : String(v ?? '-')}
+                                    </span>
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      icon={copiedField === k ? Check : Copy}
+                                      className="h-5 w-5 px-0 opacity-0 group-hover:opacity-100"
+                                      title="复制值"
+                                      aria-label={`复制 ${k}`}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        copyToClipboard(String(v ?? ''), k);
+                                      }}
+                                    />
+                                  </div>
+                                </div>
+                              ))}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
                   </React.Fragment>
                 );
               })
             )}
           </tbody>
         </table>
-      </div>
+      </TableWrap>
 
       {/* 分页 */}
-      <div className="flex items-center justify-between px-4 py-3 border-t border-border-color">
+      <div className="flex items-center justify-between px-4 py-2 border-t border-border-color">
         <div className="flex items-center gap-2">
           <span className="text-xs text-text-muted">每页</span>
           <select
             value={pageSize}
             onChange={(e) => onPageSizeChange?.(Number(e.target.value))}
-            className="bg-page-bg border border-border-color rounded-lg px-2 py-1 text-xs text-text-secondary
-                       focus:outline-none focus:border-primary"
+            className="app-select w-auto h-7 py-0 pl-2 pr-7 text-xs"
+            aria-label="每页条数"
           >
             {[10, 20, 50, 100].map(s => (
               <option key={s} value={s}>{s}</option>
@@ -449,44 +501,48 @@ export const MessageTable: React.FC<MessageTableProps> = ({
           <span className="text-xs text-text-muted">条</span>
         </div>
 
-        <div className="flex items-center gap-1">
-          <button
+        <div className="flex items-center gap-0.5">
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={ChevronsLeft}
+            className="w-7 px-0"
+            disabled={page <= 1}
+            aria-label="第一页"
             onClick={() => onPageChange?.(1)}
+          />
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={ChevronLeft}
+            className="w-7 px-0"
             disabled={page <= 1}
-            className="p-1.5 rounded-lg text-text-muted hover:text-text-secondary hover:bg-white/5
-                       disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-          >
-            <ChevronsLeft className="w-4 h-4" />
-          </button>
-          <button
+            aria-label="上一页"
             onClick={() => onPageChange?.(page - 1)}
-            disabled={page <= 1}
-            className="p-1.5 rounded-lg text-text-muted hover:text-text-secondary hover:bg-white/5
-                       disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-          >
-            <ChevronLeft className="w-4 h-4" />
-          </button>
+          />
 
-          <span className="px-3 py-1.5 text-xs text-text-secondary">
+          <span className="px-3 text-xs text-text-secondary num">
             {page} / {totalPages}
           </span>
 
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={ChevronRight}
+            className="w-7 px-0"
+            disabled={page >= totalPages}
+            aria-label="下一页"
             onClick={() => onPageChange?.(page + 1)}
+          />
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={ChevronsRight}
+            className="w-7 px-0"
             disabled={page >= totalPages}
-            className="p-1.5 rounded-lg text-text-muted hover:text-text-secondary hover:bg-white/5
-                       disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-          >
-            <ChevronRight className="w-4 h-4" />
-          </button>
-          <button
+            aria-label="最后一页"
             onClick={() => onPageChange?.(totalPages)}
-            disabled={page >= totalPages}
-            className="p-1.5 rounded-lg text-text-muted hover:text-text-secondary hover:bg-white/5
-                       disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-          >
-            <ChevronsRight className="w-4 h-4" />
-          </button>
+          />
         </div>
       </div>
     </div>

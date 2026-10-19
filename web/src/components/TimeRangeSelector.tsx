@@ -8,8 +8,8 @@
  */
 
 import React, { useState, useRef, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Clock, ChevronDown, Calendar, RefreshCw, X } from 'lucide-react';
+import { Clock, ChevronDown, Calendar, RefreshCw } from 'lucide-react';
+import { Button, Switch } from './ui';
 
 export interface TimeRange {
   start: string;   // ISO 格式
@@ -132,146 +132,111 @@ export const TimeRangeSelector: React.FC<TimeRangeSelectorProps> = ({
     }
   };
 
-  // 判断当前选中的预设
-  const activePreset = PRESETS.find(p => p.key === value.preset);
-
   return (
     <div ref={ref} className={`relative ${className}`}>
       <div className="flex items-center gap-2">
-        {/* 预设快捷按钮 — 紧凑模式 */}
-        <div className="flex items-center bg-page-bg border border-border-color rounded-lg overflow-hidden">
-          {PRESETS.filter(p => ['15m', '1h', '4h', '24h', '7d'].includes(p.key)).map((p) => (
-            <button
-              key={p.key}
-              onClick={() => handlePreset(p)}
-              className={`px-3 py-1.5 text-xs font-medium transition-all border-r border-border-color last:border-r-0
-                ${value.preset === p.key
-                  ? 'bg-primary/15 text-primary'
-                  : 'text-text-muted hover:text-text-secondary hover:bg-white/5'
-                }`}
-            >
-              {p.shortLabel}
-            </button>
-          ))}
-        </div>
-
         {/* 下拉选择器 */}
-        <button
+        <Button
+          variant={showDropdown ? 'soft' : 'secondary'}
+          size="sm"
+          icon={Clock}
+          iconRight={ChevronDown}
           onClick={() => setShowDropdown(!showDropdown)}
-          className="flex items-center gap-2 px-3 py-1.5 bg-page-bg border border-border-color rounded-lg
-                     text-text-secondary hover:border-primary/40 transition-all text-xs"
+          aria-expanded={showDropdown}
+          title="选择时间范围"
+          className="h-[34px]"
         >
-          <Clock className="w-3.5 h-3.5" />
-          <span>{value.label || '选择时间'}</span>
-          <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showDropdown ? 'rotate-180' : ''}`} />
-        </button>
+          {value.label || '选择时间'}
+        </Button>
 
         {/* 实时滚动开关 */}
         {enableAutoRefresh && (
-          <button
-            onClick={() => onAutoRefreshChange?.(!autoRefreshEnabled)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-all
-              ${autoRefreshEnabled
-                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
-                : 'bg-page-bg border-border-color text-text-muted hover:text-text-secondary'
-              }`}
+          <div
+            className={`flex items-center gap-2 pl-1 pr-2 h-[34px] text-xs font-medium transition-colors ${
+              autoRefreshEnabled ? 'text-success' : 'text-text-muted'
+            }`}
             title={autoRefreshEnabled ? '关闭实时滚动' : '开启实时滚动'}
           >
+            <Switch
+              size="sm"
+              checked={autoRefreshEnabled}
+              onChange={(next) => onAutoRefreshChange?.(next)}
+              label="实时滚动"
+            />
             <RefreshCw className={`w-3.5 h-3.5 ${autoRefreshEnabled ? 'animate-spin' : ''}`} />
             实时
-          </button>
+          </div>
         )}
       </div>
 
       {/* 下拉面板 */}
-      <AnimatePresence>
-        {showDropdown && (
-          <motion.div
-            initial={{ opacity: 0, y: -5 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -5 }}
-            className="absolute top-full right-0 mt-1 w-72 bg-card-bg border border-border-color
-                       rounded-xl shadow-2xl z-50 overflow-hidden"
-          >
-            {/* 预设列表 */}
-            <div className="p-2">
-              <div className="px-3 py-1.5 text-xs font-medium text-text-muted uppercase tracking-wide">
-                快捷选择
-              </div>
-              {PRESETS.map((p) => (
-                <button
-                  key={p.key}
-                  onClick={() => handlePreset(p)}
-                  className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm transition-colors
-                    ${value.preset === p.key
-                      ? 'bg-primary/10 text-primary'
-                      : 'text-text-primary hover:bg-white/5'
-                    }`}
-                >
-                  <span>{p.label}</span>
-                  <span className="text-xs text-text-muted">{p.shortLabel}</span>
-                </button>
-              ))}
+      {showDropdown && (
+        <div className="absolute top-full right-0 mt-1 w-72 z-50 overflow-hidden app-card shadow-panel">
+          {/* 预设列表 */}
+          <div className="p-2">
+            <div className="px-3 py-1.5 text-xs font-medium text-text-muted uppercase tracking-wide">
+              快捷选择
             </div>
-
-            {/* 分割线 */}
-            <div className="border-t border-border-color mx-3" />
-
-            {/* 自定义时间 */}
-            <div className="p-3">
+            {PRESETS.map((p) => (
               <button
-                onClick={() => setShowCustom(!showCustom)}
-                className="flex items-center gap-2 w-full px-3 py-2 rounded-lg text-sm text-text-secondary
-                           hover:bg-white/5 transition-colors"
+                key={p.key}
+                type="button"
+                onClick={() => handlePreset(p)}
+                className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm transition-colors ${
+                  value.preset === p.key
+                    ? 'bg-primary/10 text-primary'
+                    : 'text-text-primary hover:bg-surface-2'
+                }`}
               >
-                <Calendar className="w-4 h-4" />
-                <span>自定义时间范围</span>
-                <ChevronDown className={`w-3.5 h-3.5 ml-auto transition-transform ${showCustom ? 'rotate-180' : ''}`} />
+                <span>{p.label}</span>
+                <span className="text-xs text-text-muted">{p.shortLabel}</span>
               </button>
+            ))}
+          </div>
 
-              <AnimatePresence>
-                {showCustom && (
-                  <motion.div
-                    initial={{ height: 0, opacity: 0 }}
-                    animate={{ height: 'auto', opacity: 1 }}
-                    exit={{ height: 0, opacity: 0 }}
-                    className="overflow-hidden"
-                  >
-                    <div className="space-y-3 pt-3">
-                      <div>
-                        <label className="block text-xs text-text-muted mb-1">开始时间</label>
-                        <input
-                          type="datetime-local"
-                          value={customStart}
-                          onChange={(e) => setCustomStart(e.target.value)}
-                          className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary
-                                     text-sm focus:border-primary focus:outline-none"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs text-text-muted mb-1">结束时间</label>
-                        <input
-                          type="datetime-local"
-                          value={customEnd}
-                          onChange={(e) => setCustomEnd(e.target.value)}
-                          className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary
-                                     text-sm focus:border-primary focus:outline-none"
-                        />
-                      </div>
-                      <button
-                        onClick={handleCustomApply}
-                        className="w-full py-2 bg-primary text-white rounded-lg text-sm hover:bg-primary/90 transition-colors"
-                      >
-                        应用
-                      </button>
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          {/* 分割线 */}
+          <div className="divider mx-3" />
+
+          {/* 自定义时间 */}
+          <div className="p-3">
+            <button
+              type="button"
+              onClick={() => setShowCustom(!showCustom)}
+              className="flex items-center gap-2 w-full px-3 py-2 rounded-lg text-sm text-text-secondary hover:bg-surface-2 transition-colors"
+            >
+              <Calendar className="w-4 h-4" />
+              <span>自定义时间范围</span>
+              <ChevronDown className={`w-3.5 h-3.5 ml-auto transition-transform ${showCustom ? 'rotate-180' : ''}`} />
+            </button>
+
+            {showCustom && (
+              <div className="space-y-3 pt-3">
+                <div>
+                  <label className="app-label">开始时间</label>
+                  <input
+                    type="datetime-local"
+                    value={customStart}
+                    onChange={(e) => setCustomStart(e.target.value)}
+                    className="app-input"
+                  />
+                </div>
+                <div>
+                  <label className="app-label">结束时间</label>
+                  <input
+                    type="datetime-local"
+                    value={customEnd}
+                    onChange={(e) => setCustomEnd(e.target.value)}
+                    className="app-input"
+                  />
+                </div>
+                <Button variant="primary" block onClick={handleCustomApply}>
+                  应用
+                </Button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

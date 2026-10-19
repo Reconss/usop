@@ -46,3 +46,12 @@ package-lock.json
 # Claude Code
 .claude-code-history/
 .claude/
+
+# Runtime data (bind-mounted into containers, never version)
+data/
+
+# Local archive (non-essential files moved out of the tree)
+_archive/
+
+# WorkBuddy workspace data
+.workbuddy/

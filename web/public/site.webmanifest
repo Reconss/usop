@@ -1,0 +1,14 @@
+{
+  "name": "USOP 统一安全运营平台",
+  "short_name": "USOP",
+  "description": "统一安全运营平台：日志接入、解析标准化、检测关联、AI 研判到事件处置闭环",
+  "icons": [
+    { "src": "/icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icons/android-chrome-192x192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icons/android-chrome-512x512.png", "sizes": "512x512", "type": "image/png" }
+  ],
+  "theme_color": "#0b1020",
+  "background_color": "#0b1020",
+  "display": "browser",
+  "start_url": "/"
+}

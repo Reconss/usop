@@ -3,6 +3,17 @@
 const API_BASE = '/api';
 const BACKEND_FALLBACK = 'http://localhost:5001';
 
+/** 原始 fetch（附件上传/下载用）：同源代理优先，失败回退直连后端 */
+async function rawApiFetch(path: string, init: { method?: string; body?: any; token?: string | null }): Promise<Response> {
+  const headers: Record<string, string> = {};
+  if (init.token) headers.Authorization = `Bearer ${init.token}`;
+  try {
+    return await fetch(`${API_BASE}${path}`, { method: init.method || 'GET', headers, body: init.body });
+  } catch {
+    return fetch(`${BACKEND_FALLBACK}${API_BASE}${path}`, { method: init.method || 'GET', headers, body: init.body });
+  }
+}
+
 interface RequestOptions {
   method?: string;
   body?: any;
@@ -70,7 +81,11 @@ export async function request<T = any>(
       window.dispatchEvent(new CustomEvent('auth:expired'));
       throw new Error('登录已过期，请重新登录');
     }
-    throw new Error(data.error || `请求失败 (${response.status})`);
+    // 带上后端结构化错误（如剧本入参校验的 code/missing/invalid），便于前端精确提示
+    const err: any = new Error(data.error || `请求失败 (${response.status})`);
+    err.status = response.status;
+    err.payload = data;
+    throw err;
   }
   
   return data;
@@ -144,7 +159,7 @@ export const dashboardApi = {
   getTopAlerts: (limit?: number) => request(`/dashboard-api/recent-alerts?limit=${limit || 10}`),
 };
 
-// Alerts API (使用 TimescaleDB 存储)
+// Alerts API (使用 Elasticsearch 存储)
 export const alertsApi = {
   getAlerts: (params?: {
     page?: number;
@@ -173,15 +188,15 @@ export const alertsApi = {
   },
 
   getAlert: (id: string | number) => request(`/alerts-api/alerts/${id}`),
-  updateAlert: (id: number, data: any) => request(`/alerts-api/alerts/${id}`, { method: 'PUT', body: data }),
-  updateAlertStatus: (id: number, status: string) =>
+  updateAlert: (id: string | number, data: any) => request(`/alerts-api/alerts/${id}`, { method: 'PUT', body: data }),
+  updateAlertStatus: (id: string | number, status: string) =>
     request(`/alerts-api/alerts/${id}/status`, { method: 'PUT', body: { status } }),
-  batchUpdateStatus: (alert_ids: number[], status: string) =>
+  batchUpdateStatus: (alert_ids: (string | number)[], status: string) =>
     request('/alerts-api/alerts/batch/status', { method: 'PUT', body: { alert_ids, status } }),
-  deleteAlert: (id: number) => request(`/alerts-api/alerts/${id}`, { method: 'DELETE' }),
-  batchDelete: (alert_ids: number[]) =>
+  deleteAlert: (id: string | number) => request(`/alerts-api/alerts/${id}`, { method: 'DELETE' }),
+  batchDelete: (alert_ids: (string | number)[]) =>
     request('/alerts-api/alerts/batch', { method: 'DELETE', body: { alert_ids } }),
-  aggregateAlerts: (data: { alert_ids: number[]; title: string; severity?: string; description?: string; category?: string; include_related?: boolean; mark_status?: string }) =>
+  aggregateAlerts: (data: { alert_ids: (string | number)[]; title: string; severity?: string; description?: string; category?: string; include_related?: boolean; mark_status?: string }) =>
     request('/alerts-api/alerts/aggregate', { method: 'POST', body: data }),
   getAlertStats: () => request('/alerts-api/alerts/stats'),
   getAlertTrend: (bucket?: string, start_time?: string, end_time?: string) => {
@@ -392,16 +407,35 @@ export const playbooksApi = {
   createPlaybook: (data: any) => request('/playbooks-api/playbooks', { method: 'POST', body: data }),
   updatePlaybook: (id: number, data: any) => request(`/playbooks-api/playbooks/${id}`, { method: 'PUT', body: data }),
   deletePlaybook: (id: number) => request(`/playbooks-api/playbooks/${id}`, { method: 'DELETE' }),
-  executePlaybook: (id: string | number, data?: any) => request(`/playbooks-api/playbooks/${id}/execute`, { method: 'POST', body: data }),
+  // 提交剧本人工审批申请（需要审批后执行）
+  requestApproval: (id: number, data: { event_id?: string | number; params?: Record<string, string>; reason?: string }) =>
+    request(`/playbooks-api/playbooks/${id}/approve-request`, { method: 'POST', body: data }),
   
-  // 执行记录
-  getExecutions: (params?: { page?: number; page_size?: number }) => {
+  // 执行记录（支持筛选：剧本/状态/触发方式/关键字[执行人·事件编号·IP]）
+  getExecutions: (params?: { page?: number; page_size?: number; playbook_id?: number; status?: string; trigger_type?: string; keyword?: string }) => {
     const searchParams = new URLSearchParams();
     if (params?.page) searchParams.append('page', String(params.page));
     if (params?.page_size) searchParams.append('page_size', String(params.page_size));
+    if (params?.playbook_id) searchParams.append('playbook_id', String(params.playbook_id));
+    if (params?.status) searchParams.append('status', params.status);
+    if (params?.trigger_type) searchParams.append('trigger_type', params.trigger_type);
+    if (params?.keyword) searchParams.append('keyword', params.keyword);
     return request(`/playbooks-api/playbooks/executions?${searchParams.toString()}`);
   },
   getExecution: (id: string) => request(`/playbooks-api/playbooks/executions/${id}`),
+  // 当前封堵名单（剧本封禁 IP 的持久化记录）与手动解封
+  getBlockedIps: () => request('/playbooks-api/playbooks/blocked-ips'),
+  unblockIp: (ip: string) =>
+    request(`/playbooks-api/playbooks/blocked-ips/${encodeURIComponent(ip)}`, { method: 'DELETE' }),
+  executePlaybook: (id: number, data?: any) =>
+    request(`/playbooks-api/playbooks/${id}/execute`, { method: 'POST', body: data || {} }),
+
+  // 数据查询节点：可查询数据源（存储表注册表 + 内部业务表）
+  getQuerySources: () => request('/playbooks-api/query-sources'),
+  listActions: () => request('/playbooks-api/playbooks/actions/list'),
+  // 剧本执行参数 Schema：按剧本真实节点动态生成（事件工作台执行弹窗用）
+  getParams: (id: number, eventId?: string | number) =>
+    request(`/playbooks-api/playbooks/${id}/params${eventId ? `?event_id=${encodeURIComponent(String(eventId))}` : ''}`),
   
   // 审批相关
   getApprovals: (params?: { page?: number; limit?: number; status?: string }) => {
@@ -413,6 +447,19 @@ export const playbooksApi = {
   },
   processApproval: (approvalId: string, approved: boolean) => 
     request(`/playbooks-api/playbooks/approvals/${approvalId}`, { method: 'POST', body: { approved } }),
+};
+
+// 集成应用 API（Shuffle / OpenAPI 规范导入）
+export const integrationsApi = {
+  getApps: () => request('/integrations/apps'),
+  getApp: (id: number) => request(`/integrations/apps/${id}`),
+  importApp: (data: { text?: string; url?: string }) =>
+    request('/integrations/apps/import', { method: 'POST', body: data }),
+  updateApp: (id: number, data: any) =>
+    request(`/integrations/apps/${id}`, { method: 'PUT', body: data }),
+  deleteApp: (id: number) => request(`/integrations/apps/${id}`, { method: 'DELETE' }),
+  testAction: (id: number, actionId: string, values: Record<string, any>) =>
+    request(`/integrations/apps/${id}/test-action`, { method: 'POST', body: { action_id: actionId, values } }),
 };
 
 // Hunting API
@@ -428,57 +475,66 @@ export const huntingApi = {
   getQueryResults: (id: number) => request(`/hunting-api/queries/${id}/results`),
   deleteQuery: (id: number) => request(`/hunting-api/queries/${id}`, { method: 'DELETE' }),
   executeQuery: (id: number) => request(`/hunting-api/queries/${id}/execute`, { method: 'POST' }),
-  executePlaybook: (data: { nodes: any[]; context?: Record<string, any> }) =>
-    request('/playbooks/execute', { method: 'POST', body: data }),
-  executeSingleNode: (nodeType: string, data: any) =>
-    request('/playbooks/execute/' + nodeType, { method: 'POST', body: data }),
-  getTemplates: () => request('/hunting/templates'),
+  getTemplates: () => request('/hunting-api/templates'),
   search: (data: { query: string; page?: number; page_size?: number; severity?: string; source?: string; start_time?: string; end_time?: string }) =>
-    request('/hunting/search', { method: 'POST', body: data }),
-  getStats: () => request('/hunting/stats'),
-  getIndicators: () => request('/hunting/indicators'),
+    request('/hunting-api/search', { method: 'POST', body: data }),
+  getStats: () => request('/hunting-api/stats'),
+  getIndicators: () => request('/hunting-api/indicators'),
 };
 
 // Vulnerabilities API
-// n8n API - direct fetch (不经过 request 的 /api 前缀)
-const n8nBase = '/n8n';
-async function n8nFetch(path: string, options: RequestInit = {}): Promise<any> {
-  const resp = await fetch(`${n8nBase}${path}`, options);
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => '');
-    throw new Error(`n8n API error ${resp.status}: ${text.substring(0, 200)}`);
-  }
-  return resp.json();
-}
-
-export const n8nApi = {
-  getWorkflows: () => n8nFetch('/api/v1/workflows'),
-  getWorkflow: (id: string) => n8nFetch('/api/v1/workflows/' + id),
-  createWorkflow: (data: any) => n8nFetch('/api/v1/workflows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }),
-  activateWorkflow: (id: string) => n8nFetch('/api/v1/workflows/' + id + '/activate', { method: 'POST' }),
-  deactivateWorkflow: (id: string) => n8nFetch('/api/v1/workflows/' + id + '/deactivate', { method: 'POST' }),
-  triggerWebhook: (webhookPath: string, data: any) => n8nFetch('/webhook/' + webhookPath, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }),
-};
-
 export const vulnerabilitiesApi = {
-  getVulnerabilities: (params?: { page?: number; page_size?: number; severity?: string; type?: string }) => {
+  getVulnerabilities: (params?: { page?: number; page_size?: number; severity?: string; status?: string; search?: string; type?: string }) => {
     const searchParams = new URLSearchParams();
     if (params?.page) searchParams.append('page', String(params.page));
     if (params?.page_size) searchParams.append('page_size', String(params.page_size));
     if (params?.severity) searchParams.append('severity', params.severity);
+    if (params?.status) searchParams.append('status', params.status);
+    if (params?.search) searchParams.append('search', params.search);
     if (params?.type) searchParams.append('type', params.type);
     return request(`/vulnerabilities-api/vulnerabilities?${searchParams.toString()}`);
   },
-  
+
   getVulnerability: (id: number) => request(`/vulnerabilities-api/vulnerabilities/${id}`),
   createVulnerability: (data: any) => request('/vulnerabilities-api/vulnerabilities', { method: 'POST', body: data }),
   updateVulnerability: (id: number, data: any) => request(`/vulnerabilities-api/vulnerabilities/${id}`, { method: 'PUT', body: data }),
-  
+  deleteVulnerability: (id: number) => request(`/vulnerabilities-api/vulnerabilities/${id}`, { method: 'DELETE' }),
+  changeVulnStatus: (id: number, data: { status: string; comment?: string; repair_plan?: string; deadline?: string; assignee?: string }) =>
+    request(`/vulnerabilities-api/vulnerabilities/${id}/status`, { method: 'PUT', body: data }),
+  batchVulnStatus: (data: { ids: number[]; status: string; comment?: string }) =>
+    request('/vulnerabilities-api/vulnerabilities/batch-status', { method: 'PUT', body: data }),
+  reassessVuln: (id: number, data: { asset_importance: number; exploitability: number; fix_difficulty: number; reason?: string; manual_score?: number }) =>
+    request(`/vulnerabilities-api/vulnerabilities/${id}/reassess`, { method: 'PUT', body: data }),
+  getVulnStats: () => request('/vulnerabilities-api/vulnerabilities/stats'),
+
+  // 漏洞附件（截图 / 报告）
+  getVulnAttachments: (id: number) => request(`/vulnerabilities-api/vulnerabilities/${id}/attachments`),
+  deleteVulnAttachment: (id: number, attId: number) =>
+    request(`/vulnerabilities-api/vulnerabilities/${id}/attachments/${attId}`, { method: 'DELETE' }),
+  uploadVulnAttachment: async (id: number, file: File) => {
+    const token = localStorage.getItem('token');
+    const fd = new FormData();
+    fd.append('file', file);
+    const resp = await rawApiFetch(`/vulnerabilities-api/vulnerabilities/${id}/attachments`, {
+      method: 'POST',
+      body: fd,
+      token,
+    });
+    return resp.json();
+  },
+  /** 取附件二进制（图片预览 / 下载） */
+  fetchVulnAttachment: async (id: number, attId: number): Promise<Blob> => {
+    const token = localStorage.getItem('token');
+    const resp = await rawApiFetch(`/vulnerabilities-api/vulnerabilities/${id}/attachments/${attId}`, { token });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    return resp.blob();
+  },
+
   // 漏洞评级配置
   getAssessmentConfig: () => request('/vulnerabilities-api/assessment/config'),
   saveAssessmentConfig: (rules: any[]) => request('/vulnerabilities-api/assessment/config', { method: 'POST', body: { rules } }),
   recalculateAll: () => request('/vulnerabilities-api/assessment/recalculate', { method: 'POST' }),
-  
+
   // Nessus 导入
   importNessus: (items: any[], type: string) => request('/vulnerabilities-api/nessus/import', { method: 'POST', body: { items, type } }),
   previewNessus: (items: any[]) => request('/vulnerabilities-api/nessus/preview', { method: 'POST', body: { items } }),
@@ -564,21 +620,6 @@ export const dataSourcesApi = {
   startAllDatasources: () => request(`/datasources-api/datasources/batch/start`, { method: 'POST' }),
 };
 
-// Log Types API
-export const logTypesApi = {
-  getLogTypes: (params?: { page?: number; page_size?: number; category?: string }) => {
-    const searchParams = new URLSearchParams();
-    if (params?.page) searchParams.append('page', String(params.page));
-    if (params?.page_size) searchParams.append('page_size', String(params.page_size));
-    if (params?.category) searchParams.append('category', params.category);
-    return request(`/log-types-api/log-types?${searchParams.toString()}`);
-  },
-  
-  createLogType: (data: any) => request('/log-types-api/log-types', { method: 'POST', body: data }),
-  updateLogType: (id: number | string, data: any) => request(`/log-types-api/log-types/${id}`, { method: 'PUT', body: data }),
-  deleteLogType: (id: number | string) => request(`/log-types-api/log-types/${id}`, { method: 'DELETE' }),
-};
-
 // SSE 流式读取辅助函数
 export function readSSEStream(
   reader: ReadableStreamDefaultReader<Uint8Array>,
@@ -625,26 +666,7 @@ export function readSSEStream(
 
 // AI API
 export const aiApi = {
-  getModels: (params?: { page?: number; page_size?: number }) => {
-    const searchParams = new URLSearchParams();
-    if (params?.page) searchParams.append('page', String(params.page));
-    if (params?.page_size) searchParams.append('page_size', String(params.page_size));
-    return request(`/ai-api/models?${searchParams.toString()}`);
-  },
-
-  getModel: (id: number) => request(`/ai-api/models/${id}`),
-  createModel: (data: any) => request('/ai-api/models', { method: 'POST', body: data }),
-  updateModel: (id: number, data: any) => request(`/ai-api/models/${id}`, { method: 'PUT', body: data }),
-  deleteModel: (id: number) => request(`/ai-api/models/${id}`, { method: 'DELETE' }),
   getInsights: () => request('/ai-api/insights'),
-  getAgents: () => request('/ai-api/agents'),
-  getProviders: () => request('/ai-api/providers'),
-  getTasks: (params?: { page?: number; page_size?: number }) => {
-    const searchParams = new URLSearchParams();
-    if (params?.page) searchParams.append('page', String(params.page));
-    if (params?.page_size) searchParams.append('page_size', String(params.page_size));
-    return request(`/ai-api/tasks?${searchParams.toString()}`);
-  },
 
   // ========== 对话会话管理 ==========
 
@@ -663,15 +685,6 @@ export const aiApi = {
     request(`/ai-api/chat/sessions/${sessionId}`, { method: 'DELETE' }),
 
   // ========== 消息发送与流式对话 ==========
-
-  /**
-   * 发送消息（非流式）
-   */
-  sendMessage: (sessionId: string, data: { content: string; model?: string; temperature?: number; max_tokens?: number }) =>
-    request(`/ai-api/chat/sessions/${sessionId}/messages`, {
-      method: 'POST',
-      body: { ...data, stream: false },
-    }),
 
   /**
    * 发送消息（流式 SSE）
@@ -722,12 +735,6 @@ export const aiApi = {
     return controller;
   },
 
-  // ========== AI 分析 ==========
-
-  /** 实时安全分析 */
-  analyze: (data: { type: string; data: any }) =>
-    request('/ai-api/analyze', { method: 'POST', body: data }),
-
   // ===== LLM Provider Management =====
   getLlmProviders: () => request('/ai-api/llm-providers'),
   addLlmProvider: (data: any) => request('/ai-api/llm-providers', { method: 'POST', body: data }),
@@ -742,13 +749,6 @@ export const aiApi = {
   updateAgentProvider: (id: string, data: any) => request(`/ai-api/agent-providers/${id}`, { method: 'PUT', body: data }),
   deleteAgentProvider: (id: string) => request(`/ai-api/agent-providers/${id}`, { method: 'DELETE' }),
 
-  // ===== Unified Invoke & Gateway =====
-  invokeAI: (data: any) => request('/ai-api/invoke', { method: 'POST', body: data }),
-  gatewayAnalyze: (data: any) => request('/ai-api/gateway/analyze', { method: 'POST', body: data }),
-  gatewayListTools: () => request('/ai-api/gateway/tools'),
-  gatewayExecuteTool: (toolName: string, data: any) => 
-    request(`/ai-api/gateway/tools/${toolName}/execute`, { method: 'POST', body: data }),
-
   /** LangGraph + CrewAI 编排分析 */
   orchestrate: (data: { query: string; session_id?: string }) =>
     request('/ai-api/orchestrate', { method: 'POST', body: data }),
@@ -759,16 +759,13 @@ export const aiApi = {
 
   // ===== AI Capabilities =====
   copilotAnalyzeEvent: (data: any) => request('/ai-api/copilot/analyze-event', { method: 'POST', body: data }),
-  alertsAnalyzeBatch: (data?: any) => request('/ai-api/alerts/analyze-batch', { method: 'POST', body: data || {} }),
   listSkills: () => request('/ai-api/skills/list'),
-  executeSkill: (data: any) => request('/ai-api/skills/execute', { method: 'POST', body: data }),
   agentSkillRoute: (data: any) => request('/ai-api/skills/agent-route', { method: 'POST', body: data }),
   alertsTriage: (data: any) => request('/ai-api/alerts/triage', { method: 'POST', body: data }),
   investigateEvent: (data: any) => request('/ai-api/investigate/event', { method: 'POST', body: data }),
   autoRespond: (data: any) => request('/ai-api/respond/auto', { method: 'POST', body: data }),
   nlQuery: (data: any) => request('/ai-api/nl/query', { method: 'POST', body: data }),
   recordFeedback: (data: any) => request('/ai-api/feedback/record', { method: 'POST', body: data }),
-  getFeedbackStats: () => request('/ai-api/feedback/stats'),
 };
 // Products API
 export const productsApi = {
@@ -930,6 +927,14 @@ export const eventActionsApi = {
   executePlaybook: (eventId: string, playbookId: string | number, data?: { params?: Record<string, string>; event?: any }) =>
     request(`/event-actions-api/events/${eventId}/playbooks/${playbookId}/execute`, { method: 'POST', body: data || {} }),
 
+  // 事件 AI 结构化研判（结果写入 event.extra_data.ai_analysis）
+  aiAnalyzeEvent: (eventId: string) =>
+    request(`/event-actions-api/events/${eventId}/ai-analyze`, { method: 'POST' }),
+
+  // 读取事件 AI 研判结果
+  getEventAiAnalysis: (eventId: string) =>
+    request(`/event-actions-api/events/${eventId}/ai-analysis`),
+
   // 获取可用剧本
   getEventPlaybooks: (eventId: string) =>
     request(`/event-actions-api/events/${eventId}/playbooks`),
@@ -938,8 +943,8 @@ export const eventActionsApi = {
   getEventStats: () => request('/event-actions-api/events/stats'),
 
   // 批量更新状态
-  batchUpdateStatus: (eventIds: string[], status: string) =>
-    request('/event-actions-api/events/batch/status', { method: 'PUT', body: { event_ids: eventIds, status } }),
+  batchUpdateStatus: (eventIds: string[], status: string, reason?: string) =>
+    request('/event-actions-api/events/batch/status', { method: 'PUT', body: { event_ids: eventIds, status, reason } }),
 
   // 批量删除
   batchDelete: (eventIds: string[]) =>
@@ -962,71 +967,6 @@ export const formatTemplatesApi = {
   createFormat: (data: any) => request('/ingestion/formats', { method: 'POST', body: data }),
   updateFormat: (id: string, data: any) => request(`/ingestion/formats/${id}`, { method: 'PUT', body: data }),
   deleteFormat: (id: string) => request(`/ingestion/formats/${id}`, { method: 'DELETE' }),
-};
-
-// Pipelines API
-export const pipelinesApi = {
-  getPipelines: (params?: { page?: number; page_size?: number; status?: string; product_id?: string }) => {
-    const searchParams = new URLSearchParams();
-    if (params?.page) searchParams.append('page', String(params.page));
-    if (params?.page_size) searchParams.append('page_size', String(params.page_size));
-    if (params?.status) searchParams.append('status', params.status);
-    if (params?.product_id) searchParams.append('product_id', params.product_id);
-    const query = searchParams.toString();
-    return request(`/pipelines${query ? `?${query}` : ''}`);
-  },
-
-  getPipeline: (id: number) => request(`/pipelines/${id}`),
-  createPipeline: (data: any) => request('/pipelines', { method: 'POST', body: data }),
-  updatePipeline: (id: number, data: any) => request(`/pipelines/${id}`, { method: 'PUT', body: data }),
-  deletePipeline: (id: number) => request(`/pipelines/${id}`, { method: 'DELETE' }),
-  togglePipeline: (id: number) => request(`/pipelines/${id}/toggle`, { method: 'POST' }),
-  getFormats: () => request('/pipelines/formats'),
-  createFormat: (data: any) => request('/pipelines/formats', { method: 'POST', body: data }),
-  getTemplates: () => request('/pipelines/templates'),
-  parseLog: (data: { raw_log: string; pipeline_id?: number; format?: string; config?: any }) =>
-    request('/pipelines/parse', { method: 'POST', body: data }),
-  testParse: (data: { raw_log: string; format: string; config?: any }) =>
-    request('/pipelines/parse/test', { method: 'POST', body: data }),
-};
-
-// Storage Tables API
-export const storageTablesApi = {
-  // 获取所有存储表
-  getTables: (params?: { auto_created?: boolean }) => {
-    const searchParams = new URLSearchParams();
-    if (params?.auto_created !== undefined) {
-      searchParams.append('auto_created', String(params.auto_created));
-    }
-    const query = searchParams.toString();
-    return request(`/storage-tables${query ? `?${query}` : ''}`);
-  },
-
-  // 获取单个存储表
-  getTable: (id: number) => request(`/storage-tables/${id}`),
-
-  // 创建存储表
-  createTable: (data: {
-    name: string;
-    displayName?: string;
-    dataSource?: string;
-    logType?: string;
-    retentionDays?: number;
-    partitionInterval?: string;
-    indexes?: string[];
-    compression?: boolean;
-  }) => request('/storage-tables', { method: 'POST', body: data }),
-
-  // 更新存储表
-  updateTable: (id: number, data: any) =>
-    request(`/storage-tables/${id}`, { method: 'PUT', body: data }),
-
-  // 删除存储表
-  deleteTable: (id: number) => request(`/storage-tables/${id}`, { method: 'DELETE' }),
-
-  // 批量删除存储表
-  batchDelete: (ids: number[]) =>
-    request('/storage-tables/batch-delete', { method: 'POST', body: { ids } }),
 };
 
 // System Config API
@@ -1070,4 +1010,165 @@ export const searchApi = {
     end_time?: string;
     limit?: number;
   }) => request('/search/search/advanced', { method: 'POST', body: conditions }),
+};
+
+// ==================== 以下为依据线上构建产物重建的 API 封装 ====================
+
+/** 通用查询串构造：跳过 undefined / 空串 */
+function buildQuery(params?: Record<string, any>): string {
+  if (!params) return '';
+  const sp = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => {
+    if (v !== undefined && v !== '') sp.append(k, String(v));
+  });
+  const q = sp.toString();
+  return q ? `?${q}` : '';
+}
+
+// Pipeline API（设备接入 / 日志解析 / 过滤规则 / 分流策略 / 存储路由 / 关联规则）
+export const pipelineApi = {
+  status: () => request('/pipeline/status'),
+  toggleTopic: (data: any) => request('/pipeline/topics', { method: 'POST', body: data }),
+  testIngest: (data: any) => request('/pipeline/test-ingest', { method: 'POST', body: data }),
+  correlationRules: () => request('/pipeline/correlation-rules'),
+  correlationFieldCatalog: () => request('/pipeline/correlation-rules/field-catalog'),
+  createCorrelationRule: (data: any) => request('/pipeline/correlation-rules', { method: 'POST', body: data }),
+  deleteCorrelationRule: (id: number | string) => request(`/pipeline/correlation-rules/${id}`, { method: 'DELETE' }),
+  updateCorrelationRule: (id: number | string, data: any) => request(`/pipeline/correlation-rules/${id}`, { method: 'PATCH', body: data }),
+  previewCorrelationSql: (data?: any) => request('/pipeline/correlation-rules/preview', { method: 'POST', body: data || {} }),
+  deployCorrelationJob: () => request('/pipeline/correlation/deploy', { method: 'POST', body: {} }),
+  stopCorrelationJob: () => request('/pipeline/correlation/stop', { method: 'POST', body: {} }),
+  correlationStatus: () => request('/pipeline/correlation/status'),
+  filterRules: () => request('/pipeline/filter-rules'),
+  createFilterRule: (data: any) => request('/pipeline/filter-rules', { method: 'POST', body: data }),
+  updateFilterRule: (id: number | string, data: any) => request(`/pipeline/filter-rules/${id}`, { method: 'PATCH', body: data }),
+  deleteFilterRule: (id: number | string) => request(`/pipeline/filter-rules/${id}`, { method: 'DELETE' }),
+  deviceTopics: () => request('/pipeline/device-topics'),
+  createDeviceTopic: (data: any) => request('/pipeline/device-topics', { method: 'POST', body: data }),
+  deviceTopicDetail: (topic: string) => request(`/pipeline/device-topics/${encodeURIComponent(topic)}`),
+  updateDeviceTopic: (topic: string, data: any) => request(`/pipeline/device-topics/${encodeURIComponent(topic)}`, { method: 'PATCH', body: data }),
+  deviceTopicMessages: (topic: string, limit = 50) => request(`/pipeline/device-topics/${encodeURIComponent(topic)}/messages?limit=${limit}`),
+  deleteDeviceTopic: (topic: string) => request(`/pipeline/device-topics/${encodeURIComponent(topic)}`, { method: 'DELETE' }),
+  parseProfiles: () => request('/pipeline/parse-profiles'),
+  parseTemplates: () => request('/pipeline/parse-templates'),
+  fieldCatalog: () => request('/pipeline/parse-profiles/field-catalog'),
+  modelFields: () => request('/pipeline/parse-profiles/model-fields'),
+  previewParse: (data: any) => request('/pipeline/parse-profiles/preview', { method: 'POST', body: data }),
+  autoMapFields: (parsedFields: any) => request('/pipeline/parse-profiles/auto-map', { method: 'POST', body: { parsed_fields: parsedFields } }),
+  createParseProfile: (data: any) => request('/pipeline/parse-profiles', { method: 'POST', body: data }),
+  updateParseProfile: (id: number | string, data: any) => request(`/pipeline/parse-profiles/${id}`, { method: 'PATCH', body: data }),
+  deleteParseProfile: (id: number | string) => request(`/pipeline/parse-profiles/${id}`, { method: 'DELETE' }),
+  dispatchPolicies: () => request('/pipeline/dispatch-policies'),
+  createDispatchPolicy: (data: any) => request('/pipeline/dispatch-policies', { method: 'POST', body: data }),
+  updateDispatchPolicy: (id: number | string, data: any) => request(`/pipeline/dispatch-policies/${id}`, { method: 'PATCH', body: data }),
+  deleteDispatchPolicy: (id: number | string) => request(`/pipeline/dispatch-policies/${id}`, { method: 'DELETE' }),
+  storageRoutes: () => request('/pipeline/storage-routes'),
+  createStorageRoute: (data: any) => request('/pipeline/storage-routes', { method: 'POST', body: data }),
+  updateStorageRoute: (id: number | string, data: any) => request(`/pipeline/storage-routes/${id}`, { method: 'PATCH', body: data }),
+  deleteStorageRoute: (id: number | string) => request(`/pipeline/storage-routes/${id}`, { method: 'DELETE' }),
+  kafkaTopics: () => request('/pipeline/kafka-topics'),
+  esIndexes: () => request('/pipeline/es-indexes'),
+};
+
+// AI 研判 API（结构化研判 / STE 经验库）
+export const aiJudgmentApi = {
+  analyze: (alertId: string | number) =>
+    request('/ai-judgment/analyze', { method: 'POST', body: { alert_id: alertId } }),
+  analyzeBatch: (limit?: number) =>
+    request('/ai-judgment/analyze-batch', { method: 'POST', body: { limit: limit || 20 } }),
+  getExperiences: (params?: Record<string, any>) =>
+    request(`/ai-judgment/ste${buildQuery(params)}`),
+  createExperience: (data: any) =>
+    request('/ai-judgment/ste', { method: 'POST', body: data }),
+  feedbackExperience: (id: number | string, feedback: any) =>
+    request(`/ai-judgment/ste/${id}/feedback`, { method: 'POST', body: { feedback } }),
+  autoExtract: (data: any) =>
+    request('/ai-judgment/ste/auto-extract', { method: 'POST', body: data }),
+};
+
+// 运营 KPI API
+export const kpiApi = {
+  overview: (days?: number) => request(`/kpi/overview${days ? `?days=${days}` : ''}`),
+};
+
+// 系统备份 API
+export const backupApi = {
+  exportBackup: () => request('/backup/export'),
+  importBackup: (data: any) => request('/backup/import', { method: 'POST', body: data }),
+};
+
+// AI 中心 API（提示词管理 / 经验库）
+export const aiCenterApi = {
+  catalog: () => request('/ai-center/catalog'),
+  prompts: (params?: { prompt_key?: string; q?: string }) => {
+    const sp = new URLSearchParams();
+    if (params?.prompt_key) sp.set('prompt_key', params.prompt_key);
+    if (params?.q) sp.set('q', params.q);
+    const q = sp.toString();
+    return request(`/ai-center/prompts${q ? `?${q}` : ''}`);
+  },
+  createPrompt: (data: any) => request('/ai-center/prompts', { method: 'POST', body: data }),
+  updatePrompt: (id: number | string, data: any) => request(`/ai-center/prompts/${id}`, { method: 'PATCH', body: data }),
+  deletePrompt: (id: number | string) => request(`/ai-center/prompts/${id}`, { method: 'DELETE' }),
+  setDefaultPrompt: (id: number | string) => request(`/ai-center/prompts/${id}/set-default`, { method: 'POST', body: {} }),
+  previewPrompt: (data: any) => request('/ai-center/prompts/preview', { method: 'POST', body: data }),
+  resetBuiltinPrompts: () => request('/ai-center/prompts/reset-builtin', { method: 'POST', body: {} }),
+  experiences: (params?: { q?: string; status?: string; verdict?: string; category?: string; limit?: number }) => {
+    const sp = new URLSearchParams();
+    if (params?.q) sp.set('q', params.q);
+    if (params?.status) sp.set('status', params.status);
+    if (params?.verdict) sp.set('verdict', params.verdict);
+    if (params?.category) sp.set('category', params.category);
+    if (params?.limit) sp.set('limit', String(params.limit));
+    const q = sp.toString();
+    return request(`/ai-center/experiences${q ? `?${q}` : ''}`);
+  },
+  experienceStats: () => request('/ai-center/experiences/stats'),
+  createExperience: (data: any) => request('/ai-center/experiences', { method: 'POST', body: data }),
+  updateExperience: (id: number | string, data: any) => request(`/ai-center/experiences/${id}`, { method: 'PATCH', body: data }),
+  deleteExperience: (id: number | string) => request(`/ai-center/experiences/${id}`, { method: 'DELETE' }),
+  publishExperience: (id: number | string) => request(`/ai-center/experiences/${id}/publish`, { method: 'POST', body: {} }),
+  batchExperiences: (action: string, ids: (number | string)[]) =>
+    request('/ai-center/experiences/batch', { method: 'POST', body: { action, ids } }),
+};
+
+// 资源管理 API（IP 组 / 域名组）
+export const resourcesApi = {
+  ipGroups: (usage?: string) => request(`/resources/ip-groups${usage ? `?usage=${usage}` : ''}`),
+  createIpGroup: (data: any) => request('/resources/ip-groups', { method: 'POST', body: data }),
+  updateIpGroup: (id: number | string, data: any) => request(`/resources/ip-groups/${id}`, { method: 'PATCH', body: data }),
+  testIpGroups: (ip: string) => request('/resources/ip-groups/test', { method: 'POST', body: { ip } }),
+  deleteIpGroup: (id: number | string) => request(`/resources/ip-groups/${id}`, { method: 'DELETE' }),
+  domainGroups: () => request('/resources/domain-groups'),
+  createDomainGroup: (data: any) => request('/resources/domain-groups', { method: 'POST', body: data }),
+  updateDomainGroup: (id: number | string, data: any) => request(`/resources/domain-groups/${id}`, { method: 'PATCH', body: data }),
+  deleteDomainGroup: (id: number | string) => request(`/resources/domain-groups/${id}`, { method: 'DELETE' }),
+};
+
+// 消息模型 / 模板 API
+export const templatesApi = {
+  list: (params?: { type?: string; scene?: string }) => {
+    const sp = new URLSearchParams();
+    if (params?.type) sp.set('type', params.type);
+    if (params?.scene) sp.set('scene', params.scene);
+    const q = sp.toString();
+    return request(`/templates${q ? `?${q}` : ''}`);
+  },
+  get: (id: number | string) => request(`/templates/${id}`),
+  create: (data: any) => request('/templates', { method: 'POST', body: data }),
+  update: (id: number | string, data: any) => request(`/templates/${id}`, { method: 'PATCH', body: data }),
+  remove: (id: number | string) => request(`/templates/${id}`, { method: 'DELETE' }),
+  fields: () => request('/templates/fields'),
+  createField: (data: any) => request('/templates/fields', { method: 'POST', body: data }),
+  updateField: (id: number | string, data: any) => request(`/templates/fields/${id}`, { method: 'PATCH', body: data }),
+  removeField: (id: number | string) => request(`/templates/fields/${id}`, { method: 'DELETE' }),
+  variables: (alertId?: number | string, eventId?: number | string) => {
+    const sp = new URLSearchParams();
+    if (alertId) sp.set('alert_id', String(alertId));
+    if (eventId) sp.set('event_id', String(eventId));
+    const q = sp.toString();
+    return request(`/templates/variables${q ? `?${q}` : ''}`);
+  },
+  render: (templateId: number | string, alertId?: number | string, eventId?: number | string) =>
+    request('/templates/render', { method: 'POST', body: { template_id: templateId, alert_id: alertId, event_id: eventId } }),
 };

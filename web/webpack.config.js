@@ -1,5 +1,17 @@
 const path = require('path');
+const fs = require('fs');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
+
+/** 零依赖拷贝插件：public/ → dist/（favicon、manifest 等静态资源随构建进产物） */
+class CopyPublicPlugin {
+  apply(compiler) {
+    compiler.hooks.afterEmit.tap('CopyPublicPlugin', () => {
+      const src = path.resolve(__dirname, 'public');
+      const dst = compiler.options.output.path;
+      if (fs.existsSync(src)) fs.cpSync(src, dst, { recursive: true });
+    });
+  }
+}
 
 module.exports = (env, argv) => {
   const isDev = argv.mode !== 'production';
@@ -10,7 +22,8 @@ module.exports = (env, argv) => {
     output: {
       path: path.resolve(__dirname, 'dist'),
       filename: 'bundle.[contenthash:8].js',
-      publicPath: 'auto'
+      publicPath: 'auto',
+      clean: true
     },
     module: {
       rules: [
@@ -209,7 +222,8 @@ module.exports = (env, argv) => {
       new HtmlWebpackPlugin({
         template: './index.html',
         inject: 'body'
-      })
+      }),
+      new CopyPublicPlugin()
     ]
   };
 };

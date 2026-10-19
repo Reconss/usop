@@ -1,0 +1,34 @@
+swagger: "2.0"
+info:
+  title: EDR主机隔离(模板)
+  version: "1.0"
+  description: 通用 EDR / 终端检测响应平台主机隔离集成模板。导入后请在「集成应用」卡片的「凭证」里把服务地址改成你 EDR 的真实 base_url，并按厂商要求调整 /isolate 路径与字段名。认证选 apiKey / bearer / basic。剧本里用「HTTP 请求」节点绑定此 App 的 isolateHost 动作即可（对应「主机隔离」节点的 api_url 直连方式亦可）。
+host: edr.example.com
+schemes:
+  - https
+basePath: /api/v1
+securityDefinitions:
+  apiKey:
+    type: apiKey
+    in: header
+    name: Authorization
+paths:
+  /isolate:
+    post:
+      operationId: isolateHost
+      summary: 隔离主机
+      parameters:
+        - name: hostname
+          in: query
+          required: false
+          type: string
+          description: 主机名
+        - name: ip
+          in: query
+          required: false
+          type: string
+          description: 主机 IP
+        - name: duration
+          in: query
+          required: false
+          type: string

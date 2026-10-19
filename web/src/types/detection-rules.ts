@@ -15,7 +15,7 @@ export interface DetectionRule {
   playbookId?: string | number;
 }
 
-export type RuleType = 'single' | 'correlation' | 'sequence';
+export type RuleType = 'single';
 
 // ─── 条件类型 ─────────────────────────────────
 
@@ -39,47 +39,9 @@ export interface SingleRuleContent {
   title_template?: string;
 }
 
-// ─── 关联规则内容 (type: correlation) ───────────
-
-export interface CorrelationGroup {
-  id: string;
-  label: string;
-  data_source_ids: (string | number)[];
-  conditions: Condition[];
-  time_window: string;
-  logical_operator?: 'AND' | 'OR';
-}
-
-export interface CorrelationRuleContent {
-  version?: number;
-  groups: CorrelationGroup[];
-  group_logic: 'AND' | 'OR';
-  overall_time_window: string;
-  threshold: number;
-  severity?: string;
-  title_template?: string;
-}
-
-// ─── 时序规则内容 (type: sequence) ──────────────
-
-export interface SequenceStep {
-  id: string;
-  label: string;
-  order: number;
-  data_source_ids: (string | number)[];
-  conditions: Condition[];
-  time_window: string;
-  required?: boolean;
-}
-
-export interface SequenceRuleContent {
-  version?: number;
-  steps: SequenceStep[];
-  max_span: string;
-  threshold: number;
-  severity?: string;
-  title_template?: string;
-}
+// 说明：关联规则（CorrelationRuleContent / CorrelationGroup）与时序规则
+// （SequenceRuleContent / SequenceStep）的类型已随功能下线一并删除——
+// 它们的 JSON 结构后端引擎从未支持，多事件分析统一走「关联分析规则」。
 
 // ─── 动态字段 ─────────────────────────────────
 
@@ -93,12 +55,14 @@ export interface DynamicField {
 // ─── 预览数据 ─────────────────────────────────
 
 export interface SourcePreviewData {
-  data_source_id: number | string;
+  data_source_id: number | string | null;
   data_source_name: string;
-  storage_table: string;
+  storage_table?: string;
   sample_count: number;
+  total_matched?: number;
   columns?: { name: string; type: string }[];
   samples: Record<string, any>[];
+  warnings?: string[];
   error?: string;
 }
 
@@ -112,6 +76,11 @@ export interface RuleTestResult {
   matched_count: number;
   matched: boolean;
   matched_logs: Record<string, any>[];
+  threshold?: number;
+  time_window?: string;
+  matches?: Record<string, any>[];
+  warnings?: string[];
+  error?: string;
   sources?: Record<string, any>;
   raw?: any;
 }

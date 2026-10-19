@@ -1,6 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { User, Mail, Shield, Key, Save, AlertCircle, CheckCircle } from 'lucide-react';
+import { User, Mail, Shield, Key, Save, CheckCircle, UserCircle2, AlertCircle } from 'lucide-react';
 import { authApi } from '../services/api';
+import {
+  Button,
+  ContentContainer,
+  Field,
+  LoadingState,
+  PageHeader,
+  SectionCard,
+} from '../components/ui';
 
 interface UserData {
   id: number;
@@ -11,12 +19,15 @@ interface UserData {
   created_at: string;
 }
 
+const roleLabel = (role?: string) =>
+  role === 'admin' ? '管理员' : role === 'analyst' ? '分析师' : '普通用户';
+
 const Profile: React.FC = () => {
   const [user, setUser] = useState<UserData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
-  
+
   // 表单状态
   const [email, setEmail] = useState('');
   const [oldPassword, setOldPassword] = useState('');
@@ -47,7 +58,7 @@ const Profile: React.FC = () => {
       setError('邮箱不能为空');
       return;
     }
-    
+
     try {
       setError('');
       const res = await authApi.getProfile();
@@ -96,140 +107,127 @@ const Profile: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin w-8 h-8 border-4 border-primary border-t-transparent rounded-full" />
-      </div>
+      <ContentContainer width="form">
+        <LoadingState label="正在加载账户信息…" />
+      </ContentContainer>
     );
   }
 
   return (
-    <div className="max-w-4xl mx-auto">
-      <h1 className="text-2xl font-bold text-text-primary mb-6">个人中心</h1>
+    <ContentContainer width="form">
+      <PageHeader
+        title="个人中心"
+        icon={UserCircle2}      />
 
-      {/* 成功/错误提示 */}
       {success && (
-        <div className="mb-4 p-4 bg-success/10 border border-success/30 rounded-lg flex items-center gap-2 text-success">
-          <CheckCircle className="w-5 h-5" />
-          {success}
+        <div className="callout callout-success">
+          <CheckCircle size={15} className="mt-0.5 shrink-0" />
+          <span>{success}</span>
         </div>
       )}
       {error && (
-        <div className="mb-4 p-4 bg-critical/10 border border-critical/30 rounded-lg flex items-center gap-2 text-critical">
-          <AlertCircle className="w-5 h-5" />
-          {error}
+        <div className="callout callout-danger">
+          <AlertCircle size={15} className="mt-0.5 shrink-0" />
+          <span>{error}</span>
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
         {/* 基本信息 */}
-        <div className="bg-card-bg border border-border-color rounded-card p-6">
-          <div className="flex items-center gap-3 mb-6">
-            <div className="p-2 bg-primary/10 rounded-lg">
-              <User className="w-5 h-5 text-primary" />
-            </div>
-            <h2 className="text-lg font-semibold text-text-primary">基本信息</h2>
-          </div>
-
+        <SectionCard
+          title="基本信息"
+          icon={User}
+          description="用户名与角色由管理员分配，不可自行修改"
+          footer={
+            <Button variant="primary" icon={Save} onClick={handleUpdateProfile} className="ml-auto">
+              保存修改
+            </Button>
+          }
+        >
           <div className="space-y-4">
-            <div>
-              <label className="block text-sm text-text-secondary mb-2">用户名</label>
-              <div className="px-4 py-2 bg-page-bg border border-border-color rounded-input text-text-primary">
-                {user?.username}
+            <Field label="用户名">
+              <div className="app-input flex items-center bg-surface-2 text-text-primary">
+                {user?.username || '—'}
               </div>
-            </div>
+            </Field>
 
-            <div>
-              <label className="block text-sm text-text-secondary mb-2">邮箱</label>
+            <Field label="邮箱">
               <div className="relative">
-                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
+                <Mail size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
                 <input
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="w-full pl-10 pr-4 py-2 bg-page-bg border border-border-color rounded-input text-text-primary focus:outline-none focus:border-primary"
+                  className="app-input pl-9"
                 />
               </div>
-            </div>
+            </Field>
 
-            <div>
-              <label className="block text-sm text-text-secondary mb-2">角色</label>
-              <div className="px-4 py-2 bg-page-bg border border-border-color rounded-input text-text-primary flex items-center gap-2">
-                <Shield className="w-4 h-4 text-text-muted" />
-                {user?.role === 'admin' ? '管理员' : user?.role === 'analyst' ? '分析师' : '普通用户'}
-              </div>
-            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="角色">
+                <div className="app-input flex items-center gap-2 bg-surface-2 text-text-primary">
+                  <Shield size={14} className="text-text-muted" />
+                  {roleLabel(user?.role)}
+                </div>
+              </Field>
 
-            <div>
-              <label className="block text-sm text-text-secondary mb-2">注册时间</label>
-              <div className="px-4 py-2 bg-page-bg border border-border-color rounded-input text-text-primary">
-                {user?.created_at ? new Date(user.created_at).toLocaleString('zh-CN') : '-'}
-              </div>
+              <Field label="注册时间">
+                <div className="app-input flex items-center bg-surface-2 text-text-primary">
+                  {user?.created_at ? new Date(user.created_at).toLocaleDateString('zh-CN') : '—'}
+                </div>
+              </Field>
             </div>
-
-            <button
-              onClick={handleUpdateProfile}
-              className="w-full mt-4 px-4 py-2 bg-primary text-white rounded-input hover:bg-primary/90 transition-colors flex items-center justify-center gap-2"
-            >
-              <Save className="w-4 h-4" />
-              保存修改
-            </button>
           </div>
-        </div>
+        </SectionCard>
 
         {/* 修改密码 */}
-        <div className="bg-card-bg border border-border-color rounded-card p-6">
-          <div className="flex items-center gap-3 mb-6">
-            <div className="p-2 bg-primary/10 rounded-lg">
-              <Key className="w-5 h-5 text-primary" />
-            </div>
-            <h2 className="text-lg font-semibold text-text-primary">修改密码</h2>
-          </div>
-
+        <SectionCard
+          title="修改密码"
+          icon={Key}
+          description="修改后需使用新密码重新登录"
+          footer={
+            <Button variant="primary" icon={Shield} onClick={handleChangePassword} className="ml-auto">
+              修改密码
+            </Button>
+          }
+        >
           <div className="space-y-4">
-            <div>
-              <label className="block text-sm text-text-secondary mb-2">原密码</label>
+            <Field label="原密码" required>
               <input
                 type="password"
                 value={oldPassword}
                 onChange={(e) => setOldPassword(e.target.value)}
                 placeholder="请输入原密码"
-                className="w-full px-4 py-2 bg-page-bg border border-border-color rounded-input text-text-primary placeholder:text-text-muted focus:outline-none focus:border-primary"
+                autoComplete="current-password"
+                className="app-input"
               />
-            </div>
+            </Field>
 
-            <div>
-              <label className="block text-sm text-text-secondary mb-2">新密码</label>
+            <Field label="新密码" required help="至少 6 位字符">
               <input
                 type="password"
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
-                placeholder="请输入新密码（至少6位）"
-                className="w-full px-4 py-2 bg-page-bg border border-border-color rounded-input text-text-primary placeholder:text-text-muted focus:outline-none focus:border-primary"
+                placeholder="请输入新密码"
+                autoComplete="new-password"
+                className="app-input"
               />
-            </div>
+            </Field>
 
-            <div>
-              <label className="block text-sm text-text-secondary mb-2">确认新密码</label>
+            <Field label="确认新密码" required>
               <input
                 type="password"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 placeholder="请再次输入新密码"
-                className="w-full px-4 py-2 bg-page-bg border border-border-color rounded-input text-text-primary placeholder:text-text-muted focus:outline-none focus:border-primary"
+                autoComplete="new-password"
+                className="app-input"
               />
-            </div>
-
-            <button
-              onClick={handleChangePassword}
-              className="w-full mt-4 px-4 py-2 bg-primary text-white rounded-input hover:bg-primary/90 transition-colors flex items-center justify-center gap-2"
-            >
-              <Shield className="w-4 h-4" />
-              修改密码
-            </button>
+            </Field>
           </div>
-        </div>
+        </SectionCard>
       </div>
-    </div>
+    </ContentContainer>
   );
 };
 

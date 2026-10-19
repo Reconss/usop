@@ -1,14 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { X, FileText, Database, Code, AlertTriangle, Workflow, Loader2, PlusCircle, CheckCircle2, TrashIcon, Info } from 'lucide-react';
+import { FileText, Database, Code, AlertTriangle, Workflow, Info, Target } from 'lucide-react';
 import RuleConditionTab from './RuleConditionTab';
 import RuleDataSourceTab from './RuleDataSourceTab';
 import RuleTestPanel from './RuleTestPanel';
 import { rulesApi } from '../../services/api';
-import {
-  DetectionRule, RuleType, Condition, FormTab,
-  CorrelationGroup, SequenceStep
-} from '../../types/detection-rules';
+import { DetectionRule, Condition, FormTab } from '../../types/detection-rules';
+import { Button, Field, Modal, Segmented } from '../ui';
 
 interface DataSource {
   id: string | number;
@@ -35,17 +32,22 @@ interface Props {
 }
 
 const severityOptions = [
-  { value: 'critical', label: '危急', color: '#F2545B' },
-  { value: 'high', label: '高危', color: '#FF9A3C' },
-  { value: 'medium', label: '中危', color: '#FFD166' },
-  { value: 'low', label: '低危', color: '#3B82F6' }
+  { value: 'critical', label: '危急', dot: 'bg-critical' },
+  { value: 'high', label: '高危', dot: 'bg-high' },
+  { value: 'medium', label: '中危', dot: 'bg-medium' },
+  { value: 'low', label: '低危', dot: 'bg-low' },
 ];
 
-let groupIdCounter = 0;
-const newGroupId = () => `group-${++groupIdCounter}-${Date.now()}`;
-let stepIdCounter = 0;
-const newStepId = () => `step-${++stepIdCounter}-${Date.now()}`;
-
+/**
+ * 检测规则表单 —— 只做「单事件规则」。
+ *
+ * 多事件的关联 / 时序分析已统一到「关联分析规则」（Flink 流作业），本表单不再提供
+ * 关联规则、时序规则两种类型：它们曾经能选、能存，但引擎侧从未支持（无 sequence
+ * 分支、correlation 结构与前端 JSON 不匹配），属于"配了也不会执行"的空壳。
+ *
+ * 编辑历史规则时，若原内容是 Sigma/YARA 文本或旧 groups/steps 格式，会在检测条件
+ * 上方展示原始内容，保存即转换为单事件条件格式 —— 避免静默覆盖看不清。
+ */
 export default function RuleFormModal({ editingRule, dataSources, playbooks, onSave, onClose }: Props) {
   const [formData, setFormData] = useState<Partial<DetectionRule>>({ name: '', type: 'single', description: '', status: 'disabled' });
   const [selectedSeverity, setSelectedSeverity] = useState('medium');
@@ -55,6 +57,7 @@ export default function RuleFormModal({ editingRule, dataSources, playbooks, onS
   const [isSaving, setIsSaving] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<any>(null);
+  const [legacyContent, setLegacyContent] = useState<string | null>(null);
 
   // 单事件状态
   const [conditions, setConditions] = useState<Condition[]>([]);
@@ -63,21 +66,12 @@ export default function RuleFormModal({ editingRule, dataSources, playbooks, onS
   const [threshold, setThreshold] = useState(5);
   const [groupBy, setGroupBy] = useState('');
 
-  // 关联规则状态
-  const [groups, setGroups] = useState<CorrelationGroup[]>([]);
-  const [groupLogic, setGroupLogic] = useState<'AND' | 'OR'>('AND');
-  const [overallTimeWindow, setOverallTimeWindow] = useState('30 minutes');
-
-  // 时序规则状态
-  const [steps, setSteps] = useState<SequenceStep[]>([]);
-  const [maxSpan, setMaxSpan] = useState('60 minutes');
-
   // 初始化/编辑时填充
   useEffect(() => {
     if (editingRule) {
       setFormData({ ...editingRule });
       setSelectedSeverity(editingRule.severity || 'medium');
-      setSelectedDataSources((editingRule.dataSourceIds || []).map(id => String(id)));
+      setSelectedDataSources((Array.isArray(editingRule.dataSourceIds) ? editingRule.dataSourceIds : []).map(id => String(id)));
       setSelectedPlaybookId(editingRule.playbookId || null);
       parseRuleContent(editingRule.ruleContent || '');
     } else {
@@ -92,95 +86,51 @@ export default function RuleFormModal({ editingRule, dataSources, playbooks, onS
   const resetEditors = () => {
     setConditions([]);
     setTimeWindow(5); setTimeUnit('minutes'); setThreshold(5); setGroupBy('');
-    setGroups([]); setGroupLogic('AND'); setOverallTimeWindow('30 minutes');
-    setSteps([]); setMaxSpan('60 minutes');
     setTestResult(null);
+    setLegacyContent(null);
   };
 
   const parseRuleContent = (content: string) => {
     resetEditors();
     if (!content) return;
+    let parsed: any = null;
     try {
-      const parsed = JSON.parse(content);
-
-      // version 2: 根据是否有 groups/steps 判断类型
-      if (parsed.groups) {
-        setGroups(parsed.groups);
-        setGroupLogic(parsed.group_logic || 'AND');
-        setOverallTimeWindow(parsed.overall_time_window || '30 minutes');
-        setThreshold(parsed.threshold || 1);
-        return;
-      }
-      if (parsed.steps) {
-        setSteps(parsed.steps);
-        setMaxSpan(parsed.max_span || '60 minutes');
-        setThreshold(parsed.threshold || 1);
-        return;
-      }
-
-      // version 1 (旧格式): 单事件
-      setConditions(parsed.conditions || []);
-      setGroupBy(parsed.group_by || '');
-      setThreshold(parsed.threshold || 5);
-      if (parsed.time_window) {
-        const match = parsed.time_window.match(/(\d+)\s*(\w+)/);
-        if (match) {
-          setTimeWindow(parseInt(match[1]));
-          const unit = match[2];
-          if (unit.startsWith('hour')) setTimeUnit('hours');
-          else if (unit.startsWith('day')) setTimeUnit('days');
-          else setTimeUnit('minutes');
-        }
-      }
+      parsed = JSON.parse(content);
     } catch {
-      // 非 JSON 格式，重置
+      // Sigma / YARA 等非 JSON 文本
+      setLegacyContent(content);
+      return;
+    }
+    if (parsed.groups || parsed.steps) {
+      // 旧的关联 / 时序格式：引擎从未支持，保留原文提示后按单事件重建
+      setLegacyContent(content);
+      return;
+    }
+    setConditions(parsed.conditions || []);
+    setGroupBy(parsed.group_by || '');
+    setThreshold(parsed.threshold || 5);
+    if (parsed.time_window) {
+      const match = String(parsed.time_window).match(/(\d+)\s*(\w+)/);
+      if (match) {
+        setTimeWindow(parseInt(match[1]));
+        const unit = match[2];
+        if (unit.startsWith('hour')) setTimeUnit('hours');
+        else if (unit.startsWith('day')) setTimeUnit('days');
+        else setTimeUnit('minutes');
+      }
     }
   };
 
-  const buildRuleContent = (): string => {
-    const ruleType = formData.type || 'single';
-    const base = { version: 2, severity: selectedSeverity, title_template: `规则 ${formData.name || '未命名'} 触发` };
-
-    if (ruleType === 'correlation') {
-      return JSON.stringify({
-        ...base,
-        groups: groups.filter(g => g.conditions.some(c => c.field && c.value)).map(g => ({
-          id: g.id, label: g.label,
-          data_source_ids: g.data_source_ids,
-          conditions: g.conditions.filter(c => c.field && c.value),
-          time_window: g.time_window
-        })),
-        group_logic: groupLogic,
-        overall_time_window: overallTimeWindow,
-        threshold
-      }, null, 2);
-    }
-
-    if (ruleType === 'sequence') {
-      return JSON.stringify({
-        ...base,
-        steps: steps.filter(s => s.conditions.some(c => c.field && c.value)).map(s => ({
-          id: s.id, label: s.label, order: s.order,
-          data_source_ids: s.data_source_ids,
-          conditions: s.conditions.filter(c => c.field && c.value),
-          time_window: s.time_window,
-          required: s.required
-        })),
-        max_span: maxSpan,
-        threshold
-      }, null, 2);
-    }
-
-    // single
-    return JSON.stringify({
-      ...base,
-      conditions: conditions.filter(c => c.field && c.value),
-      time_window: `${timeWindow} ${timeUnit}`,
-      threshold,
-      ...(groupBy ? { group_by: groupBy } : {}),
-      aggregation: 'count'
-    }, null, 2);
-  };
+  const buildRuleContent = (): string => JSON.stringify({
+    version: 2,
+    severity: selectedSeverity,
+    title_template: `规则 ${formData.name || '未命名'} 触发`,
+    conditions: conditions.filter(c => c.field && c.value),
+    time_window: `${timeWindow} ${timeUnit}`,
+    threshold,
+    ...(groupBy ? { group_by: groupBy } : {}),
+    aggregation: 'count'
+  }, null, 2);
 
   const handleSave = async () => {
     if (!formData.name) return;
@@ -188,14 +138,14 @@ export default function RuleFormModal({ editingRule, dataSources, playbooks, onS
     try {
       const ruleData: Record<string, any> = {
         name: formData.name,
-        type: formData.type || 'single',
+        type: 'single',
         description: formData.description,
         severity: selectedSeverity,
         data_source_ids: selectedDataSources.filter(Boolean),
         playbook_id: selectedPlaybookId || null,
         status: formData.status || 'disabled',
         rule_content: buildRuleContent(),
-        rule_language: 'sigma'
+        rule_language: 'json'
       };
       await onSave(ruleData);
     } catch (e) {
@@ -206,16 +156,11 @@ export default function RuleFormModal({ editingRule, dataSources, playbooks, onS
   };
 
   const handleTest = async () => {
-    if (!editingRule && !formData.name) return;
+    if (!editingRule?.id) return;
     setIsTesting(true);
     setTestResult(null);
     try {
-      const ruleId = editingRule?.id;
-      if (!ruleId) {
-        showToast('请先保存规则再测试', 'error');
-        return;
-      }
-      const res = await rulesApi.testRule(ruleId) as any;
+      const res = await rulesApi.testRule(editingRule.id) as any;
       if (res.success && res.data) {
         setTestResult(res.data);
       } else {
@@ -228,10 +173,6 @@ export default function RuleFormModal({ editingRule, dataSources, playbooks, onS
     }
   };
 
-  const showToast = (msg: string, type: 'success' | 'error') => {
-    // parent handles toast
-  };
-
   const tabs = [
     { id: 'basic' as FormTab, label: '基本信息', icon: FileText },
     { id: 'datasource' as FormTab, label: '数据源', icon: Database },
@@ -239,202 +180,192 @@ export default function RuleFormModal({ editingRule, dataSources, playbooks, onS
     { id: 'action' as FormTab, label: '响应动作', icon: AlertTriangle }
   ];
 
-  const handleTypeChange = (newType: string) => {
-    setFormData({ ...formData, type: newType as RuleType });
-    // 切换类型时重置不兼容的编辑器状态
-    setConditions([]);
-    setGroups([]);
-    setSteps([]);
-    // 自动切换到检测条件标签页
-    setActiveTab('condition');
-  };
-
-  // 获取规则类型描述
-  const getRuleTypeDescription = (type: string) => {
-    const descriptions: Record<string, string> = {
-      single: '基于单个事件的简单检测规则，适用于基础告警场景',
-      correlation: '基于多个事件关联的复杂检测规则，适用于高级威胁检测',
-      sequence: '基于事件时序的检测规则，适用于攻击链分析'
-    };
-    return descriptions[type] || '';
-  };
+  const selectedPlaybook = playbooks.find(p => String(p.id) === String(selectedPlaybookId));
 
   return (
-    <>
-      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-        className="fixed inset-0 bg-black/50 z-50" onClick={onClose} />
-      <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
-        className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none">
-        <div className="glass-card rounded-xl p-0 w-[720px] pointer-events-auto max-h-[90vh] overflow-hidden"
-          onClick={e => e.stopPropagation()}>
-          {/* 标题 */}
-          <div className="flex items-center justify-between p-6 border-b border-border-color">
-            <h2 className="text-xl font-semibold text-text-primary">{editingRule ? '编辑规则' : '新建规则'}</h2>
-            <button onClick={onClose} className="p-2 text-text-secondary hover:text-text-primary transition-colors">
-              <X className="w-5 h-5" />
-            </button>
-          </div>
+    <Modal
+      open
+      onClose={onClose}
+      width={760}
+      title={editingRule ? '编辑规则' : '新建规则'}
+      description="单事件规则 · 在告警索引上按时间窗口统计条件命中数"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>取消</Button>
+          <Button
+            variant="primary"
+            loading={isSaving}
+            disabled={!formData.name}
+            onClick={handleSave}
+          >
+            {editingRule ? '保存' : '创建'}
+          </Button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-4">
+        <Segmented
+          items={tabs.map(t => ({ value: t.id, label: t.label, icon: t.icon }))}
+          value={activeTab}
+          onChange={setActiveTab}
+          className="flex-wrap"
+        />
 
-          {/* Tab 导航 */}
-          <div className="flex border-b border-border-color overflow-x-auto">
-            {tabs.map((tab) => {
-              const Icon = tab.icon;
-              return (
-                <button key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`flex items-center gap-2 px-6 py-3 text-sm font-medium transition-colors whitespace-nowrap ${
-                    activeTab === tab.id ? 'text-primary border-b-2 border-primary' : 'text-text-secondary hover:text-text-primary'
-                  }`}>
-                  <Icon className="w-4 h-4" />
-                  {tab.label}
-                </button>
-              );
-            })}
-          </div>
+        {/* ═══ 基本信息 ═══ */}
+        {activeTab === 'basic' && (
+          <div className="app-form-grid">
+            <Field label="规则名称" required className="col-span-full">
+              <input
+                type="text"
+                value={formData.name}
+                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                placeholder="请输入规则名称"
+                className="app-input"
+              />
+            </Field>
 
-          {/* 内容 */}
-          <div className="p-6 max-h-[55vh] overflow-auto">
-            {/* ═══ 基本信息 ═══ */}
-            {activeTab === 'basic' && (
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-text-secondary text-sm mb-2">规则名称</label>
-                  <input type="text" value={formData.name}
-                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                    placeholder="请输入规则名称"
-                    className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary focus:border-primary focus:outline-none" />
-                </div>
-                <div>
-                  <label className="block text-text-secondary text-sm mb-2">规则类型</label>
-                  <select value={formData.type}
-                    onChange={(e) => handleTypeChange(e.target.value)}
-                    className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary focus:border-primary focus:outline-none">
-                    <option value="single">单事件规则</option>
-                    <option value="correlation">关联规则</option>
-                    <option value="sequence">时序规则</option>
-                  </select>
-                  {formData.type && (
-                    <div className="mt-2 flex items-start gap-2 p-2 bg-primary/5 rounded-lg border border-primary/10">
-                      <Info className="w-4 h-4 text-primary mt-0.5 flex-shrink-0" />
-                      <p className="text-xs text-text-secondary">{getRuleTypeDescription(formData.type)}</p>
-                    </div>
-                  )}
-                </div>
-                <div>
-                  <label className="block text-text-secondary text-sm mb-2">严重等级</label>
-                  <div className="flex gap-2">
-                    {severityOptions.map((sev) => (
-                      <button key={sev.value} type="button" onClick={() => setSelectedSeverity(sev.value)}
-                        className={`flex-1 px-3 py-2 rounded-lg border text-sm transition-all hover:border-primary ${
-                          selectedSeverity === sev.value ? 'border-primary bg-primary/10 text-primary' : 'border-border-color text-text-secondary hover:bg-white/5'
-                        }`}>
-                        <span className="inline-block w-2 h-2 rounded-full mr-2" style={{ backgroundColor: sev.color }} />
-                        {sev.label}
-                      </button>
-                    ))}
+            <Field label="规则类型" className="col-span-full">
+              <div className="flex items-center gap-2 rounded-input border border-border-color bg-surface-2 px-3 py-2">
+                <Target size={14} className="shrink-0 text-primary" />
+                <span className="text-[13px] text-text-primary">单事件规则</span>
+                <span className="ml-auto text-caption text-text-muted">窗口内条件命中数 ≥ 阈值时触发</span>
+              </div>
+            </Field>
+
+            <div className="col-span-full">
+              <div className="callout callout-info">
+                <Info size={14} className="mt-0.5 shrink-0" />
+                <span className="opacity-90">
+                  检测规则在告警索引（alerts-valid）上按时间窗口统计条件命中数，命中后生成事件。
+                  多事件的频次 / 去重 / 聚合 / 时序关联分析请在「关联分析规则」标签页配置（Flink 流作业）。
+                </span>
+              </div>
+            </div>
+
+            <Field label="严重等级" className="col-span-full">
+              <div className="flex flex-wrap gap-2">
+                {severityOptions.map((sev) => (
+                  <button
+                    key={sev.value}
+                    type="button"
+                    onClick={() => setSelectedSeverity(sev.value)}
+                    className={[
+                      'inline-flex h-9 flex-1 items-center justify-center gap-2 rounded-input border px-3 text-[13px] transition-colors',
+                      selectedSeverity === sev.value
+                        ? 'border-primary bg-primary/10 text-primary'
+                        : 'border-border-color bg-surface-1 text-text-secondary hover:border-border-color-hover hover:text-text-primary',
+                    ].join(' ')}
+                  >
+                    <span className={`h-2 w-2 rounded-full ${sev.dot}`} />
+                    {sev.label}
+                  </button>
+                ))}
+              </div>
+            </Field>
+
+            <Field label="规则描述" className="col-span-full">
+              <textarea
+                value={formData.description}
+                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                rows={3}
+                placeholder="请输入规则描述..."
+                className="app-textarea"
+              />
+            </Field>
+          </div>
+        )}
+
+        {/* ═══ 数据源 ═══ */}
+        {activeTab === 'datasource' && (
+          <RuleDataSourceTab
+            selectedDataSources={selectedDataSources}
+            onChange={setSelectedDataSources}
+          />
+        )}
+
+        {/* ═══ 检测条件 ═══ */}
+        {activeTab === 'condition' && (
+          <div className="flex flex-col gap-4">
+            {legacyContent && (
+              <div className="callout callout-warning">
+                <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                <div className="min-w-0">
+                  <div className="text-[12.5px] font-medium">
+                    该规则的原始内容不是单事件条件格式（可能是 Sigma / YARA 或旧的关联、时序格式）
                   </div>
+                  <p className="mt-1 text-caption text-text-muted">
+                    保存后会被替换为下面的单事件条件。如需保留原内容，请先复制。
+                  </p>
+                  <pre className="mt-2 max-h-24 overflow-auto rounded-input border border-border-color bg-surface-2 p-2 font-mono text-[11px] text-text-muted scrollbar-thin">
+                    {legacyContent.slice(0, 800)}
+                  </pre>
                 </div>
-                <div>
-                  <label className="block text-text-secondary text-sm mb-2">规则描述</label>
-                  <textarea value={formData.description}
-                    onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                    rows={3} placeholder="请输入规则描述..."
-                    className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary focus:border-primary focus:outline-none resize-none" />
+              </div>
+            )}
+            <RuleConditionTab
+              selectedDataSources={selectedDataSources}
+              dataSources={dataSources}
+              conditions={conditions}
+              timeWindow={timeWindow}
+              timeUnit={timeUnit}
+              threshold={threshold}
+              groupBy={groupBy}
+              onConditionsChange={setConditions}
+              onTimeWindowChange={setTimeWindow}
+              onTimeUnitChange={setTimeUnit}
+              onThresholdChange={setThreshold}
+              onGroupByChange={setGroupBy}
+            />
+          </div>
+        )}
+
+        {/* ═══ 响应动作 ═══ */}
+        {activeTab === 'action' && (
+          <div className="flex flex-col gap-5">
+            <Field
+              label="关联剧本"
+              help="选择规则触发时要执行的剧本编排，可从剧本库中选择已发布的剧本"
+            >
+              <select
+                value={selectedPlaybookId || ''}
+                onChange={(e) => setSelectedPlaybookId(e.target.value || null)}
+                className="app-select"
+              >
+                <option value="">不关联剧本</option>
+                {playbooks.map((pb) => (
+                  <option key={pb.id} value={String(pb.id)}>
+                    {pb.name}{pb.triggerType ? ` (${pb.triggerType})` : ''}
+                  </option>
+                ))}
+              </select>
+            </Field>
+
+            {selectedPlaybook && (
+              <div className="callout callout-info">
+                <Workflow size={14} className="mt-0.5 shrink-0" />
+                <div className="min-w-0">
+                  <div className="text-[12.5px] font-medium">已选择剧本：{selectedPlaybook.name}</div>
+                  <p className="mt-0.5 text-caption text-text-muted">当规则触发时，将自动执行此剧本进行响应处置</p>
                 </div>
               </div>
             )}
 
-            {/* ═══ 数据源 ═══ */}
-            {activeTab === 'datasource' && (
-              <RuleDataSourceTab
-                selectedDataSources={selectedDataSources}
-                onChange={setSelectedDataSources}
+            {playbooks.length === 0 && (
+              <p className="text-caption text-text-muted">暂无可用的剧本，请先在「响应剧本」中创建并发布剧本</p>
+            )}
+
+            <div className="border-t border-border-color pt-4">
+              <h4 className="mb-3 text-[13px] font-medium text-text-primary">规则测试</h4>
+              <RuleTestPanel
+                ruleId={editingRule?.id || ''}
+                isTesting={isTesting}
+                testResult={testResult}
+                onTest={handleTest}
               />
-            )}
-
-            {/* ═══ 检测条件 ═══ */}
-            {activeTab === 'condition' && (
-              <RuleConditionTab
-                ruleType={(formData.type || 'single') as RuleType}
-                selectedDataSources={selectedDataSources}
-                dataSources={dataSources}
-                conditions={conditions}
-                timeWindow={timeWindow}
-                timeUnit={timeUnit}
-                threshold={threshold}
-                groupBy={groupBy}
-                groups={groups}
-                groupLogic={groupLogic}
-                overallTimeWindow={overallTimeWindow}
-                steps={steps}
-                maxSpan={maxSpan}
-                onConditionsChange={setConditions}
-                onTimeWindowChange={setTimeWindow}
-                onTimeUnitChange={setTimeUnit}
-                onThresholdChange={setThreshold}
-                onGroupByChange={setGroupBy}
-                onGroupsChange={setGroups}
-                onGroupLogicChange={setGroupLogic}
-                onOverallTimeWindowChange={setOverallTimeWindow}
-                onStepsChange={setSteps}
-                onMaxSpanChange={setMaxSpan}
-              />
-            )}
-
-            {/* ═══ 响应动作 ═══ */}
-            {activeTab === 'action' && (
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-text-secondary text-sm mb-2">关联剧本</label>
-                  <div className="bg-page-bg rounded-lg border border-border-color p-4">
-                    <p className="text-xs text-text-muted mb-3">选择规则触发时要执行的剧本编排，可从剧本库中选择已发布的剧本</p>
-                    <select value={selectedPlaybookId || ''}
-                      onChange={(e) => setSelectedPlaybookId(e.target.value || null)}
-                      className="w-full px-3 py-2 bg-card-bg border border-border-color rounded-lg text-text-primary focus:border-primary focus:outline-none">
-                      <option value="">不关联剧本</option>
-                      {playbooks.map((pb) => (
-                        <option key={pb.id} value={String(pb.id)}>{pb.name} {pb.triggerType ? `(${pb.triggerType})` : ''}</option>
-                      ))}
-                    </select>
-                    {selectedPlaybookId && (
-                      <div className="mt-3 p-3 bg-primary/5 rounded-lg border border-primary/20">
-                        <div className="flex items-center gap-2 text-sm text-primary">
-                          <Workflow className="w-4 h-4" />
-                          <span>已选择剧本：{playbooks.find(p => String(p.id) === String(selectedPlaybookId))?.name}</span>
-                        </div>
-                        <p className="text-xs text-text-muted mt-1">当规则触发时，将自动执行此剧本进行响应处置</p>
-                      </div>
-                    )}
-                    {playbooks.length === 0 && (
-                      <p className="text-xs text-text-muted mt-2">暂无可用的剧本，请先在「响应剧本」中创建并发布剧本</p>
-                    )}
-                  </div>
-                </div>
-                {/* 测试面板 */}
-                <div className="border-t border-border-color pt-4">
-                  <h4 className="text-sm font-medium text-text-primary mb-3">规则测试</h4>
-                  <RuleTestPanel
-                    ruleId={editingRule?.id || ''}
-                    isTesting={isTesting}
-                    testResult={testResult}
-                    onTest={handleTest}
-                  />
-                </div>
-              </div>
-            )}
+            </div>
           </div>
-
-          {/* 底部按钮 */}
-          <div className="flex justify-end gap-3 p-6 border-t border-border-color">
-            <button onClick={onClose} className="px-4 py-2 text-text-secondary hover:text-text-primary transition-colors">取消</button>
-            <button onClick={handleSave} disabled={!formData.name || isSaving}
-              className="px-4 py-2 bg-primary hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition-colors flex items-center gap-2">
-              {isSaving && <Loader2 className="w-4 h-4 animate-spin" />}
-              {editingRule ? '保存' : '创建'}
-            </button>
-          </div>
-        </div>
-      </motion.div>
-    </>
+        )}
+      </div>
+    </Modal>
   );
 }

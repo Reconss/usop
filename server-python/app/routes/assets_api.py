@@ -141,9 +141,10 @@ def create_asset():
     db.session.commit()
     
     # 记录审计日志
+    _cu = getattr(request, 'current_user', None) or {}
     audit = AuditLog(
-        user_id=getattr(request, 'user_id', 1),
-        username=getattr(request, 'username', 'system'),
+        user_id=_cu.get('user_id', 1),
+        username=(_cu.get('username') or 'system'),
         action='创建资产',
         module='assets',
         target=asset.name,

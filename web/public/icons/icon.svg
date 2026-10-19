@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-labelledby="usop-mini-title">
+  <title id="usop-mini-title">USOP</title>
+  <defs>
+    <linearGradient id="usop-grad-mini" x1="8" y1="4" x2="56" y2="60" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#38BDF8"/>
+      <stop offset="1" stop-color="#818CF8"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 盾牌：安全底座 -->
+  <path d="M32 4 L56 12.8 V32.5 C56 45.2 46.4 54.8 32 60 C17.6 54.8 8 45.2 8 32.5 V12.8 Z" fill="url(#usop-grad-mini)"/>
+
+  <!-- 极简靶心：16-32px 可辨识（监控焦点） -->
+  <circle cx="32" cy="32.5" r="7.6" fill="#0B1020"/>
+  <circle cx="32" cy="32.5" r="2.7" fill="#38BDF8"/>
+</svg>

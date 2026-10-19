@@ -24,10 +24,10 @@ import {
   Plus, Copy, Check, AlertOctagon,
   MoreHorizontal, ArrowRight, Clock3, ShieldAlert, Info, FileJson,
   Network, Bug, Terminal, LayoutGrid, List, X, Hash,
-  User, Building2, MapPin, Timer, TrendingUp, Cpu, Database, Cloud, Clock
+  User, Building2, MapPin, Timer, TrendingUp, Cpu, Database, Cloud, Clock, Brain, ShieldCheck
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { alertsApi } from '../services/api';
+import { alertsApi, aiJudgmentApi, resourcesApi } from '../services/api';
 
 // 新组件
 import SearchBar from '../components/SearchBar';
@@ -35,6 +35,7 @@ import TimeRangeSelector, { TimeRange } from '../components/TimeRangeSelector';
 import QuickValuesPanel from '../components/QuickValuesPanel';
 import MessageTable from '../components/MessageTable';
 import FieldBrowser from '../components/FieldBrowser';
+import { Button, PageHeader } from '../components/ui';
 
 // ==================== 类型定义 ====================
 
@@ -86,33 +87,33 @@ interface QuickFilter {
 // ==================== 配置常量 ====================
 
 const severityConfig: Record<Severity, { color: string; text: string; bg: string; border: string; label: string; gradient: string }> = {
-  critical: { color: 'bg-rose-500', text: 'text-rose-400', bg: 'bg-rose-500/10', border: 'border-rose-500/30', label: '危急', gradient: 'from-rose-500/20 to-rose-500/5' },
-  high: { color: 'bg-orange-500', text: 'text-orange-400', bg: 'bg-orange-500/10', border: 'border-orange-500/30', label: '高危', gradient: 'from-orange-500/20 to-orange-500/5' },
-  medium: { color: 'bg-amber-500', text: 'text-amber-400', bg: 'bg-amber-500/10', border: 'border-amber-500/30', label: '中危', gradient: 'from-amber-500/20 to-amber-500/5' },
-  low: { color: 'bg-blue-500', text: 'text-blue-400', bg: 'bg-blue-500/10', border: 'border-blue-500/30', label: '低危', gradient: 'from-blue-500/20 to-blue-500/5' },
+  critical: { color: 'bg-danger-solid', text: 'text-danger', bg: 'bg-danger/10', border: 'border-danger/30', label: '危急', gradient: 'from-danger/20 to-danger/5' },
+  high: { color: 'bg-warning-solid', text: 'text-warning', bg: 'bg-warning/10', border: 'border-warning/30', label: '高危', gradient: 'from-warning/20 to-warning/5' },
+  medium: { color: 'bg-warning-solid', text: 'text-warning', bg: 'bg-warning/10', border: 'border-warning/30', label: '中危', gradient: 'from-warning/20 to-warning/5' },
+  low: { color: 'bg-primary-solid', text: 'text-info', bg: 'bg-info/10', border: 'border-info/30', label: '低危', gradient: 'from-info/20 to-info/5' },
 };
 
 const statusConfig: Record<string, { icon: React.ElementType; color: string; bg: string; label: string }> = {
-  new: { icon: Bell, color: 'text-blue-400', bg: 'bg-blue-500/10', label: '新告警' },
-  investigating: { icon: Clock3, color: 'text-amber-400', bg: 'bg-amber-500/10', label: '调查中' },
-  closed: { icon: CheckCircle, color: 'text-emerald-400', bg: 'bg-emerald-500/10', label: '已关闭' },
-  false_positive: { icon: XCircle, color: 'text-gray-400', bg: 'bg-gray-500/10', label: '误报' },
-  active: { icon: Clock3, color: 'text-amber-400', bg: 'bg-amber-500/10', label: '调查中' },
-  resolved: { icon: CheckCircle, color: 'text-emerald-400', bg: 'bg-emerald-500/10', label: '已关闭' },
+  new: { icon: Bell, color: 'text-info', bg: 'bg-info/10', label: '新告警' },
+  investigating: { icon: Clock3, color: 'text-warning', bg: 'bg-warning/10', label: '调查中' },
+  closed: { icon: CheckCircle, color: 'text-success', bg: 'bg-success/10', label: '已关闭' },
+  false_positive: { icon: XCircle, color: 'text-text-muted', bg: 'bg-surface-3', label: '误报' },
+  active: { icon: Clock3, color: 'text-warning', bg: 'bg-warning/10', label: '调查中' },
+  resolved: { icon: CheckCircle, color: 'text-success', bg: 'bg-success/10', label: '已关闭' },
 };
 
 const productIcons: Record<string, { icon: React.ElementType; color: string }> = {
-  'WAF': { icon: Shield, color: 'text-purple-400' },
-  'IDS': { icon: AlertOctagon, color: 'text-red-400' },
-  'IPS': { icon: ShieldAlert, color: 'text-orange-400' },
-  'EDR': { icon: Bug, color: 'text-green-400' },
-  'Firewall': { icon: Shield, color: 'text-blue-400' },
-  'SIEM': { icon: Activity, color: 'text-cyan-400' },
-  'HIDS': { icon: Server, color: 'text-amber-400' },
-  'NIDS': { icon: Network, color: 'text-rose-400' },
-  'SOC': { icon: Terminal, color: 'text-indigo-400' },
-  'CloudTrail': { icon: Cloud, color: 'text-teal-400' },
-  'default': { icon: AlertTriangle, color: 'text-gray-400' },
+  'WAF': { icon: Shield, color: 'text-accent' },
+  'IDS': { icon: AlertOctagon, color: 'text-danger' },
+  'IPS': { icon: ShieldAlert, color: 'text-warning' },
+  'EDR': { icon: Bug, color: 'text-success' },
+  'Firewall': { icon: Shield, color: 'text-info' },
+  'SIEM': { icon: Activity, color: 'text-info' },
+  'HIDS': { icon: Server, color: 'text-warning' },
+  'NIDS': { icon: Network, color: 'text-danger' },
+  'SOC': { icon: Terminal, color: 'text-accent' },
+  'CloudTrail': { icon: Cloud, color: 'text-success' },
+  'default': { icon: AlertTriangle, color: 'text-text-muted' },
 };
 
 const eventTypeOptions = ['权限异常', '恶意软件', '数据泄露', '网络入侵', 'Web攻击', '横向移动', '其他'];
@@ -135,36 +136,157 @@ const formatDateTime = (time: string) =>
 
 // ==================== 原始日志查看器 ====================
 
-const RawLogViewer = ({ rawLog, extraData }: { rawLog?: string; extraData?: Record<string, any> }) => {
+const RawLogViewer = ({ rawLog, extraData, fullRecord }: {
+  rawLog?: string;
+  extraData?: Record<string, any>;
+  fullRecord?: Record<string, any>;
+}) => {
   const [tab, setTab] = useState<'raw' | 'parsed'>('raw');
   const [copied, setCopied] = useState(false);
   const hasParsed = extraData && Object.keys(extraData).length > 0;
 
+  // 原始日志优先用平台落库的 raw_log；否则直接展示从 ES 取回的整条文档，避免显示"无原始日志"。
+  const rawContent = rawLog || (fullRecord ? JSON.stringify(fullRecord, null, 2) : '');
+
   const handleCopy = () => {
-    const content = tab === 'raw' ? rawLog : JSON.stringify(extraData, null, 2);
+    const content = tab === 'raw' ? rawContent : JSON.stringify(extraData, null, 2);
     navigator.clipboard.writeText(content || '').catch(() => {});
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
   return (
-    <div className="border border-border-color rounded-xl overflow-hidden">
+    <div className="border border-border-color rounded-card overflow-hidden">
       <div className="flex items-center justify-between px-4 py-2 bg-page-bg/80 border-b border-border-color">
         <div className="flex gap-1">
           <button onClick={() => setTab('raw')} className={`px-3 py-1 text-xs rounded-md ${tab === 'raw' ? 'bg-primary/15 text-primary' : 'text-text-muted hover:text-text-secondary'}`}>原始日志</button>
           {hasParsed && <button onClick={() => setTab('parsed')} className={`px-3 py-1 text-xs rounded-md ${tab === 'parsed' ? 'bg-primary/15 text-primary' : 'text-text-muted hover:text-text-secondary'}`}>解析数据</button>}
         </div>
         <button onClick={handleCopy} className="flex items-center gap-1 px-2 py-1 text-xs text-text-muted hover:text-primary rounded transition-colors">
-          {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+          {copied ? <Check className="w-3 h-3 text-success" /> : <Copy className="w-3 h-3" />}
           {copied ? '已复制' : '复制'}
         </button>
       </div>
       <pre className="p-4 text-xs text-text-secondary font-mono overflow-auto max-h-[300px] whitespace-pre-wrap break-all bg-page-bg/50">
-        {tab === 'raw' ? (rawLog || '无原始日志') : JSON.stringify(extraData, null, 2)}
+        {tab === 'raw' ? (rawContent || '无原始日志') : JSON.stringify(extraData, null, 2)}
       </pre>
     </div>
   );
 };
+
+// ==================== EFF 借鉴：研判协作展示型组件 ====================
+
+const VERDICT_BADGE: Record<string, { bg: string; text: string }> = {
+  true_attack: { bg: 'bg-danger/15', text: 'text-danger' },
+  false_positive: { bg: 'bg-surface-3', text: 'text-text-muted' },
+  suspicious: { bg: 'bg-warning/15', text: 'text-warning' },
+  info: { bg: 'bg-info/15', text: 'text-info' },
+};
+
+/** 结构化研判卡片（证据包 + 互斥标签 + 风险等级 + 结论 + 证据链 + 处置建议） */
+function AlertAnalysisCard({ analysis }: { analysis: any }) {
+  if (!analysis) return null;
+  const badge = VERDICT_BADGE[analysis.verdict] || VERDICT_BADGE.suspicious;
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className={`px-2 py-0.5 rounded text-xs font-medium ${badge.bg} ${badge.text}`}>
+          {analysis.verdict_label || analysis.verdict}
+        </span>
+        {analysis.risk_level && (
+          <span className="px-2 py-0.5 rounded bg-white/10 text-xs text-text-secondary">风险: {analysis.risk_level}</span>
+        )}
+        <span className="px-2 py-0.5 rounded bg-white/10 text-xs text-text-secondary">
+          置信度: {Math.round((analysis.confidence || 0) * 100)}%
+        </span>
+        {analysis.is_ai ? (
+          <span className="px-2 py-0.5 rounded bg-primary/15 text-primary text-xs">AI 研判</span>
+        ) : (
+          <span className="px-2 py-0.5 rounded bg-white/10 text-xs text-text-muted">规则兜底</span>
+        )}
+      </div>
+      {analysis.conclusion && (
+        <div className="text-sm text-text-primary leading-relaxed">{analysis.conclusion}</div>
+      )}
+      {Array.isArray(analysis.evidence) && analysis.evidence.length > 0 && (
+        <div>
+          <div className="text-xs text-text-muted mb-1">证据链</div>
+          <ul className="space-y-1.5">
+            {analysis.evidence.map((e: any, i: number) => (
+              <li key={i} className="text-xs text-text-secondary bg-page-bg rounded p-2">
+                <div className="flex items-center justify-between mb-0.5">
+                  <span className="text-text-primary">{e.source}</span>
+                  <span className="text-warning">置信度 {Math.round((e.confidence || 0) * 100)}%</span>
+                </div>
+                <div>{e.detail}</div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {analysis.suggested_action && (
+        <div className="text-xs">
+          <span className="text-text-muted">处置建议: </span>
+          <span className="text-text-primary">{analysis.suggested_action}</span>
+        </div>
+      )}
+      {analysis.analyzed_at && (
+        <div className="text-xs text-text-muted">
+          研判时间: {new Date(analysis.analyzed_at).toLocaleString('zh-CN')}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** IP 名单命中卡片（黑/白名单状态，数据来自 ip_lists.test） */
+function IpReputationCard({ srcHit, dstHit, srcIp, dstIp }: { srcHit: any; dstHit: any; srcIp?: string; dstIp?: string }) {
+  const renderOne = (label: string, ip: string | undefined, hit: any) => {
+    if (!ip) return null;
+    const hits: any[] = hit?.hits || [];
+    const black = hits.find((h: any) => h.usage === 'blacklist');
+    const white = hits.find((h: any) => h.usage === 'whitelist');
+    const other = hits.find((h: any) => h.usage !== 'blacklist' && h.usage !== 'whitelist');
+    let badge: { bg: string; text: string; label: string };
+    let desc: string;
+    if (black) {
+      badge = { bg: 'bg-danger/15', text: 'text-danger', label: '黑名单' };
+      desc = `命中封禁组：${black.groupName}${hits.length > 1 ? ` 等 ${hits.length} 组` : ''}`;
+    } else if (white) {
+      badge = { bg: 'bg-success/15', text: 'text-success', label: '白名单' };
+      desc = `命中放行组：${white.groupName}${hits.length > 1 ? ` 等 ${hits.length} 组` : ''}`;
+    } else if (other) {
+      badge = { bg: 'bg-info/15', text: 'text-info', label: '资源组' };
+      desc = `命中资源组：${other.groupName}`;
+    } else {
+      badge = { bg: 'bg-surface-3', text: 'text-text-muted', label: '未收录' };
+      desc = '不在任何 IP 组';
+    }
+    return (
+      <div className="flex items-center justify-between p-3 bg-page-bg rounded-lg">
+        <div>
+          <div className="text-xs text-text-muted">{label}</div>
+          <div className="font-mono text-sm text-text-primary">{ip}</div>
+        </div>
+        <div className="text-right">
+          <span className={`px-2 py-0.5 rounded text-xs font-medium ${badge.bg} ${badge.text}`}>{badge.label}</span>
+          <div className="text-xs text-text-muted mt-1">{desc}</div>
+        </div>
+      </div>
+    );
+  };
+  return (
+    <section>
+      <h4 className="text-sm font-medium text-text-secondary mb-3 flex items-center gap-2">
+        <ShieldCheck className="w-4 h-4" /> IP 组命中
+      </h4>
+      <div className="space-y-2">
+        {renderOne('源 IP', srcIp, srcHit)}
+        {renderOne('目标 IP', dstIp, dstHit)}
+      </div>
+    </section>
+  );
+}
 
 // ==================== 主页面组件 ====================
 
@@ -209,9 +331,16 @@ export default function SecurityAlerts() {
 
   // ---- 详情抽屉 ----
   const [showDetail, setShowDetail] = useState<Alert | null>(null);
-  const [detailTab, setDetailTab] = useState<'fields' | 'raw' | 'related'>('fields');
+  // 从 ES 取回的整条告警文档（用于「原始日志」标签完整展示，避免 raw_log 缺失时显示空白）
+  const [detailFullRecord, setDetailFullRecord] = useState<Record<string, any> | null>(null);
+  const [detailTab, setDetailTab] = useState<'fields' | 'raw' | 'related' | 'collab'>('fields');
   const [relatedAlerts, setRelatedAlerts] = useState<Record<string, any>[]>([]);
   const [relatedLoading, setRelatedLoading] = useState(false);
+
+  // ---- EFF 借鉴：协作研判（结构化研判 / IP 名单命中） ----
+  const [ipHits, setIpHits] = useState<{ src?: any; dst?: any }>({});
+  const [analyzing, setAnalyzing] = useState(false);
+  const [batchAnalyzing, setBatchAnalyzing] = useState(false);
 
   // ---- 聚合事件 ----
   const [showAggregateModal, setShowAggregateModal] = useState(false);
@@ -278,6 +407,7 @@ export default function SecurityAlerts() {
         hostname: a.hostname || '',
         category: a.category || '',
         tags: a.tags || [],
+        eventIds: a.event_ids || a.eventIds || [],
         rawLog: a.raw_log || a.rawLog,
         parsedData: a.parsed_data || a.parsedData || {},
         firstSeen: a.first_seen || a.firstSeen || '',
@@ -437,6 +567,13 @@ export default function SecurityAlerts() {
     setShowDetail(row);
     setDetailTab('fields');
     setRelatedAlerts([]);
+    // 拉取 ES 整条文档，供「原始日志」标签完整展示（raw_log 缺失时兜底）
+    setDetailFullRecord(null);
+    alertsApi.getAlert(row.id).then((resp: any) => {
+      if (resp && resp.success && resp.data) {
+        setDetailFullRecord(resp.data);
+      }
+    }).catch(() => { /* 取失败则维持字段浏览器展示 */ });
   }, []);
 
   const fetchRelated = useCallback(async (alertId: string) => {
@@ -457,18 +594,72 @@ export default function SecurityAlerts() {
     }
   }, [showDetail?.id, detailTab, fetchRelated, relatedAlerts.length]);
 
+  // ==================== EFF 借鉴：协作研判（结构化研判 / IP 命中） ====================
+  const loadCollab = useCallback(async (srcIp?: string, dstIp?: string) => {
+    const testOne = async (ip?: string): Promise<any> => {
+      if (!ip) return null;
+      try {
+        const r: any = await resourcesApi.testIpGroups(ip);
+        return r?.data || null;
+      } catch {
+        return null;
+      }
+    };
+    const [srcHit, dstHit] = await Promise.all([testOne(srcIp), testOne(dstIp)]);
+    setIpHits({ src: srcHit, dst: dstHit });
+  }, []);
+
+  useEffect(() => {
+    if (showDetail?.id) {
+      loadCollab(showDetail.srcIp, showDetail.dstIp);
+    }
+  }, [showDetail?.id, loadCollab]);
+
+  const handleAnalyze = useCallback(async (alertId: string) => {
+    setAnalyzing(true);
+    try {
+      const res: any = await aiJudgmentApi.analyze(alertId);
+      if (res?.success && res.data) {
+        setShowDetail(prev => prev ? { ...prev, extraData: { ...(prev.extraData || {}), structured_analysis: res.data } } : null);
+        showToast('研判完成', 'success');
+      } else {
+        showToast(res?.error || '研判失败', 'error');
+      }
+    } catch (e: any) { showToast(e?.message || '研判失败', 'error'); }
+    finally { setAnalyzing(false); }
+  }, [showToast]);
+
+  // ---- 批量研判（对最近未闭环告警批量执行结构化研判）----
+  const handleBatchAnalyze = useCallback(async () => {
+    setBatchAnalyzing(true);
+    try {
+      const res: any = await aiJudgmentApi.analyzeBatch(20);
+      if (res?.success) {
+        showToast(`已完成 ${res.data?.analyzed ?? 0} 条告警的批量研判`);
+        fetchAlerts();
+      } else {
+        showToast(res?.error || '批量研判失败', 'error');
+      }
+    } catch (e: any) {
+      showToast(e?.message || '批量研判失败', 'error');
+    } finally {
+      setBatchAnalyzing(false);
+    }
+  }, [showToast, fetchAlerts]);
+
   // ---- 搜索字段（FieldBrowser 回调）----
   const handleSearchField = useCallback((field: string, value: string) => {
     const clause = `${field}:"${value}"`;
     setQueryString(prev => prev ? `${prev} AND ${clause}` : clause);
     setShowDetail(null);
+    setDetailFullRecord(null);
     setCurrentPage(1);
   }, []);
 
   // ---- 状态变更 ----
   const handleStatusChange = useCallback(async (alertId: string, status: string) => {
     try {
-      await alertsApi.updateAlertStatus(Number(alertId), status);
+      await alertsApi.updateAlertStatus(alertId, status);
       showToast('状态已更新');
       fetchAlerts();
       if (showDetail?.id === alertId) {
@@ -492,13 +683,14 @@ export default function SecurityAlerts() {
     });
     setShowAggregateModal(true);
     setShowDetail(null);
+    setDetailFullRecord(null);
   }, []);
 
   const handleAggregate = useCallback(async () => {
     if (!aggregateForm.title.trim() || selectedIds.size === 0) return;
     try {
       await alertsApi.aggregateAlerts({
-        alert_ids: Array.from(selectedIds).map(Number),
+        alert_ids: Array.from(selectedIds).map(String),
         title: aggregateForm.title,
         severity: aggregateForm.severity,
         description: aggregateForm.description,
@@ -535,79 +727,91 @@ export default function SecurityAlerts() {
             initial={{ opacity: 0, y: -50 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -50 }}
-            className={`fixed top-4 right-4 z-[100] px-4 py-3 rounded-xl shadow-lg flex items-center gap-2 ${
-              toast.type === 'success' ? 'bg-emerald-500/90' : 'bg-rose-500/90'
-            } text-white`}
+            className={`fixed right-4 top-16 z-toast flex items-center gap-2 rounded-card border px-3.5 py-2.5 text-[12.5px] shadow-panel ${
+              toast.type === 'success'
+                ? 'border-success/30 bg-success/10 text-success'
+                : 'border-danger/30 bg-danger/10 text-danger'
+            }`}
           >
-            {toast.type === 'success' ? <CheckCircle2 className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
-            <span className="text-sm font-medium">{toast.message}</span>
+            {toast.type === 'success' ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}
+            <span className="font-medium">{toast.message}</span>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* ========== 顶部搜索区 ========== */}
-      <div className="flex-shrink-0 space-y-3 px-6 pt-4 pb-3">
+      {/* ========== 顶部搜索区（两行紧凑布局） ========== */}
+      <div className="flex-shrink-0 space-y-2 px-6 pt-3 pb-2">
+        {/* 行1：页头 + 操作按钮 */}
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <PageHeader
+            icon={Bell}
+            title="安全告警"          meta={
+              <span className="text-[11px] text-text-muted num">
+                命中 {totalAlerts} 条{typeof tookMs === 'number' ? ` · ${tookMs} ms` : ''}
+              </span>
+            }
+          />
+          <div className="flex items-center gap-2 flex-wrap">
+            {selectedIds.size > 0 && (
+              <Button size="sm" variant="primary" icon={Zap} onClick={() => setShowAggregateModal(true)}>
+                聚合事件 ({selectedIds.size})
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant="secondary"
+              icon={Brain}
+              loading={batchAnalyzing}
+              onClick={handleBatchAnalyze}
+              title="对最近未闭环的告警批量执行结构化 AI 研判，并自动闭环（误报标记 / 高危创建事件）"
+            >
+              批量研判
+            </Button>
+            <Button size="sm" variant="secondary" icon={Download} onClick={handleExport}>
+              导出
+            </Button>
+            <Button
+              size="sm"
+              variant={showQuickValues ? 'soft' : 'secondary'}
+              icon={BarChart3}
+              onClick={() => setShowQuickValues(!showQuickValues)}
+              title={showQuickValues ? '隐藏字段分布' : '显示字段分布'}
+            >
+              {showQuickValues ? '隐藏面板' : '显示面板'}
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              icon={RefreshCw}
+              loading={isLoading}
+              onClick={() => { fetchAlerts(); fetchHistogram(); }}
+            >
+              刷新
+            </Button>
+          </div>
+        </div>
 
-
-        {/* SearchBar */}
-        <SearchBar
-          value={queryString}
-          onChange={setQueryString}
-          onSearch={handleSearch}
-          hitCount={totalAlerts}
-          tookMs={tookMs}
-          loading={isLoading}
-          savedSearches={savedSearches as any[]}
-          onSaveSearch={handleSaveSearch}
-          onLoadSearch={handleLoadSearch}
-          onDeleteSearch={handleDeleteSearch}
-          timeRangeLabel={timeRange.label}
-        />
-
-        {/* TimeRangeSelector + 操作按钮 */}
-        <div className="flex items-center justify-between">
+        {/* 行2：搜索栏 + 时间范围 */}
+        <div className="flex items-start gap-2">
+          <SearchBar
+            className="flex-1 min-w-0"
+            value={queryString}
+            onChange={setQueryString}
+            onSearch={handleSearch}
+            loading={isLoading}
+            savedSearches={savedSearches as any[]}
+            onSaveSearch={handleSaveSearch}
+            onLoadSearch={handleLoadSearch}
+            onDeleteSearch={handleDeleteSearch}
+          />
           <TimeRangeSelector
+            className="flex-shrink-0"
             value={timeRange}
             onChange={handleTimeRangeChange}
             enableAutoRefresh
             autoRefreshEnabled={autoRefresh}
             onAutoRefreshChange={setAutoRefresh}
           />
-          <div className="flex items-center gap-2">
-            {selectedIds.size > 0 && (
-              <button
-                onClick={() => setShowAggregateModal(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-600 text-white text-xs hover:bg-purple-700 transition-colors"
-              >
-                <Zap className="w-3.5 h-3.5" />
-                聚合事件 ({selectedIds.size})
-              </button>
-            )}
-            <button
-              onClick={handleExport}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-page-bg border border-border-color text-text-muted hover:text-text-secondary text-xs transition-colors"
-            >
-              <Download className="w-3.5 h-3.5" />
-              导出
-            </button>
-            <button
-              onClick={() => setShowQuickValues(!showQuickValues)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-colors ${
-                showQuickValues ? 'bg-primary/10 border-primary/30 text-primary' : 'bg-page-bg border-border-color text-text-muted hover:text-text-secondary'
-              }`}
-              title={showQuickValues ? '隐藏字段分布' : '显示字段分布'}
-            >
-              <BarChart3 className="w-3.5 h-3.5" />
-              {showQuickValues ? '隐藏面板' : '显示面板'}
-            </button>
-            <button
-              onClick={() => { fetchAlerts(); fetchHistogram(); }}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-text-muted hover:text-text-secondary bg-page-bg border border-border-color rounded-lg transition-colors"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
-              刷新
-            </button>
-          </div>
         </div>
 
       </div>
@@ -629,7 +833,7 @@ export default function SecurityAlerts() {
         )}
 
         {/* 右侧：MessageTable */}
-        <div className="flex-1 min-w-0 bg-card-bg border border-border-color rounded-xl overflow-hidden">
+        <div className="flex-1 min-w-0 bg-card-bg border border-border-color rounded-card overflow-hidden">
           <MessageTable
             data={alerts}
             loading={isLoading}
@@ -658,7 +862,7 @@ export default function SecurityAlerts() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50"
+            className="overlay z-overlay motion-owned"
             onClick={() => setShowDetail(null)}
           >
             <motion.div
@@ -666,34 +870,43 @@ export default function SecurityAlerts() {
               animate={{ x: 0 }}
               exit={{ x: '100%' }}
               transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-              className="absolute right-0 top-0 bottom-0 w-full max-w-2xl bg-card-bg border-l border-border-color flex flex-col"
+              className="drawer-panel motion-owned absolute right-0 top-0 bottom-0 w-full max-w-2xl flex flex-col"
               onClick={e => e.stopPropagation()}
             >
               {/* 抽屉头部 */}
-              <div className="flex-shrink-0 flex items-center justify-between px-6 py-4 border-b border-border-color bg-card-bg/95 backdrop-blur">
+              <div className="flex-shrink-0 flex items-center justify-between px-6 py-3.5 border-b border-border-color bg-surface-2">
                 <div className="min-w-0 flex-1">
                   <h2 className="text-lg font-semibold text-text-primary truncate">{showDetail.title}</h2>
                   <p className="text-xs text-text-muted font-mono">{showDetail.alertCode || showDetail.id}</p>
                 </div>
-                <button onClick={() => setShowDetail(null)} className="p-2 hover:bg-white/5 rounded-lg text-text-muted ml-3">
-                  <X className="w-5 h-5" />
+                <button
+                  onClick={() => setShowDetail(null)}
+                  aria-label="关闭"
+                  className="ml-3 rounded-lg p-1.5 text-text-muted transition-colors hover:bg-surface-3 hover:text-text-primary"
+                >
+                  <X size={16} />
                 </button>
               </div>
 
               {/* 状态栏 */}
               <div className="flex-shrink-0 grid grid-cols-2 gap-3 px-6 py-3 border-b border-border-color/50">
-                <div className={`p-3 rounded-xl ${severityConfig[showDetail.severity]?.bg} border ${severityConfig[showDetail.severity]?.border}`}>
+                <div className={`rounded-card border p-3 ${severityConfig[showDetail.severity]?.bg} ${severityConfig[showDetail.severity]?.border}`}>
                   <div className="text-[10px] text-text-muted mb-0.5">严重程度</div>
                   <div className={`text-sm font-semibold ${severityConfig[showDetail.severity]?.text}`}>
                     {severityConfig[showDetail.severity]?.label}
                   </div>
                 </div>
-                <div className="p-3 rounded-xl bg-page-bg border border-border-color">
+                <div className="rounded-card border border-border-color bg-surface-2 p-3">
                   <div className="text-[10px] text-text-muted mb-0.5">处理状态</div>
-                  <div className={`flex items-center gap-1.5 text-sm font-semibold ${statusConfig[showDetail.status]?.color || 'text-gray-400'}`}>
+                  <div className={`flex items-center gap-1.5 text-sm font-semibold ${statusConfig[showDetail.status]?.color || 'text-text-muted'}`}>
                     {React.createElement(statusConfig[showDetail.status]?.icon || Bell, { className: 'w-4 h-4' })}
                     {statusConfig[showDetail.status]?.label || showDetail.status}
                   </div>
+                  {(showDetail.eventIds?.length || 0) > 0 && (
+                    <div className="text-[10px] text-info mt-1 truncate" title={`已关联事件：${showDetail.eventIds.join('、')}`}>
+                      已转事件：{showDetail.eventIds.join('、')}
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -707,7 +920,7 @@ export default function SecurityAlerts() {
                     { label: '告警时间', value: showDetail.firstSeen ? new Date(showDetail.firstSeen).toLocaleString('zh-CN', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' }) : '-', color: 'gray' },
                     { label: '主机', value: showDetail.hostname, color: 'orange' },
                   ].map(item => (
-                    <div key={item.label} className="px-2 py-1.5 bg-page-bg border border-border-color rounded-lg text-center">
+                    <div key={item.label} className="rounded-input border border-border-color bg-surface-2 px-2 py-1.5 text-center">
                       <div className="text-[10px] text-text-muted mb-0.5">{item.label}</div>
                       <div className="text-xs font-medium text-text-primary truncate">{item.value || '-'}</div>
                     </div>
@@ -717,15 +930,24 @@ export default function SecurityAlerts() {
                 {(showDetail.srcIp || showDetail.dstIp || showDetail.protocol) && (
                   <div className="grid grid-cols-5 gap-2">
                     {[
-                      { label: '源地址', value: showDetail.srcIp, color: 'rose' },
-                      { label: '源端口', value: showDetail.srcPort, color: 'rose' },
-                      { label: '目的地址', value: showDetail.dstIp, color: 'blue' },
-                      { label: '目的端口', value: showDetail.dstPort, color: 'blue' },
-                      { label: '协议', value: showDetail.protocol, color: 'emerald' },
+                      { label: '源地址', value: showDetail.srcIp, tone: 'danger' },
+                      { label: '源端口', value: showDetail.srcPort, tone: 'danger' },
+                      { label: '目的地址', value: showDetail.dstIp, tone: 'info' },
+                      { label: '目的端口', value: showDetail.dstPort, tone: 'info' },
+                      { label: '协议', value: showDetail.protocol, tone: 'success' },
                     ].map(item => (
-                      <div key={item.label} className={`px-2 py-1.5 bg-${item.color}-500/10 border border-${item.color}-500/20 rounded-lg text-center`}>
-                        <div className={`text-[10px] text-${item.color}-400/70 mb-0.5`}>{item.label}</div>
-                        <div className={`text-xs font-mono text-${item.color}-300 truncate`}>{item.value || '-'}</div>
+                      <div
+                        key={item.label}
+                        className={
+                          item.tone === 'danger'
+                            ? 'rounded-input border border-danger/25 bg-danger/10 px-2 py-1.5 text-center'
+                            : item.tone === 'info'
+                              ? 'rounded-input border border-info/25 bg-info/10 px-2 py-1.5 text-center'
+                              : 'rounded-input border border-success/25 bg-success/10 px-2 py-1.5 text-center'
+                        }
+                      >
+                        <div className="mb-0.5 text-[10px] text-text-muted">{item.label}</div>
+                        <div className="truncate font-mono text-[11.5px] text-text-primary">{item.value || '-'}</div>
                       </div>
                     ))}
                   </div>
@@ -734,26 +956,23 @@ export default function SecurityAlerts() {
 
               {/* Tab 切换 */}
               <div className="flex-shrink-0 flex gap-1 px-6 pt-2 border-b border-border-color">
-                {[
+                {([
                   { key: 'fields', label: '字段浏览器', icon: Hash },
                   { key: 'raw', label: '原始日志', icon: FileJson },
                   { key: 'related', label: '邻接消息', icon: GitBranch },
-                ].map(tab => {
+                  { key: 'collab', label: '研判协作', icon: ShieldAlert },
+                ] as const).map(tab => {
                   const Icon = tab.icon;
                   return (
                     <button
                       key={tab.key}
                       onClick={() => setDetailTab(tab.key as any)}
-                      className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition-colors ${
-                        detailTab === tab.key
-                          ? 'border-primary text-primary'
-                          : 'border-transparent text-text-muted hover:text-text-secondary'
-                      }`}
+                      className={`tab-line-item ${detailTab === tab.key ? 'is-active' : ''}`}
                     >
-                      <Icon className="w-3.5 h-3.5" />
+                      <Icon size={13} />
                       {tab.label}
                       {tab.key === 'related' && relatedAlerts.length > 0 && (
-                        <span className="px-1.5 py-0.5 rounded-full bg-primary/15 text-primary text-[10px]">{relatedAlerts.length}</span>
+                        <span className="rounded-pill bg-primary/15 px-1.5 text-[10px] text-primary num">{relatedAlerts.length}</span>
                       )}
                     </button>
                   );
@@ -768,7 +987,7 @@ export default function SecurityAlerts() {
 
                 {detailTab === 'raw' && (
                   <div className="p-4">
-                    <RawLogViewer rawLog={showDetail.rawLog} extraData={showDetail.extraData || showDetail.parsedData} />
+                    <RawLogViewer rawLog={showDetail.rawLog} extraData={showDetail.extraData || showDetail.parsedData} fullRecord={detailFullRecord || showDetail} />
                   </div>
                 )}
 
@@ -796,7 +1015,7 @@ export default function SecurityAlerts() {
                               setDetailTab('fields');
                               setRelatedAlerts([]);
                             }}
-                            className="p-3 bg-page-bg border border-border-color rounded-xl hover:border-primary/30 cursor-pointer transition-colors"
+                            className="p-3 bg-page-bg border border-border-color rounded-card hover:border-primary/30 cursor-pointer transition-colors"
                           >
                             <div className="flex items-center justify-between mb-1">
                               <span className="text-xs font-medium text-text-primary truncate">{ra.title || ra.alert_code || ra.id}</span>
@@ -815,33 +1034,54 @@ export default function SecurityAlerts() {
                     )}
                   </div>
                 )}
+
+                {/* 研判协作 Tab 内容 */}
+                {detailTab === 'collab' && (
+                  <div className="p-4 space-y-5">
+                    {/* 结构化研判 */}
+                    <section>
+                      <h4 className="text-sm font-medium text-text-secondary mb-3 flex items-center gap-2">
+                        <Brain className="w-4 h-4" /> 结构化研判
+                      </h4>
+                      <div className="rounded-card border border-border-color bg-surface-2 p-4">
+                        {showDetail.extraData?.structured_analysis ? (
+                          <AlertAnalysisCard analysis={showDetail.extraData.structured_analysis} />
+                        ) : (
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm text-text-muted">尚未进行结构化研判</span>
+                            <Button size="sm" variant="primary" icon={Brain} loading={analyzing} onClick={() => handleAnalyze(String(showDetail.id))}>
+                              开始研判
+                            </Button>
+                          </div>
+                        )}
+                        {showDetail.extraData?.structured_analysis && (
+                          <Button size="sm" variant="secondary" icon={RefreshCw} loading={analyzing} className="mt-3" onClick={() => handleAnalyze(String(showDetail.id))}>
+                            重新研判
+                          </Button>
+                        )}
+                      </div>
+                    </section>
+
+                    {/* IP 名单命中 */}
+                    <IpReputationCard srcHit={ipHits.src} dstHit={ipHits.dst} srcIp={showDetail.srcIp} dstIp={showDetail.dstIp} />
+                  </div>
+                )}
+
               </div>
 
               {/* 抽屉底部操作栏 */}
-              <div className="flex-shrink-0 flex items-center justify-between px-6 py-3 border-t border-border-color bg-card-bg/95 backdrop-blur">
+              <div className="flex-shrink-0 flex items-center justify-between px-6 py-3 border-t border-border-color bg-surface-2">
                 <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => handleStatusChange(showDetail.id, 'closed')}
-                    className="flex items-center gap-1.5 px-3 py-2 bg-emerald-600 text-white text-xs rounded-lg hover:bg-emerald-700 transition-colors"
-                  >
-                    <CheckCircle className="w-3.5 h-3.5" />
+                  <Button size="sm" variant="primary" icon={CheckCircle} onClick={() => handleStatusChange(showDetail.id, 'closed')}>
                     关闭告警
-                  </button>
-                  <button
-                    onClick={() => handleStatusChange(showDetail.id, 'false_positive')}
-                    className="flex items-center gap-1.5 px-3 py-2 bg-gray-600 text-white text-xs rounded-lg hover:bg-gray-700 transition-colors"
-                  >
-                    <EyeOff className="w-3.5 h-3.5" />
+                  </Button>
+                  <Button size="sm" variant="secondary" icon={EyeOff} onClick={() => handleStatusChange(showDetail.id, 'false_positive')}>
                     标记误报
-                  </button>
+                  </Button>
                 </div>
-                <button
-                  onClick={() => handleCreateEventFromDetail(showDetail)}
-                  className="flex items-center gap-1.5 px-4 py-2 bg-primary text-white text-xs rounded-lg hover:bg-primary-hover transition-colors"
-                >
-                  <Zap className="w-3.5 h-3.5" />
+                <Button size="sm" variant="primary" icon={Zap} onClick={() => handleCreateEventFromDetail(showDetail)}>
                   生成事件
-                </button>
+                </Button>
               </div>
             </motion.div>
           </motion.div>
@@ -855,19 +1095,19 @@ export default function SecurityAlerts() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+            className="overlay z-overlay motion-owned flex items-center justify-center p-4"
             onClick={() => setShowAggregateModal(false)}
           >
             <motion.div
               initial={{ scale: 0.95 }}
               animate={{ scale: 1 }}
               exit={{ scale: 0.95 }}
-              className="bg-card-bg rounded-2xl p-6 w-full max-w-lg border border-border-color"
+              className="modal-panel motion-owned w-full max-w-lg p-6"
               onClick={e => e.stopPropagation()}
             >
               <div className="flex items-center gap-3 mb-6">
-                <div className="w-12 h-12 bg-purple-500/10 rounded-xl flex items-center justify-center">
-                  <Layers className="w-6 h-6 text-purple-400" />
+                <div className="w-12 h-12 bg-accent/10 rounded-card flex items-center justify-center">
+                  <Layers className="w-6 h-6 text-accent" />
                 </div>
                 <div>
                   <h3 className="text-lg font-semibold text-text-primary">聚合生成事件</h3>
@@ -877,12 +1117,12 @@ export default function SecurityAlerts() {
 
               <div className="space-y-4">
                 <div>
-                  <label className="block text-sm text-text-secondary mb-2">事件标题 <span className="text-rose-400">*</span></label>
+                  <label className="block text-sm text-text-secondary mb-2">事件标题 <span className="text-danger">*</span></label>
                   <input
                     type="text"
                     value={aggregateForm.title}
                     onChange={e => setAggregateForm({ ...aggregateForm, title: e.target.value })}
-                    className="w-full px-4 py-3 bg-page-bg border border-border-color rounded-xl text-text-primary focus:border-primary focus:outline-none"
+                    className="app-input"
                     placeholder="输入事件标题"
                   />
                 </div>
@@ -893,7 +1133,7 @@ export default function SecurityAlerts() {
                     <select
                       value={aggregateForm.severity}
                       onChange={e => setAggregateForm({ ...aggregateForm, severity: e.target.value as Severity })}
-                      className="w-full px-4 py-3 bg-page-bg border border-border-color rounded-xl text-text-primary focus:border-primary focus:outline-none"
+                      className="app-select"
                     >
                       <option value="critical">危急</option>
                       <option value="high">高危</option>
@@ -906,7 +1146,7 @@ export default function SecurityAlerts() {
                     <select
                       value={aggregateForm.category}
                       onChange={e => setAggregateForm({ ...aggregateForm, category: e.target.value })}
-                      className="w-full px-4 py-3 bg-page-bg border border-border-color rounded-xl text-text-primary focus:border-primary focus:outline-none"
+                      className="app-select"
                     >
                       {eventTypeOptions.map(t => <option key={t} value={t}>{t}</option>)}
                     </select>
@@ -919,22 +1159,17 @@ export default function SecurityAlerts() {
                     value={aggregateForm.description}
                     onChange={e => setAggregateForm({ ...aggregateForm, description: e.target.value })}
                     rows={4}
-                    className="w-full px-4 py-3 bg-page-bg border border-border-color rounded-xl text-text-primary font-mono text-xs focus:border-primary focus:outline-none resize-none"
-                    placeholder="描述事件详情..."
+                    className="app-textarea font-mono text-[12px]"
+                    placeholder="留空则按所选告警自动生成：时间跨度、源/目的 IP、严重级别分布、告警构成与明细"
                   />
                 </div>
               </div>
 
               <div className="flex gap-3 mt-6">
-                <button onClick={() => setShowAggregateModal(false)} className="flex-1 py-3 bg-page-bg text-text-secondary rounded-xl hover:bg-white/5 transition-colors">取消</button>
-                <button
-                  onClick={handleAggregate}
-                  disabled={!aggregateForm.title.trim()}
-                  className="flex-1 py-3 bg-purple-600 text-white rounded-xl hover:bg-purple-700 disabled:opacity-50 transition-colors flex items-center justify-center gap-2"
-                >
-                  <Zap className="w-4 h-4" />
+                <Button variant="secondary" block onClick={() => setShowAggregateModal(false)}>取消</Button>
+                <Button variant="primary" block icon={Zap} disabled={!aggregateForm.title.trim()} onClick={handleAggregate}>
                   生成事件
-                </button>
+                </Button>
               </div>
             </motion.div>
           </motion.div>

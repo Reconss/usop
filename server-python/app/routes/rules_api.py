@@ -1,13 +1,41 @@
 """
 检测规则 API 路由
+
+检测规则 = 在 ES 告警索引（alerts-valid）上做单事件判断的规则：
+  条件命中数 >= 阈值（可分组）→ 命中则写 PG events。
+多事件的频次/去重/聚合/时序分析由「关联分析规则」（Flink 流作业）承担，
+本模块不再提供 sequence / query 类型。
 """
 from flask import Blueprint, request, jsonify
 from app.routes.auth import login_required
 from app.database import db
-from app.models import DetectionRuleExtended, AuditLog, DataSource, FormatTemplate, DataTable
+from app.models import DetectionRuleExtended, AuditLog, as_json_list
 from datetime import datetime
 
 rules_api_bp = Blueprint('rules_api', __name__)
+
+# ─── 规则类型白名单 ─────────────────────────────────
+#
+# sigma / yara 是历史遗留取值（现存规则里就有），保留以兼容读写；
+# sequence（时序）与 query（自定义 SQL）已下线：前者归「关联分析规则」，
+# 后者依赖已不存在的数据源存储表。
+_ALLOWED_RULE_TYPES = {'single', 'threshold', 'aggregation', 'correlation', 'sigma', 'yara'}
+
+_RETIRED_RULE_TYPES = {
+    'sequence': '时序规则类型已下线：多事件时序分析请使用「关联分析规则」（Flink 流作业）',
+    'query': '自定义 SQL 规则类型已下线：请改用字段条件，或使用「关联分析规则」',
+}
+
+
+def _validate_rule_type(value):
+    """返回 (规范化类型, 错误信息)，二者必有一个为 None。"""
+    t = str(value or 'single').strip().lower()
+    if t in _RETIRED_RULE_TYPES:
+        return None, _RETIRED_RULE_TYPES[t]
+    if t not in _ALLOWED_RULE_TYPES:
+        return None, (f'不支持的规则类型：{value}（可选：single 单事件 / threshold 阈值 / '
+                      f'aggregation 聚合 / correlation 关联）')
+    return t, None
 
 
 @rules_api_bp.route('/rules', methods=['GET'])
@@ -53,8 +81,12 @@ def get_rules():
 @login_required
 def create_rule():
     """创建检测规则"""
-    data = request.get_json()
-    
+    data = request.get_json() or {}
+
+    rule_type, err = _validate_rule_type(data.get('type', 'single'))
+    if err:
+        return jsonify({'success': False, 'error': err}), 400
+
     year = datetime.utcnow().year
     rule_count = DetectionRuleExtended.query.count() + 1
     rule_id = f"RULE-{year}-{rule_count:03d}"
@@ -62,15 +94,15 @@ def create_rule():
     rule = DetectionRuleExtended(
         id=rule_id,
         name=data.get('name'),
-        type=data.get('type', 'single'),
+        type=rule_type,
         description=data.get('description'),
         rule_content=data.get('rule_content'),
         rule_language=data.get('rule_language', 'sigma'),
         severity=data.get('severity', 'medium'),
         status=data.get('status', 'disabled'),
-        data_source_ids=[id for id in data.get('data_source_ids', []) if id],
+        data_source_ids=as_json_list(data.get('data_source_ids')),
         playbook_id=data.get('playbook_id'),
-        tags=data.get('tags', []),
+        tags=as_json_list(data.get('tags')),
         author=getattr(request, 'username', 'system')
     )
     
@@ -114,16 +146,19 @@ def get_rule(rule_id):
 @login_required
 def update_rule(rule_id):
     """更新规则"""
-    data = request.get_json()
+    data = request.get_json() or {}
     
     rule = DetectionRuleExtended.query.get(rule_id)
     if not rule:
         return jsonify({'success': False, 'error': '规则不存在'}), 404
     
+    if 'type' in data:
+        rule_type, err = _validate_rule_type(data['type'])
+        if err:
+            return jsonify({'success': False, 'error': err}), 400
+        rule.type = rule_type
     if 'name' in data:
         rule.name = data['name']
-    if 'type' in data:
-        rule.type = data['type']
     if 'description' in data:
         rule.description = data['description']
     if 'rule_content' in data:
@@ -135,11 +170,11 @@ def update_rule(rule_id):
     if 'status' in data:
         rule.status = data['status']
     if 'data_source_ids' in data:
-        rule.data_source_ids = [id for id in data['data_source_ids'] if id]
+        rule.data_source_ids = [i for i in as_json_list(data['data_source_ids']) if i]
     if 'playbook_id' in data:
         rule.playbook_id = data['playbook_id'] or None
     if 'tags' in data:
-        rule.tags = data['tags']
+        rule.tags = as_json_list(data['tags'])
     
     rule.updated_at = datetime.utcnow()
     db.session.commit()
@@ -185,56 +220,50 @@ def toggle_rule(rule_id):
     })
 
 
+def _test_response(result, extra=None):
+    """把引擎评估结果规范成前端测试面板需要的结构（只读，不产生事件）。"""
+    data = {
+        'matched': bool(result.get('matched')),
+        'matched_count': int(result.get('matched_count') or 0),
+        'threshold': result.get('threshold'),
+        'matches': result.get('matches', []),
+        'matched_logs': result.get('matched_logs', []),
+        'time_window': result.get('time_window'),
+        'warnings': result.get('warnings', []),
+        'raw': result,
+    }
+    if result.get('error'):
+        data['error'] = result['error']
+    if result.get('sources'):
+        data['sources'] = result['sources']
+    if extra:
+        data.update(extra)
+    return jsonify({'success': True, 'data': data})
+
+
 @rules_api_bp.route('/rules/<rule_id>/test', methods=['POST'])
 @login_required
 def test_rule(rule_id):
-    """测试规则 - 从数据源存储表查询匹配数据"""
+    """测试规则：在 ES 告警索引上按规则条件做一次只读评估（不创建事件）。"""
     rule = DetectionRuleExtended.query.get(rule_id)
     if not rule:
         return jsonify({'success': False, 'error': '规则不存在'}), 404
 
     from app.engine.rule_engine import rule_engine
 
-    # 优先从存储表查询
-    result = rule_engine.evaluate_rule_on_storage(rule, max_samples=20)
-
-    # 如果没有关联数据源, 回退到传统的 parsed_logs 评估
-    if not rule.data_source_ids:
-        result = rule_engine.evaluate_rule(rule)
-        return jsonify({
-            'success': True,
-            'data': {
-                'matched_count': len(result.get('matches', [])),
-                'matched': result.get('matched', False),
-                'matches': result.get('matches', []),
-                'matched_logs': result.get('matches', []),
-                'raw': result
-            }
-        })
-
-    # 转换存储表查询结果为前端兼容格式
-    total = result.get('total_matched', 0)
-    all_samples = []
-    for src_id, src_data in result.get('sources', {}).items():
-        for s in src_data.get('samples', []):
-            all_samples.append(s)
-
-    return jsonify({
-        'success': True,
-        'data': {
-            'matched_count': total,
-            'matched': total > 0,
-            'matched_logs': all_samples[:20],
-            'sources': result.get('sources', {}),
-            'raw': result
-        }
-    })
+    result = rule_engine.evaluate_rule(rule, dry_run=True, max_samples=20)
+    return _test_response(result)
 
 
-@rules_api_bp.route('/rules/<int:rule_id>/test-storage', methods=['POST'])
+@rules_api_bp.route('/rules/<rule_id>/test-storage', methods=['POST'])
 @login_required
 def test_rule_storage(rule_id):
-    """从存储表检测最近一段时间的数据"""
+    """按指定时间范围在 ES 告警上评估规则（只读）。
+
+    路径名沿用历史（原为"从数据源存储表取样"），实际已改为读 ES 告警。
+    注意 rule_id 是字符串主键（如 dr-webshell检测 / RULE-2026-005），
+    不能声明成 <int:rule_id>，否则非数字 ID 直接 404。
+    """
     rule = DetectionRuleExtended.query.get(rule_id)
     if not rule:
         return jsonify({'success': False, 'error': '规则不存在'}), 404
@@ -247,28 +276,9 @@ def test_rule_storage(rule_id):
 
     from app.engine.rule_engine import rule_engine
 
-    result = rule_engine.evaluate_rule_on_storage(
-        rule,
-        max_samples=20,
-        time_range_minutes=time_range_minutes
-    )
-
-    total = result.get('total_matched', 0)
-    all_samples = []
-    for src_id, src_data in result.get('sources', {}).items():
-        for s in src_data.get('samples', []):
-            all_samples.append(s)
-
-    return jsonify({
-        'success': True,
-        'data': {
-            'matched_count': total,
-            'matched': total > 0,
-            'matched_logs': all_samples[:20],
-            'sources': result.get('sources', {}),
-            'time_range_minutes': time_range_minutes
-        }
-    })
+    result = rule_engine.evaluate_rule(rule, dry_run=True, max_samples=20,
+                                      time_range_minutes=time_range_minutes)
+    return _test_response(result, {'time_range_minutes': time_range_minutes})
 
 
 @rules_api_bp.route('/rules/<rule_id>/hit', methods=['POST'])
@@ -355,179 +365,108 @@ def get_stats():
     })
 
 
-# ─── 工具函数 ───────────────────────────────────────────
+# ─── 可选字段目录 ─────────────────────────────────────
+#
+# 检测条件字段来自 ES 告警索引（alerts-valid）的显式映射，不再依赖
+# FormatTemplate / DataTable —— 告警已统一落 ES，那两张表已不参与检测。
+# 下面只是"展示顺序 + 中文名"的偏好表；不在表里的映射字段会追加到末尾。
 
-def _resolve_datasource(ds_id_or_name):
-    """通过 ID 或名称查找数据源"""
-    try:
-        ds = DataSource.query.get(int(ds_id_or_name))
-        if ds:
-            return ds
-    except (ValueError, TypeError):
-        pass
-    return DataSource.query.filter_by(name=str(ds_id_or_name)).first()
+_ES_FIELD_PREFERRED = (
+    'alert_code', 'title', 'description', 'severity', 'status',
+    'src_ip', 'src_port', 'dst_ip', 'dst_port', 'protocol', 'hostname',
+    'operation', 'category', 'confidence', 'source', 'source_product',
+    'tags', 'processing_status', 'dispatch_policy', 'assigned_to', 'raw_log',
+)
+
+_ES_FIELD_LABELS = {
+    'alert_code': '告警编号', 'alert_id': '告警ID', 'alert_log_id': '告警日志ID',
+    'title': '告警标题', 'description': '告警描述', 'severity': '严重等级',
+    'status': '处理状态', 'operation': '操作动作', 'source': '来源',
+    'source_product': '来源产品', 'source_type': '来源类型', 'source_topic': '来源topic',
+    'category': '分类', 'confidence': '置信度',
+    'src_ip': '源IP', 'src_port': '源端口', 'dst_ip': '目标IP', 'dst_port': '目标端口',
+    'protocol': '协议', 'hostname': '主机名', 'tags': '标签',
+    'processing_status': '处理标记', 'dispatch_policy': '分流策略',
+    'dispatch_branch': '分流分支', 'assigned_to': '处置人ID', 'raw_log': '原始日志',
+    'first_seen': '告警时间', 'last_seen': '最后出现', 'created_at': '入库时间',
+}
+
+_SOURCE_NAME = '告警索引 alerts-valid'
 
 
-# ─── 硬编码回退字段 ─────────────────────────────────
-FALLBACK_FIELDS = [
-    {'name': 'src_ip', 'label': '源IP'},
-    {'name': 'dst_ip', 'label': '目标IP'},
-    {'name': 'src_port', 'label': '源端口'},
-    {'name': 'dst_port', 'label': '目标端口'},
-    {'name': 'protocol', 'label': '协议'},
-    {'name': 'hostname', 'label': '主机名'},
-    {'name': 'username', 'label': '用户名'},
-    {'name': 'action', 'label': '动作'},
-    {'name': 'result', 'label': '结果'},
-    {'name': 'log_type', 'label': '日志类型'},
-    {'name': 'source_id', 'label': '数据源ID'}
-]
+def _es_alert_fields():
+    """ES 告警索引里可作检测条件的字段（按偏好顺序，含中文名）。"""
+    from app.engine import rule_engine as re_mod
+    from app.utils import es_alerts
+
+    types = es_alerts.flatten_mapping() or {}
+    usable = set(re_mod.ALERT_FIELDS)
+
+    ordered = [f for f in _ES_FIELD_PREFERRED if f in usable]
+    ordered += [f for f in types
+                if f in usable and f not in ordered]
+
+    return [{
+        'name': f,
+        'label': _ES_FIELD_LABELS.get(f, f),
+        'field_type': types.get(f, 'keyword'),
+        'source_name': _SOURCE_NAME,
+        'source_id': None,
+    } for f in ordered]
 
 
 @rules_api_bp.route('/rules/fields', methods=['GET'])
 @login_required
 def get_rule_fields():
-    """获取指定数据源的可用字段列表"""
-    ds_ids_str = request.args.get('data_source_ids', '')
-    if not ds_ids_str:
-        return jsonify({'success': True, 'data': FALLBACK_FIELDS})
+    """获取可用于检测条件的告警字段列表。
 
-    ds_ids = [x.strip() for x in ds_ids_str.split(',') if x.strip()]
-    if not ds_ids:
-        return jsonify({'success': True, 'data': FALLBACK_FIELDS})
-
-    seen = set()
-    fields = []
-
-    for ds_id in ds_ids:
-        ds = _resolve_datasource(ds_id)
-        if not ds:
-            continue
-
-        resolved = False
-
-        # 尝试从 FormatTemplate.fields 获取
-        if ds.format_template_id:
-            ft = FormatTemplate.query.get(ds.format_template_id)
-            if ft and ft.fields:
-                for f in ft.fields:
-                    fname = f.get('name') or f.get('field')
-                    flabel = f.get('label') or fname
-                    if fname and fname not in seen:
-                        seen.add(fname)
-                        fields.append({
-                            'name': fname,
-                            'label': flabel,
-                            'source_name': ds.name,
-                            'source_id': ds.id
-                        })
-                resolved = True
-                continue
-
-        # 尝试从 DataTable.columns 获取
-        if ds.log_type_id:
-            dt = DataTable.query.filter_by(log_type_id=ds.log_type_id).first()
-            if dt and dt.columns:
-                for c in dt.columns:
-                    cname = c.get('name') or c.get('field')
-                    clabel = c.get('label') or cname
-                    if cname and cname not in seen:
-                        seen.add(cname)
-                        fields.append({
-                            'name': cname,
-                            'label': clabel,
-                            'source_name': ds.name,
-                            'source_id': ds.id
-                        })
-                resolved = True
-                continue
-
-        if not resolved:
-            # 回退到硬编码字段
-            for f in FALLBACK_FIELDS:
-                if f['name'] not in seen:
-                    seen.add(f['name'])
-                    fields.append({
-                        **f,
-                        'source_name': ds.name,
-                        'source_id': ds.id
-                    })
-
-    # 如果没有任何数据源匹配，返回全部回退字段
-    if not fields:
-        fields = [dict(**f, source_name='系统默认', source_id=None) for f in FALLBACK_FIELDS]
-
-    return jsonify({
-        'success': True,
-        'data': fields
-    })
+    data_source_ids 参数保留兼容（历史实现按数据源的格式模板解析字段），
+    现在字段统一取告警索引映射，不再随数据源变化。
+    """
+    return jsonify({'success': True, 'data': _es_alert_fields()})
 
 
 @rules_api_bp.route('/rules/<rule_id>/preview', methods=['GET'])
 @login_required
 def preview_rule_data(rule_id):
-    """预览规则关联数据源的存储表样本数据"""
+    """预览规则在告警索引里的命中样本（按条件过滤，取最近 20 条）。
+
+    历史实现读数据源在 TimescaleDB 上的存储表，该路径已随架构迁移失效；
+    现直接给 ES 告警样本，并附上索引里实际存在的字段清单。
+    """
+    from app.engine import rule_engine as re_mod
+    from app.utils import es_alerts
+
     rule = DetectionRuleExtended.query.get(rule_id)
     if not rule:
         return jsonify({'success': False, 'error': '规则不存在'}), 404
 
-    from app.timescaledb import get_tsdb
-    from sqlalchemy import text
+    parsed = re_mod.parse_rule_content(rule)
+    types = es_alerts.flatten_mapping()
+    _query, warnings = re_mod._build_query(parsed.get('conditions', []), types,
+                                          None, None, rule.data_source_ids)
 
-    ds_ids = rule.data_source_ids or []
-    results = {}
-
-    for ds_id in ds_ids:
-        ds = _resolve_datasource(ds_id)
-        if not ds:
-            results[str(ds_id)] = {'error': '数据源不存在'}
-            continue
-        if not ds.storage_table_name:
-            results[str(ds_id)] = {'error': '未配置存储表', 'name': ds.name}
-            continue
-
-        tsdb = get_tsdb()
-        session = tsdb.get_session()
-        try:
-            table = ds.storage_table_name
-            # 查询样本数据
-            sample_sql = f"SELECT * FROM {table} ORDER BY timestamp DESC LIMIT 20"
-            result = session.execute(text(sample_sql))
-            rows = [dict(r._mapping) for r in result]
-
-            # 获取列信息
-            col_sql = f"""
-                SELECT column_name, data_type
-                FROM information_schema.columns
-                WHERE table_name = '{table}'
-                ORDER BY ordinal_position
-            """
-            col_result = session.execute(text(col_sql))
-            columns = [{'name': r[0], 'type': r[1]} for r in col_result]
-
-            results[str(ds_id)] = {
-                'data_source_id': ds.id,
-                'data_source_name': ds.name,
-                'storage_table': table,
-                'sample_count': len(rows),
-                'columns': columns,
-                'samples': rows
-            }
-        except Exception as e:
-            results[str(ds_id)] = {
-                'data_source_id': ds.id,
-                'data_source_name': ds.name,
-                'error': str(e)
-            }
-        finally:
-            tsdb.close_session(session)
-
-    return jsonify({
-        'success': True,
-        'data': {
-            'sources': results
+    sources = {}
+    try:
+        result = re_mod.rule_engine.evaluate_rule(rule, dry_run=True, max_samples=20)
+        samples = result.get('matched_logs', [])
+        sources[_SOURCE_NAME] = {
+            'data_source_id': None,
+            'data_source_name': _SOURCE_NAME,
+            'sample_count': len(samples),
+            'columns': [{'name': f, 'type': t} for f, t in sorted(types.items())
+                        if '.' not in f],
+            'samples': samples,
         }
-    })
+        if result.get('error'):
+            sources[_SOURCE_NAME]['error'] = result['error']
+        if warnings:
+            sources[_SOURCE_NAME]['warnings'] = warnings
+        sources[_SOURCE_NAME]['total_matched'] = result.get('matched_count', 0)
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'告警索引查询失败: {e}'}), 500
+
+    return jsonify({'success': True, 'data': {'sources': sources}})
 
 
 # ========== 自动触发剧本相关 API ==========

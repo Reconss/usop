@@ -1,39 +1,70 @@
 """
-规则评估引擎 - 对 TimescaleDB 中的解析日志执行检测规则
+规则评估引擎 —— 在 Elasticsearch 告警索引（alerts-valid）上执行检测规则
 
-支持的规则类型:
-- threshold: 时间窗口内计数超过阈值
-- aggregation: 统计聚合 (count/sum/avg/distinct)
-- correlation: 多条件关联检测
-- sequence: 序列事件检测
-- query: 自定义 SQL 查询
+⚠️ 数据来源已从 TimescaleDB 换成 ES 告警（2026-10-17）：
+   历史实现查 `parsed_logs` 表与数据源存储表，这两张表在现行架构里都已不存在
+   （告警唯一真相源 = ES `alerts-valid` / `alerts-invalid`），导致评估必定
+   报 `relation "parsed_logs" does not exist` / `column "timestamp" does not exist`。
+   现统一走 `app/utils/es_alerts.py`。
+
+支持的规则类型（rule.type）:
+- single / threshold : 时间窗口内条件命中数 ≥ 阈值（可按字段分组）
+- aggregation        : 窗口内数值字段的聚合统计（含去重计数）
+- correlation        : 多条件组关联（读前端生成的 groups 结构，组间 AND / OR）
+- sequence / query   : 已随多事件分析统一到「关联分析规则」（Flink），此处返回明确提示
 
 规则内容格式 (rule_content JSON):
 {
+    "version": 2,
     "conditions": [
-        {"field": "src_ip", "operator": "not_in_list", "value": "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"},
-        {"field": "action", "operator": "equals", "value": "blocked"},
-        {"field": "log_type", "operator": "contains", "value": "WAF"}
+        {"field": "src_ip", "operator": "not_in_list", "value": "10.0.0.0/8,192.168.0.0/16"},
+        {"field": "action", "operator": "equals", "value": "blocked"}
     ],
     "time_window": "5 minutes",
     "threshold": 200,
     "group_by": "src_ip",
-    "aggregation": "count",
     "severity": "high",
     "title_template": "{group_value} 在 {window} 内产生 {count} 次攻击",
-    "description_template": "外部IP {group_value} 在 {time_window} 内触发了 {count} 次安全事件，超过阈值 {threshold}"
+    "description_template": "外部IP {group_value} 在 {time_window} 内触发 {count} 次安全事件"
 }
+
+字段位置回退：条件里的字段优先按告警顶层字段匹配（如 `src_ip`），顶层没有该字段时
+再回退 `extra_data.<字段>` / `parsed_data.<字段>`（历史回灌数据把 IP 等放在 extra_data）。
+多位置之间是 OR 关系；否定类操作符（not_equals / not_in_list / is_empty）则取整组取反。
 """
 
 import json
+import logging
 import re
-import uuid
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from app.database import db
-from app.models import Event, DetectionRuleExtended, AuditLog, DataSource, FormatTemplate, DataTable
-from app.timescaledb import get_tsdb
+from app.models import Event, DetectionRuleExtended, AuditLog, DataSource
+from app.utils import es_alerts
+
+logger = logging.getLogger(__name__)
+
+# 时间窗口判定字段：优选告警事件时间 first_seen，缺失时回退入库时间 created_at
+TIME_FIELDS = ('first_seen', 'created_at')
+
+_NUMERIC_TYPES = {'integer', 'long', 'short', 'byte', 'double', 'float',
+                  'half_float', 'scaled_float', 'unsigned_long'}
+
+# 允许的条件字段：告警标准字段（ES 映射里显式声明的那批）
+ALERT_FIELDS = tuple(es_alerts.ALERT_MAPPING['properties'].keys())
+
+# 前端可选的告警字段（含中文名），顺序即下拉框顺序
+FIELD_LABELS = {
+    'alert_code': '告警编号', 'alert_id': '告警ID', 'alert_log_id': '告警日志ID',
+    'title': '告警标题', 'description': '告警描述', 'severity': '严重等级',
+    'status': '处理状态', 'operation': '操作动作', 'source': '来源', 'source_product': '来源产品',
+    'source_type': '来源类型', 'category': '分类', 'confidence': '置信度',
+    'src_ip': '源IP', 'src_port': '源端口', 'dst_ip': '目标IP', 'dst_port': '目标端口',
+    'protocol': '协议', 'hostname': '主机名', 'tags': '标签',
+    'processing_status': '处理标记', 'dispatch_policy': '分流策略',
+    'assigned_to': '处置人ID', 'raw_log': '原始日志',
+}
 
 
 # ─── 条件解析 ────────────────────────────────────────────────
@@ -43,7 +74,7 @@ def _parse_time_window(window_str: str) -> timedelta:
     if not window_str:
         return timedelta(minutes=5)
 
-    window_str = window_str.strip().lower()
+    window_str = str(window_str).strip().lower()
     patterns = [
         (r'(\d+)\s*seconds?', 'seconds'),
         (r'(\d+)\s*minutes?', 'minutes'),
@@ -67,7 +98,6 @@ def _parse_time_window(window_str: str) -> timedelta:
 
     return total
 
-# ─── 动态字段解析 ──────────────────────────────────────────────
 
 def _resolve_datasource(ds_id_or_name):
     """通过 ID 或名称查找数据源"""
@@ -80,119 +110,267 @@ def _resolve_datasource(ds_id_or_name):
     return DataSource.query.filter_by(name=str(ds_id_or_name)).first()
 
 
-FALLBACK_FIELDS = {
-    'src_ip', 'dst_ip', 'src_port', 'dst_port', 'protocol',
-    'hostname', 'username', 'action', 'result', 'log_type',
-    'source_id'
-}
+# ─── ES 查询构建 ──────────────────────────────────────────────
+#
+# 字段类型从索引映射实时读取（es_alerts.flatten_mapping，60s 缓存），据此决定：
+#   keyword/ip → term / terms / wildcard / regexp
+#   text       → 有 .keyword 子字段就走子字段，否则用 match_phrase 或 query_string
+#   数值 / 日期 → term / terms / range（值做数值转换）
+
+def _numeric(value):
+    """把用户输入的字符串转成数值（整数优先，便于 term 精确匹配）。"""
+    s = str(value).strip()
+    try:
+        return int(s)
+    except ValueError:
+        try:
+            return float(s)
+        except ValueError:
+            return None
 
 
-def resolve_fields_for_sources(data_source_ids):
-    """从数据源的 FormatTemplate 或 DataTable 解析允许的字段集合"""
+def _split_list(value) -> List[str]:
+    if isinstance(value, (list, tuple)):
+        return [str(v).strip() for v in value if str(v).strip()]
+    return [v.strip() for v in str(value or '').split(',') if v.strip()]
+
+
+def _query_string_pattern(paths: List[str], pattern: str) -> dict:
+    """text 字段的通配匹配：quoted wildcard，避免手写转义踩 query_string 语法。"""
+    escaped = pattern.replace('\\', '\\\\').replace('"', '\\"')
+    return {'query_string': {
+        'query': f'"{escaped}"',
+        'fields': list(paths),
+        'analyze_wildcard': True,
+        'lenient': True,
+    }}
+
+
+def _positive_clause(path: str, kind: str, operator: str, value) -> Optional[dict]:
+    """把一个"肯定式"条件编译成单个 ES 子句。"""
+    if operator == 'equals':
+        if kind == 'numeric':
+            num = _numeric(value)
+            return {'term': {path: num}} if num is not None else None
+        return {'term': {path: str(value)}}
+
+    if operator == 'contains':
+        if kind == 'text':
+            return {'match_phrase': {path: str(value)}}
+        return {'wildcard': {path: f'*{value}*'}}
+
+    if operator == 'starts_with':
+        if kind == 'text':
+            return _query_string_pattern([path], f'{value}*')
+        return {'wildcard': {path: f'{value}*'}}
+
+    if operator == 'ends_with':
+        if kind == 'text':
+            return _query_string_pattern([path], f'*{value}')
+        return {'wildcard': {path: f'*{value}'}}
+
+    if operator == 'greater_than':
+        num = _numeric(value)
+        if num is None:
+            return None
+        return {'range': {path: {'gt': num}}} if kind == 'numeric' else {'range': {path: {'gt': str(value)}}}
+
+    if operator == 'less_than':
+        num = _numeric(value)
+        if num is None:
+            return None
+        return {'range': {path: {'lt': num}}} if kind == 'numeric' else {'range': {path: {'lt': str(value)}}}
+
+    if operator == 'in_list':
+        vals = _split_list(value)
+        if not vals:
+            return None
+        if kind == 'numeric':
+            nums = [n for n in (_numeric(v) for v in vals) if n is not None]
+            return {'terms': {path: nums}} if nums else None
+        return {'terms': {path: vals}}
+
+    if operator == 'is_not_empty':
+        return {'exists': {'field': path}}
+
+    if operator == 'regex_match':
+        return {'regexp': {path: str(value)}}
+
+    return None
+
+
+def _path_kinds(field: str, types: dict) -> List[tuple]:
+    """字段 → [(可查询路径, 语义类型)]，多位置（顶层 / extra_data / parsed_data）取并集。
+
+    语义类型 kind ∈ {'exact','text','numeric','date'}；映射里查不到的路径直接丢弃
+    （查了必然 0 条，留着只会放大 should 子句）。
+    """
+    paths = [field] if '.' in field else [field, f'extra_data.{field}', f'parsed_data.{field}']
+    out = []
+    for path in paths:
+        t = types.get(path)
+        if t is None:
+            continue
+        if t == 'text':
+            kw = f'{path}.keyword'
+            if kw in types:
+                out.append((kw, 'exact'))
+            else:
+                out.append((path, 'text'))
+        elif t in _NUMERIC_TYPES:
+            out.append((path, 'numeric'))
+        elif t in ('date', 'date_nanos'):
+            out.append((path, 'date'))
+        else:
+            out.append((path, 'exact'))
+    return out
+
+
+def _condition_clause(cond: dict, types: dict) -> Optional[dict]:
+    """单个条件 → ES 子句。"""
+    field = str(cond.get('field') or '').strip()
+    operator = str(cond.get('operator') or 'equals').strip()
+    value = cond.get('value', '')
+
+    if not field:
+        return None
+    if field not in ALERT_FIELDS and field not in types:
+        return None
+
+    locations = _path_kinds(field, types)
+    if not locations:
+        # 字段在选择集里但索引映射中没有（从未写入过）→ 该条件不成立
+        return {'match_none': {}}
+
+    # 否定类：先构造肯定式，再整体取反（"任一位置都不等于 / 不包含 X"）
+    _NEGATIVE = {'not_equals': 'equals', 'not_in_list': 'in_list', 'not_contains': 'contains'}
+    if operator in _NEGATIVE:
+        base_op = _NEGATIVE[operator]
+        clauses = [c for c in (_positive_clause(p, k, base_op, value) for p, k in locations) if c]
+        if not clauses:
+            return None
+        if len(clauses) == 1:
+            return {'bool': {'must_not': [clauses[0]]}}
+        return {'bool': {'must_not': [{'bool': {'should': clauses}}]}}
+
+    if operator == 'is_empty':
+        exists = [{'exists': {'field': p}} for p, _ in locations]
+        if len(exists) == 1:
+            return {'bool': {'must_not': [exists[0]]}}
+        return {'bool': {'must_not': [{'bool': {'should': exists}}]}}
+
+    clauses = [c for c in (_positive_clause(p, k, operator, value) for p, k in locations) if c]
+    if not clauses:
+        return None
+    if len(clauses) == 1:
+        return clauses[0]
+    return {'bool': {'should': clauses, 'minimum_should_match': 1}}
+
+
+def _time_clause(start: Optional[datetime], end: Optional[datetime]) -> Optional[dict]:
+    """时间窗口：first_seen 优先，缺失时按 created_at 判定。"""
+    if not start and not end:
+        return None
+    rng = {}
+    if start:
+        rng['gte'] = es_alerts.to_iso(start)
+    if end:
+        rng['lte'] = es_alerts.to_iso(end)
+    should = [{'range': {f: dict(rng)}} for f in TIME_FIELDS]
+    return {'bool': {'should': should, 'minimum_should_match': 1}}
+
+
+def _source_clause(data_source_ids) -> tuple:
+    """数据源选择 → ES 过滤子句 + 提示信息。
+
+    告警文档里没有 DataSource.id，只能按标识字段对齐：把所选数据源的
+    product_type / source_type / name 与告警里实际出现的 source_product、
+    source 取值做大小写不敏感的包含匹配（任一方包含另一方即视为同一来源）。
+    匹配不到任何现有取值时返回 match_none —— 宁可 0 条，也不放宽成全量。
+    """
     if not data_source_ids:
-        return set(FALLBACK_FIELDS)
+        return None, []
 
-    fields = set()
+    wanted = set()
+    labels = []
     for ds_id in data_source_ids:
         ds = _resolve_datasource(ds_id)
         if not ds:
             continue
+        labels.append(ds.name)
+        for v in (ds.product_type, ds.source_type, ds.name):
+            if v and str(v).strip():
+                wanted.add(str(v).strip().lower())
+    if not wanted:
+        return {'match_none': {}}, ['所选数据源缺少可用于匹配的标识，本次按空结果处理']
 
-        resolved = False
+    present = {}
+    for field in ('source_product', 'source'):
+        for v in es_alerts.distinct_field_values(field):
+            if v:
+                present.setdefault(field, []).append(v)
 
-        if ds.format_template_id:
-            ft = FormatTemplate.query.get(ds.format_template_id)
-            if ft and ft.fields:
-                for f in ft.fields:
-                    fname = f.get('name') or f.get('field')
-                    if fname:
-                        fields.add(fname)
-                resolved = True
+    hits = {}
+    for field, values in present.items():
+        matched = [v for v in values if any(
+            w and (w in str(v).lower() or str(v).lower() in w) for w in wanted)]
+        if matched:
+            hits[field] = matched
 
-        if not resolved and ds.log_type_id:
-            dt = DataTable.query.filter_by(log_type_id=ds.log_type_id).first()
-            if dt and dt.columns:
-                for c in dt.columns:
-                    cname = c.get('name') or c.get('field')
-                    if cname:
-                        fields.add(cname)
-                resolved = True
+    if not hits:
+        return {'match_none': {}}, [
+            f"所选数据源（{'、'.join(labels) or '未知'}）在现有告警里找不到对应的 "
+            f"source_product / source 取值，本次不做放宽处理，结果为空"
+        ]
 
-        if not resolved:
-            fields.update(FALLBACK_FIELDS)
-
-    return fields if fields else set(FALLBACK_FIELDS)
+    should = [{'terms': {f: v}} for f, v in hits.items()]
+    clause = should[0] if len(should) == 1 else {'bool': {'should': should, 'minimum_should_match': 1}}
+    return clause, []
 
 
-def _build_condition_clause(conditions, params,
-                            param_prefix='cond',
-                            data_source_ids=None):
-    """构建 SQL WHERE 条件子句"""
-    if not conditions:
-        return '1=1', params
+def _build_query(conditions, types, start=None, end=None, data_source_ids=None,
+                 extra_must=None) -> tuple:
+    """组装 ES 查询，返回 (query, warnings)。"""
+    must: List[dict] = []
+    warnings: List[str] = []
 
-    clauses = []
-    for i, cond in enumerate(conditions):
-        field = cond.get('field', '')
-        operator = cond.get('operator', 'equals')
-        value = cond.get('value', '')
+    unknown = []
+    for cond in (conditions or []):
+        field = str(cond.get('field') or '').strip()
+        if field and field not in ALERT_FIELDS and field not in types:
+            unknown.append(field)
+    if unknown:
+        warnings.append('以下条件字段不在告警索引里，已忽略：'
+                        + '、'.join(sorted(set(unknown))))
 
-        # 字段名白名单, 防止 SQL 注入
-        allowed_fields = resolve_fields_for_sources(data_source_ids) if data_source_ids else FALLBACK_FIELDS
-        if field not in allowed_fields:
-            continue
+    for cond in (conditions or []):
+        clause = _condition_clause(cond, types)
+        if clause:
+            must.append(clause)
 
-        param_name = f'{param_prefix}_{i}'
-        col = field
+    t = _time_clause(start, end)
+    if t:
+        must.append(t)
 
-        if operator == 'equals':
-            clauses.append(f"{col} = :{param_name}")
-            params[param_name] = str(value)
-        elif operator == 'not_equals':
-            clauses.append(f"{col} != :{param_name}")
-            params[param_name] = str(value)
-        elif operator == 'contains':
-            clauses.append(f"{col}::text ILIKE :{param_name}")
-            params[param_name] = f'%{value}%'
-        elif operator == 'not_contains':
-            clauses.append(f"{col}::text NOT ILIKE :{param_name}")
-            params[param_name] = f'%{value}%'
-        elif operator == 'starts_with':
-            clauses.append(f"{col}::text ILIKE :{param_name}")
-            params[param_name] = f'{value}%'
-        elif operator == 'ends_with':
-            clauses.append(f"{col}::text ILIKE :{param_name}")
-            params[param_name] = f'%{value}'
-        elif operator == 'greater_than':
-            clauses.append(f"{col}::numeric > :{param_name}")
-            params[param_name] = value
-        elif operator == 'less_than':
-            clauses.append(f"{col}::numeric < :{param_name}")
-            params[param_name] = value
-        elif operator == 'in_list':
-            vals = [v.strip() for v in str(value).split(',')]
-            placeholders = [f':{param_name}_{j}' for j in range(len(vals))]
-            clauses.append(f"{col} IN ({', '.join(placeholders)})")
-            for j, v in enumerate(vals):
-                params[f'{param_name}_{j}'] = v
-        elif operator == 'not_in_list':
-            vals = [v.strip() for v in str(value).split(',')]
-            placeholders = [f':{param_name}_{j}' for j in range(len(vals))]
-            clauses.append(f"{col} NOT IN ({', '.join(placeholders)})")
-            for j, v in enumerate(vals):
-                params[f'{param_name}_{j}'] = v
-        elif operator == 'is_empty':
-            clauses.append(f"({col} IS NULL OR {col}::text = '')")
-        elif operator == 'is_not_empty':
-            clauses.append(f"({col} IS NOT NULL AND {col}::text != '')")
-        elif operator == 'regex_match':
-            clauses.append(f"{col}::text ~ :{param_name}")
-            params[param_name] = value
+    src_clause, warns = _source_clause(data_source_ids)
+    warnings.extend(warns)
+    if src_clause:
+        must.append(src_clause)
 
-    if not clauses:
-        return '1=1', params
+    must.extend(extra_must or [])
+    return ({'bool': {'must': must}} if must else {'match_all': {}}), warnings
 
-    return ' AND '.join(clauses), params
+
+def _agg_field(field: str, types: dict) -> Optional[str]:
+    """分组 / 聚合用的 ES 字段路径（text 字段走 .keyword 子字段）。"""
+    t = types.get(field)
+    if t is None:
+        return None
+    if t == 'text':
+        return f'{field}.keyword' if f'{field}.keyword' in types else None
+    if t == 'object':
+        return None
+    return field
 
 
 # ─── 规则内容解析 ─────────────────────────────────────────────
@@ -281,466 +459,467 @@ def _parse_sigma_rule(content: str, rule: DetectionRuleExtended) -> Dict:
 # ─── 规则评估核心 ─────────────────────────────────────────────
 
 class RuleEngine:
-    """规则评估引擎"""
+    """规则评估引擎（ES 告警）"""
 
-    def __init__(self):
-        self.results = []
+    # ---------- 公共入口 ----------
 
-    def evaluate_rule(self, rule: DetectionRuleExtended) -> Dict:
-        """评估单条规则"""
+    def evaluate_rule(self, rule: DetectionRuleExtended, dry_run: bool = False,
+                      max_samples: int = 0, time_range_minutes: int = None) -> Dict:
+        """评估单条规则。
+
+        dry_run=True（测试/预览）时只读不写：不创建事件、不累加命中数。
+        max_samples>0 时额外返回命中样本与来源分布，供前端测试面板展示。
+        """
         parsed = parse_rule_content(rule)
+        rule_type = (rule.type or parsed.get('type') or 'single').strip().lower()
 
-        rule_type = rule.type or parsed.get('type', 'threshold')
+        if rule_type in ('sequence',):
+            return self._unsupported(rule, '时序规则类型已下线：多事件时序分析请使用「关联分析规则」（Flink 流作业）')
+        if rule_type == 'query':
+            return self._unsupported(rule, '自定义 SQL 规则类型已下线：请改用字段条件，或使用「关联分析规则」')
 
-        if rule_type == 'threshold':
-            return self._evaluate_threshold(rule, parsed)
-        elif rule_type == 'aggregation':
-            return self._evaluate_aggregation(rule, parsed)
-        elif rule_type == 'correlation':
-            return self._evaluate_correlation(rule, parsed)
-        elif rule_type == 'query':
-            return self._evaluate_query(rule, parsed)
-        else:
-            return self._evaluate_threshold(rule, parsed)
+        handlers = {
+            'aggregation': self._evaluate_aggregation,
+            'correlation': self._evaluate_correlation,
+        }
+        handler = handlers.get(rule_type, self._evaluate_threshold)
+        return handler(rule, parsed, dry_run=dry_run, max_samples=max_samples,
+                       time_range_minutes=time_range_minutes)
 
-    def evaluate_rule_on_storage(self, rule, max_samples=10, time_range_minutes=None):
-        """Evaluate rule by querying data source storage tables directly"""
-        from sqlalchemy import text
-        parsed = parse_rule_content(rule)
-        conditions = parsed.get('conditions', [])
-        now = datetime.utcnow()
+    def evaluate_rule_on_storage(self, rule, max_samples: int = 20,
+                                 time_range_minutes: int = None) -> Dict:
+        """兼容旧调用名：等价于在 ES 上做一次只读评估（原先查数据源存储表）。
 
-        if time_range_minutes:
-            start_time = now - timedelta(minutes=time_range_minutes)
-        else:
-            time_window_str = parsed.get('time_window', '5 minutes')
-            window = _parse_time_window(time_window_str)
-            start_time = now - window
+        存储表（TimescaleDB）已不再承载告警数据，保留该方法只为不改调用方。
+        """
+        return self.evaluate_rule(rule, dry_run=True, max_samples=max_samples,
+                                  time_range_minutes=time_range_minutes)
 
-        ds_ids = rule.data_source_ids or []
-        sources = {}
-        total_matched = 0
+    def evaluate_all_enabled(self) -> Dict:
+        """评估所有启用的规则（会创建事件，供手动批量评估入口调用）"""
+        rules = DetectionRuleExtended.query.filter(
+            DetectionRuleExtended.status == 'enabled'
+        ).all()
 
-        for ds_id in ds_ids:
-            ds = _resolve_datasource(ds_id)
-            if not ds or not ds.storage_table_name:
-                continue
+        results = []
+        events_total = 0
+        for rule in rules:
+            result = self.evaluate_rule(rule)
+            results.append(result)
+            events_total += len(result.get('events_created', []))
+            if not self._stats_noop(rule):
+                self._bump_hit(rule, result)
 
-            table = ds.storage_table_name
-            tsdb = get_tsdb()
-            session = tsdb.get_session()
-            try:
-                params = {'start_time': start_time.isoformat(), 'end_time': now.isoformat()}
-                where_clause, params = _build_condition_clause(
-                    conditions, params, f'ds{ds_id}',
-                    data_source_ids=[ds_id]
-                )
+        return {
+            'total_rules': len(rules),
+            'evaluated': len(results),
+            'events_created': events_total,
+            'results': results,
+            'evaluated_at': datetime.utcnow().isoformat()
+        }
 
-                count_sql = text(f"""
-                    SELECT COUNT(*) FROM {table}
-                    WHERE timestamp >= :start_time AND timestamp <= :end_time AND ({where_clause})
-                """)
-                count = session.execute(count_sql, params).scalar() or 0
+    # ---------- 内部工具 ----------
 
-                sample_params = {**params, 'limit': max_samples}
-                sample_sql = text(f"""
-                    SELECT * FROM {table}
-                    WHERE timestamp >= :start_time AND timestamp <= :end_time AND ({where_clause})
-                    ORDER BY timestamp DESC LIMIT :limit
-                """)
-                samples = session.execute(sample_sql, sample_params)
-                sample_rows = [dict(r._mapping) for r in samples]
+    @staticmethod
+    def _stats_noop(rule) -> bool:
+        return not isinstance(rule, DetectionRuleExtended)
 
-                sources[str(ds_id)] = {
-                    'data_source_id': ds.id,
-                    'data_source_name': ds.name,
-                    'storage_table': table,
-                    'matched_count': count,
-                    'samples': sample_rows
-                }
-                total_matched += count
-            except Exception as e:
-                sources[str(ds_id)] = {
-                    'data_source_id': ds.id,
-                    'data_source_name': ds.name,
-                    'error': str(e)
-                }
-            finally:
-                tsdb.close_session(session)
+    def _bump_hit(self, rule, result):
+        """命中后累加 hit_count —— 有事件的写入由 _create_event_from_match 处理。"""
+        try:
+            if result.get('matched'):
+                rule.hit_count = (rule.hit_count or 0) + 1
+                rule.last_hit_time = datetime.utcnow()
+                db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            logger.warning(f'规则 {rule.id} 命中计数更新失败: {e}')
 
+    def _unsupported(self, rule, message: str) -> Dict:
         return {
             'rule_id': rule.id,
             'rule_name': rule.name,
-            'matched': total_matched > 0,
-            'total_matched': total_matched,
-            'sources': sources,
-            'evaluated_at': now.isoformat()
+            'matched': False,
+            'matched_count': 0,
+            'error': message,
+            'evaluated_at': datetime.utcnow().isoformat(),
         }
 
-    def _evaluate_threshold(self, rule: DetectionRuleExtended, parsed: Dict) -> Dict:
-        """评估阈值规则
-
-        rule_content 格式:
-        {
-            "conditions": [{"field": "action", "operator": "equals", "value": "blocked"}],
-            "time_window": "5 minutes",
-            "threshold": 200,
-            "group_by": "src_ip",
-            "severity": "high",
-            "title_template": "...",
-            "description_template": "..."
-        }
-        """
-        conditions = parsed.get('conditions', [])
-        time_window_str = parsed.get('time_window', '5 minutes')
-        threshold = int(parsed.get('threshold', 1))
-        group_by = parsed.get('group_by', '')
-        severity = parsed.get('severity', rule.severity or 'medium')
-        title_tpl = parsed.get('title_template', f'规则 {rule.name} 触发')
-        desc_tpl = parsed.get('description_template', '')
-
-        window = _parse_time_window(time_window_str)
+    def _window(self, parsed, time_range_minutes):
         now = datetime.utcnow()
-        start_time = now - window
+        if time_range_minutes:
+            window = timedelta(minutes=int(time_range_minutes))
+            label = f'{int(time_range_minutes)} minutes'
+        else:
+            label = parsed.get('time_window') or '5 minutes'
+            window = _parse_time_window(label)
+        return now, now - window, label
 
-        tsdb = get_tsdb()
-        session = tsdb.get_session()
-
+    def _samples_and_sources(self, query: dict, max_samples: int, index: str = None):
+        """命中样本 + 来源分布（仅测试路径需要）。"""
+        samples, sources = [], {}
+        if max_samples <= 0:
+            return samples, sources
         try:
-            params = {
-                'start_time': start_time.isoformat(),
-                'end_time': now.isoformat(),
-                'threshold': threshold
-            }
-
-            where_clause, params = _build_condition_clause(conditions, params, data_source_ids=rule.data_source_ids or None)
-
-            if group_by:
-                # 分组计数查询
-                query = f"""
-                    SELECT {group_by} as group_value, COUNT(*) as cnt
-                    FROM parsed_logs
-                    WHERE timestamp >= :start_time
-                      AND timestamp <= :end_time
-                      AND ({where_clause})
-                    GROUP BY {group_by}
-                    HAVING COUNT(*) >= :threshold
-                    ORDER BY cnt DESC
-                    LIMIT 50
-                """
-            else:
-                # 整体计数查询
-                query = f"""
-                    SELECT COUNT(*) as cnt
-                    FROM parsed_logs
-                    WHERE timestamp >= :start_time
-                      AND timestamp <= :end_time
-                      AND ({where_clause})
-                """
-
-            result = session.execute(
-                __import__('sqlalchemy').text(query), params
-            )
-
-            matches = []
-            rows = result.fetchall()
-
-            if group_by:
-                for row in rows:
-                    group_val = str(row[0]) if row[0] else 'unknown'
-                    count = int(row[1])
-                    matches.append({
-                        'group_value': group_val,
-                        'count': count,
-                        'threshold': threshold,
-                        'exceeded': count >= threshold
-                    })
-            else:
-                for row in rows:
-                    count = int(row[0])
-                    matches.append({
-                        'count': count,
-                        'threshold': threshold,
-                        'exceeded': count >= threshold
-                    })
-
-            # 生成事件
-            events_created = []
-            if matches:
-                for match in matches:
-                    if match.get('exceeded', True):
-                        event = self._create_event_from_match(
-                            rule, match, parsed,
-                            start_time.isoformat(), now.isoformat()
-                        )
-                        if event:
-                            events_created.append(event.to_dict())
-
-            # 更新规则命中
-            if matches:
-                rule.hit_count = (rule.hit_count or 0) + 1
-                rule.last_hit_time = now
-                db.session.commit()
-
-            return {
-                'rule_id': rule.id,
-                'rule_name': rule.name,
-                'matched': len(matches) > 0,
-                'match_count': len(matches),
-                'matches': matches,
-                'events_created': events_created,
-                'time_window': time_window_str,
-                'evaluated_at': now.isoformat()
-            }
-
+            res = es_alerts.search_hits(index or es_alerts.INDEX_VALID, query,
+                                        size=max_samples, offset=0,
+                                        sort_field='first_seen', sort_order='desc')
+            samples = res.get('items', [])
         except Exception as e:
-            db.session.rollback()
-            return {
-                'rule_id': rule.id,
-                'rule_name': rule.name,
-                'matched': False,
-                'error': str(e),
-                'evaluated_at': now.isoformat()
-            }
-        finally:
-            tsdb.close_session(session)
-
-    def _evaluate_aggregation(self, rule: DetectionRuleExtended, parsed: Dict) -> Dict:
-        """评估聚合规则 - 统计聚合 (sum/avg/distinct_count)"""
-        aggregation = parsed.get('aggregation', 'count')
-        agg_field = parsed.get('agg_field', '*')
-        conditions = parsed.get('conditions', [])
-
-        window = _parse_time_window(parsed.get('time_window', '15 minutes'))
-        now = datetime.utcnow()
-        start_time = now - window
-
-        tsdb = get_tsdb()
-        session = tsdb.get_session()
+            logger.warning(f'规则取样失败: {e}')
 
         try:
-            params = {
-                'start_time': start_time.isoformat(),
-                'end_time': now.isoformat()
-            }
-            where_clause, params = _build_condition_clause(conditions, params, data_source_ids=rule.data_source_ids or None)
-
-            if aggregation == 'distinct_count':
-                agg_expr = f'COUNT(DISTINCT {agg_field})'
-            elif aggregation == 'sum':
-                agg_expr = f'SUM({agg_field}::numeric)'
-            elif aggregation == 'avg':
-                agg_expr = f'AVG({agg_field}::numeric)'
-            else:
-                agg_expr = f'COUNT({agg_field})'
-
-            group_by = parsed.get('group_by', '')
-            group_clause = f'GROUP BY {group_by}' if group_by else ''
-
-            query = f"""
-                SELECT {group_by + ',' if group_by else ''} {agg_expr} as agg_value
-                FROM parsed_logs
-                WHERE timestamp >= :start_time
-                  AND timestamp <= :end_time
-                  AND ({where_clause})
-                {group_clause}
-                ORDER BY agg_value DESC
-                LIMIT 20
-            """
-
-            result = session.execute(
-                __import__('sqlalchemy').text(query), params
-            )
-
-            matches = []
-            for row in result.fetchall():
-                if group_by:
-                    matches.append({
-                        'group_value': str(row[0]),
-                        'agg_value': float(row[1]) if row[1] else 0
-                    })
-                else:
-                    matches.append({
-                        'agg_value': float(row[0]) if row[0] else 0
-                    })
-
-            return {
-                'rule_id': rule.id,
-                'rule_name': rule.name,
-                'matched': len(matches) > 0,
-                'aggregation': aggregation,
-                'results': matches,
-                'time_window': parsed.get('time_window', '15 minutes'),
-                'evaluated_at': now.isoformat()
-            }
+            types = es_alerts.flatten_mapping(index)
+            path = _agg_field('source_product', types)
+            body = {'size': 0, 'query': query,
+                    'aggs': {'src': {'terms': {'field': path or 'source_product', 'size': 10}}}}
+            resp = es_alerts.raw_search(index or es_alerts.INDEX_VALID, body)
+            for b in ((resp.get('aggregations') or {}).get('src') or {}).get('buckets', []):
+                key = str(b.get('key'))
+                sources[key] = {'data_source_name': key, 'matched_count': b.get('doc_count', 0)}
         except Exception as e:
-            return {
-                'rule_id': rule.id,
-                'rule_name': rule.name,
-                'matched': False,
-                'error': str(e),
-                'evaluated_at': now.isoformat()
-            }
-        finally:
-            tsdb.close_session(session)
+            logger.warning(f'规则来源分布失败: {e}')
+        return samples, sources
 
-    def _evaluate_correlation(self, rule: DetectionRuleExtended, parsed: Dict) -> Dict:
-        """评估关联规则 - 多条件从不同数据源匹配"""
-        rules = parsed.get('rules', [])
-        window = _parse_time_window(parsed.get('time_window', '30 minutes'))
-        operator = parsed.get('correlation_operator', 'and')  # and / or
-        now = datetime.utcnow()
-        start_time = now - window
+    # ---------- 各类型评估 ----------
 
-        tsdb = get_tsdb()
-        session = tsdb.get_session()
+    def _evaluate_threshold(self, rule, parsed, dry_run=False, max_samples=0,
+                            time_range_minutes=None) -> Dict:
+        """单事件（阈值）规则：窗口内条件命中数 ≥ threshold，可按字段分组。"""
+        conditions = parsed.get('conditions', [])
+        threshold = int(parsed.get('threshold', 1) or 1)
+        group_by = (parsed.get('group_by') or '').strip()
+        now, start, window_label = self._window(parsed, time_range_minutes)
+
+        types = es_alerts.flatten_mapping()
+        query, warnings = _build_query(conditions, types, start, now, rule.data_source_ids)
+
+        agg_field = _agg_field(group_by, types) if group_by else None
+        group_note = ''
+        if group_by and not agg_field:
+            group_note = f'分组字段 {group_by} 不在告警索引里，已按整体计数评估'
+            group_by, agg_field = '', ''
+
+        body: Dict[str, Any] = {'size': 0, 'track_total_hits': True, 'query': query}
+        if agg_field:
+            body['aggs'] = {'groups': {'terms': {
+                'field': agg_field, 'size': 50,
+                'min_doc_count': threshold, 'order': {'_count': 'desc'}}}}
 
         try:
-            sub_results = []
-            all_matched = True
-            any_matched = False
+            resp = es_alerts.raw_search(es_alerts.INDEX_VALID, body)
+        except Exception as e:
+            return self._error(rule, str(e), window_label)
 
-            for i, sub_rule in enumerate(rules):
-                conditions = sub_rule.get('conditions', [])
-                params = {
-                    'start_time': start_time.isoformat(),
-                    'end_time': now.isoformat()
-                }
-                where_clause, params = _build_condition_clause(conditions, params, f'sr{i}', data_source_ids=rule.data_source_ids or None)
-
-                query = f"""
-                    SELECT COUNT(*) as cnt
-                    FROM parsed_logs
-                    WHERE timestamp >= :start_time
-                      AND timestamp <= :end_time
-                      AND ({where_clause})
-                """
-                result = session.execute(
-                    __import__('sqlalchemy').text(query), params
-                )
-                count = result.scalar() or 0
-                sub_matched = count > 0
-                sub_results.append({
-                    'rule_index': i,
-                    'matched': sub_matched,
-                    'count': count,
-                    'conditions': conditions
+        total = es_alerts.total_hits(resp)
+        matches: List[Dict[str, Any]] = []
+        if agg_field:
+            for b in ((resp.get('aggregations') or {}).get('groups') or {}).get('buckets', []):
+                matches.append({
+                    'group_value': b.get('key_as_string') or str(b.get('key')),
+                    'count': b.get('doc_count', 0),
+                    'threshold': threshold,
+                    'exceeded': True,
                 })
+        elif total >= threshold:
+            matches.append({'count': total, 'threshold': threshold, 'exceeded': True})
 
-                if not sub_matched:
-                    all_matched = False
-                if sub_matched:
-                    any_matched = True
+        matched = bool(matches)
+        samples, sources = self._samples_and_sources(query, max_samples)
 
-            if operator == 'and':
-                matched = all_matched
-            elif operator == 'or':
-                matched = any_matched
-            else:
-                matched = all_matched
-
-            events_created = []
-            if matched:
+        events_created = []
+        if matched and not dry_run:
+            link_ids = self._collect_alert_ids([query])
+            for match in matches:
                 event = self._create_event_from_match(
-                    rule,
-                    {'correlation_matched': True, 'sub_results': sub_results},
-                    parsed,
-                    start_time.isoformat(),
-                    now.isoformat()
-                )
+                    rule, match, parsed, start.isoformat(), now.isoformat(),
+                    alert_ids=link_ids)
                 if event:
                     events_created.append(event.to_dict())
 
-            return {
-                'rule_id': rule.id,
-                'rule_name': rule.name,
-                'matched': matched,
-                'sub_results': sub_results,
-                'events_created': events_created,
-                'time_window': parsed.get('time_window', '30 minutes'),
-                'evaluated_at': now.isoformat()
-            }
-        except Exception as e:
-            return {
-                'rule_id': rule.id,
-                'rule_name': rule.name,
-                'matched': False,
-                'error': str(e),
-                'evaluated_at': now.isoformat()
-            }
-        finally:
-            tsdb.close_session(session)
+        result = {
+            'rule_id': rule.id,
+            'rule_name': rule.name,
+            'rule_type': 'single',
+            'matched': matched,
+            'matched_count': total,
+            'total_matched': total,
+            'match_count': len(matches),
+            'matches': matches,
+            'matched_logs': samples,
+            'threshold': threshold,
+            'time_window': window_label,
+            'start_time': start.isoformat(),
+            'end_time': now.isoformat(),
+            'evaluated_at': now.isoformat(),
+            'events_created': events_created,
+            'warnings': [w for w in warnings + ([group_note] if group_note else []) if w],
+        }
+        if sources:
+            result['sources'] = sources
+        return result
 
-    def _evaluate_query(self, rule: DetectionRuleExtended, parsed: Dict) -> Dict:
-        """评估自定义 SQL 查询规则"""
-        sql = parsed.get('sql', '')
-        if not sql and rule.rule_content:
-            sql = rule.rule_content.strip()
+    def _evaluate_aggregation(self, rule, parsed, dry_run=False, max_samples=0,
+                              time_range_minutes=None) -> Dict:
+        """聚合规则：窗口内数值字段 SUM / AVG / MAX / MIN / 去重计数。"""
+        aggregation = (parsed.get('aggregation') or 'count').lower()
+        agg_field_name = (parsed.get('agg_field') or parsed.get('group_by') or '').strip()
+        group_by = (parsed.get('group_by') or '').strip()
+        threshold = _numeric(parsed.get('threshold', 0)) or 0
+        now, start, window_label = self._window(parsed, time_range_minutes)
 
-        if not sql:
-            return {
-                'rule_id': rule.id,
-                'rule_name': rule.name,
-                'matched': False,
-                'error': '未定义 SQL 查询',
-                'evaluated_at': datetime.utcnow().isoformat()
-            }
+        types = es_alerts.flatten_mapping()
+        query, warnings = _build_query(parsed.get('conditions', []), types,
+                                      start, now, rule.data_source_ids)
 
-        tsdb = get_tsdb()
-        session = tsdb.get_session()
+        if not agg_field_name:
+            return self._error(rule, '聚合规则缺少聚合字段（agg_field）', window_label)
+        es_agg_field = _agg_field(agg_field_name, types)
+        if not es_agg_field:
+            return self._error(rule, f'聚合字段 {agg_field_name} 不在告警索引里', window_label)
+
+        metric_map = {
+            'sum': {'sum': {'field': es_agg_field}},
+            'avg': {'avg': {'field': es_agg_field}},
+            'max': {'max': {'field': es_agg_field}},
+            'min': {'min': {'field': es_agg_field}},
+            'distinct_count': {'cardinality': {'field': es_agg_field}},
+            'count': {'value_count': {'field': es_agg_field}},
+        }
+        metric = metric_map.get(aggregation, metric_map['count'])
+
+        body: Dict[str, Any] = {'size': 0, 'track_total_hits': True, 'query': query,
+                                'aggs': {'metric': dict(metric)}}
+        es_group = _agg_field(group_by, types) if group_by and group_by != agg_field_name else None
+        if es_group:
+            body['aggs'] = {'groups': {'terms': {'field': es_group, 'size': 50,
+                                                 'order': {'metric': 'desc'}},
+                                       'aggs': {'metric': dict(metric)}}}
 
         try:
-            result = session.execute(__import__('sqlalchemy').text(sql), {
-                'now': datetime.utcnow().isoformat(),
-                'rule_id': rule.id
+            resp = es_alerts.raw_search(es_alerts.INDEX_VALID, body)
+        except Exception as e:
+            return self._error(rule, str(e), window_label)
+
+        results = []
+        aggs = resp.get('aggregations') or {}
+        if es_group:
+            for b in (aggs.get('groups') or {}).get('buckets', []):
+                results.append({
+                    'group_value': b.get('key_as_string') or str(b.get('key')),
+                    'agg_value': (b.get('metric') or {}).get('value', 0),
+                })
+        else:
+            results.append({'agg_value': (aggs.get('metric') or {}).get('value', 0)})
+
+        values = [float(r.get('agg_value') or 0) for r in results]
+        matched = any(v >= float(threshold) for v in values) if threshold else any(v > 0 for v in values)
+        total = es_alerts.total_hits(resp)
+        samples, sources = self._samples_and_sources(query, max_samples)
+
+        events_created = []
+        if matched and not dry_run:
+            link_ids = self._collect_alert_ids([query])
+            event = self._create_event_from_match(
+                rule, {'aggregation': aggregation, 'agg_field': agg_field_name,
+                       'agg_value': max(values) if values else 0, 'results': results[:5]},
+                parsed, start.isoformat(), now.isoformat(),
+                alert_ids=link_ids)
+            if event:
+                events_created.append(event.to_dict())
+
+        result = {
+            'rule_id': rule.id,
+            'rule_name': rule.name,
+            'rule_type': 'aggregation',
+            'matched': matched,
+            'matched_count': total,
+            'total_matched': total,
+            'aggregation': aggregation,
+            'agg_field': agg_field_name,
+            'results': results,
+            'matched_logs': samples,
+            'threshold': threshold,
+            'time_window': window_label,
+            'evaluated_at': now.isoformat(),
+            'events_created': events_created,
+            'warnings': warnings,
+        }
+        if sources:
+            result['sources'] = sources
+        return result
+
+    def _evaluate_correlation(self, rule, parsed, dry_run=False, max_samples=0,
+                              time_range_minutes=None) -> Dict:
+        """关联规则：多条件组按组间 AND / OR 判定（读前端生成的 groups 结构）。
+
+        兼容三种写法：
+          groups + group_logic（前端生成）
+          rules  + correlation_operator（早期手写）
+          仅 conditions（退化为单事件阈值判定）
+        """
+        groups = parsed.get('groups')
+        if groups:
+            logic = str(parsed.get('group_logic') or 'AND').upper()
+            group_specs = [{
+                'label': g.get('label') or f"条件组 {i + 1}",
+                'conditions': g.get('conditions') or [],
+                'time_window': g.get('time_window') or parsed.get('overall_time_window'),
+                'data_source_ids': g.get('data_source_ids') or rule.data_source_ids,
+            } for i, g in enumerate(groups)]
+        elif parsed.get('rules'):
+            logic = 'OR' if str(parsed.get('correlation_operator') or 'and').lower() == 'or' else 'AND'
+            group_specs = [{
+                'label': f"子规则 {i + 1}",
+                'conditions': sr.get('conditions') or [],
+                'time_window': sr.get('time_window') or parsed.get('time_window'),
+                'data_source_ids': rule.data_source_ids,
+            } for i, sr in enumerate(parsed['rules'])]
+        else:
+            if not parsed.get('conditions'):
+                return self._error(rule, '关联规则没有任何条件组，无法评估', parsed.get('time_window'))
+            return self._evaluate_threshold(rule, parsed, dry_run=dry_run,
+                                            max_samples=max_samples,
+                                            time_range_minutes=time_range_minutes)
+
+        group_specs = [g for g in group_specs if g['conditions']]
+        if not group_specs:
+            return self._error(rule, '关联规则的各条件组均为空，已跳过（不会判定命中）',
+                               parsed.get('overall_time_window'))
+
+        types = es_alerts.flatten_mapping()
+        now = datetime.utcnow()
+        sub_results = []
+        group_queries: List[dict] = []
+        warnings: List[str] = []
+
+        for i, spec in enumerate(group_specs):
+            if time_range_minutes:
+                window = timedelta(minutes=int(time_range_minutes))
+            else:
+                window = _parse_time_window(spec.get('time_window') or parsed.get('overall_time_window'))
+            start = now - window
+            query, warns = _build_query(spec['conditions'], types, start, now,
+                                        spec['data_source_ids'])
+            group_queries.append(query)
+            warnings.extend([f"{spec['label']}: {w}" for w in warns])
+            try:
+                resp = es_alerts.raw_search(es_alerts.INDEX_VALID,
+                                            {'size': 0, 'track_total_hits': True, 'query': query})
+                count = es_alerts.total_hits(resp)
+                err = None
+            except Exception as e:
+                count, err = 0, str(e)
+            sub_results.append({
+                'rule_index': i,
+                'label': spec['label'],
+                'matched': count > 0,
+                'count': count,
+                'time_window': spec.get('time_window'),
+                'conditions': spec['conditions'],
+                'error': err,
             })
 
-            rows = result.fetchall()
-            columns = result.keys() if rows else []
+        flags = [s['matched'] for s in sub_results]
+        matched = any(flags) if logic == 'OR' else all(flags)
+        total = sum(s['count'] for s in sub_results)
 
-            results = []
-            for row in rows[:100]:
-                results.append(dict(zip(columns, row)))
+        samples, sources = ([], {})
+        if max_samples > 0:
+            # 取样仍按"整体时间窗 + 首组条件"给出可读样本
+            first = group_specs[0]
+            window = _parse_time_window(first.get('time_window') or parsed.get('overall_time_window'))
+            q, _ = _build_query(first['conditions'], types, now - window, now,
+                                first['data_source_ids'])
+            samples, sources = self._samples_and_sources(q, max_samples)
 
-            matched = len(results) > 0
-            events_created = []
-            if matched and parsed.get('auto_create_event', True):
-                event = self._create_event_from_match(
-                    rule,
-                    {'query_results': results[:5], 'total_rows': len(results)},
-                    parsed,
-                    '', ''
-                )
-                if event:
-                    events_created.append(event.to_dict())
+        events_created = []
+        if matched and not dry_run:
+            link_ids = self._collect_alert_ids(group_queries)
+            event = self._create_event_from_match(
+                rule, {'correlation_matched': True, 'sub_results': sub_results},
+                parsed, '', now.isoformat(), alert_ids=link_ids)
+            if event:
+                events_created.append(event.to_dict())
 
-            return {
-                'rule_id': rule.id,
-                'rule_name': rule.name,
-                'matched': matched,
-                'row_count': len(results),
-                'results': results[:10],
-                'events_created': events_created,
-                'evaluated_at': datetime.utcnow().isoformat()
+        result = {
+            'rule_id': rule.id,
+            'rule_name': rule.name,
+            'rule_type': 'correlation',
+            'matched': matched,
+            'matched_count': total,
+            'total_matched': total,
+            'group_logic': logic,
+            'sub_results': sub_results,
+            'matched_logs': samples,
+            'time_window': parsed.get('overall_time_window') or parsed.get('time_window'),
+            'evaluated_at': now.isoformat(),
+            'events_created': events_created,
+            'warnings': warnings,
+        }
+        if sources:
+            result['sources'] = sources
+        return result
+
+    def _error(self, rule, message: str, window_label=None) -> Dict:
+        return {
+            'rule_id': rule.id,
+            'rule_name': rule.name,
+            'matched': False,
+            'matched_count': 0,
+            'total_matched': 0,
+            'matches': [],
+            'matched_logs': [],
+            'error': message,
+            'time_window': window_label,
+            'evaluated_at': datetime.utcnow().isoformat(),
+            'events_created': [],
+            'warnings': [],
+        }
+
+    # ---------- 事件落库 ----------
+
+    def _collect_alert_ids(self, queries: list, limit: int = 100) -> List[str]:
+        """按各条件组查询收集命中的告警 id（供事件关联与状态联动）。
+
+        只收「还没被事件关联过」的告警（无 event_ids 且非终态）：
+        - 同一批告警不会被重复生成的事件再次拉回 investigating（防重复分析）
+        - 已人工处置的告警不参与联动
+        """
+        ids: List[str] = []
+        seen = set()
+        must_not = [
+            {'terms': {'status': ['closed', 'resolved', 'false_positive']}},
+            {'exists': {'field': 'event_ids'}},
+        ]
+        for q in queries or []:
+            if not q:
+                continue
+            body = {
+                'size': limit,
+                'query': {'bool': {'must': q, 'must_not': must_not}},
+                '_source': False,
+                'sort': [{'first_seen': {'order': 'desc'}}],
             }
-        except Exception as e:
-            return {
-                'rule_id': rule.id,
-                'rule_name': rule.name,
-                'matched': False,
-                'error': str(e),
-                'evaluated_at': datetime.utcnow().isoformat()
-            }
-        finally:
-            tsdb.close_session(session)
+            try:
+                resp = es_alerts.raw_search(es_alerts.INDEX_VALID, body)
+                for h in (resp.get('hits') or {}).get('hits', []):
+                    aid = h.get('_id')
+                    if aid and aid not in seen:
+                        seen.add(aid)
+                        ids.append(aid)
+            except Exception as e:
+                logger.warning(f'规则命中告警收集失败: {e}')
+        return ids
 
     def _create_event_from_match(self, rule: DetectionRuleExtended,
                                   match: Dict, parsed: Dict,
-                                  start_time: str, end_time: str) -> Optional[Event]:
-        """根据规则匹配结果创建事件"""
+                                  start_time: str, end_time: str,
+                                  alert_ids: List[str] = None) -> Optional[Event]:
+        """根据规则匹配结果创建事件（PG events 表）。"""
         try:
-            title_tpl = parsed.get('title_template', f'规则 "{rule.name}" 触发')
-            desc_tpl = parsed.get('description_template', rule.description or '')
+            title_tpl = parsed.get('title_template') or f'规则 "{rule.name}" 触发'
+            desc_tpl = parsed.get('description_template') or rule.description or ''
             severity = parsed.get('severity', rule.severity or 'medium')
             time_window = parsed.get('time_window', '5 minutes')
 
@@ -766,6 +945,8 @@ class RuleEngine:
             title = title_tpl
             description = desc_tpl
             for key, val in match.items():
+                if isinstance(val, (dict, list)):
+                    continue
                 placeholder = f'{{{key}}}'
                 title = title.replace(placeholder, str(val))
                 description = description.replace(placeholder, str(val))
@@ -795,15 +976,23 @@ class RuleEngine:
                 'end_time': end_time,
                 'match_details': _serialize_match(match)
             }
+            if src_ip:
+                extra_data['src_ip'] = src_ip
+            link_ids = [str(a) for a in (alert_ids or []) if a]
+            if link_ids:
+                extra_data['alert_ids'] = link_ids
+                extra_data['alert_count'] = len(link_ids)
 
             event = Event(
                 event_code=event_code,
                 title=title[:200],
                 description=description[:2000],
                 severity=severity,
+                src_ip=src_ip,
                 category='规则匹配',
                 source='rule_engine',
-                status='new',
+                # 有关联告警时直接落「调查中」（与人工聚合同口径）
+                status='investigating' if link_ids else 'new',
                 extra_data=extra_data
             )
 
@@ -813,60 +1002,68 @@ class RuleEngine:
             db.session.add(event)
             db.session.flush()
 
-            # 自动触发剧本 (跳过审批)
-            _trigger_playbook_for_event(event, rule)
-
-            # 记录审计日志
             audit = AuditLog(
                 user_id=1,
                 username='rule_engine',
                 action='规则生成事件',
                 module='rules',
                 target=event_code,
-                details={
-                    'rule_id': rule.id,
-                    'rule_name': rule.name,
-                    'severity': severity
-                },
+                details={'rule_id': rule.id, 'rule_name': rule.name, 'severity': severity},
                 ip='127.0.0.1'
             )
             db.session.add(audit)
             db.session.commit()
 
+            # 联动：命中的告警转 investigating + event_ids 回写（失败不影响事件落库）
+            if link_ids:
+                try:
+                    from app.utils import event_alert_link
+                    event_alert_link.link_alerts_to_event(
+                        link_ids, event_code, 'investigating')
+                except Exception as link_err:
+                    logger.warning(f'规则事件 {event_code} 联动告警失败: {link_err}')
+
+            # 自动触发剧本：失败只记日志，绝不回滚已落库的事件
+            _trigger_playbook_for_event(event, rule)
+
             return event
-        except Exception:
+
+        except Exception as e:
             db.session.rollback()
+            logger.warning(f'规则 {getattr(rule, "id", "?")} 创建事件失败: {e}')
             return None
 
-    def evaluate_all_enabled(self) -> Dict:
-        """评估所有启用的规则"""
-        rules = DetectionRuleExtended.query.filter(
-            DetectionRuleExtended.status == 'enabled'
-        ).all()
 
-        results = []
-        events_total = 0
-        for rule in rules:
-            result = self.evaluate_rule(rule)
-            results.append(result)
-            events_total += len(result.get('events_created', []))
-
-        return {
-            'total_rules': len(rules),
-            'evaluated': len(results),
-            'events_created': events_total,
-            'results': results,
-            'evaluated_at': datetime.utcnow().isoformat()
-        }
+def _trigger_playbook_for_event(event, rule) -> None:
+    """规则命中后按 rule.playbook_id 触发剧本（未配置 / 未发布则跳过）。"""
+    playbook_id = getattr(rule, 'playbook_id', None)
+    if not playbook_id:
+        return
+    try:
+        from app.models import Playbook
+        from app.engine.playbook_engine import playbook_engine as engine
+        playbook = Playbook.query.get(playbook_id)
+        if not playbook or playbook.status not in ('published', 'enabled'):
+            return
+        engine.execute(
+            playbook=playbook,
+            trigger_type='rule',
+            event=event.to_dict(),
+            alert=None,
+            params={'rule_id': rule.id, 'event_code': event.event_code},
+            executor='rule_engine',
+            request_info={'user_id': 0, 'username': 'rule_engine', 'ip': '127.0.0.1'}
+        )
+    except Exception as e:
+        logger.warning(f'规则 {getattr(rule, "id", "?")} 触发剧本失败: {e}')
 
 
 def _is_ip(value: str) -> bool:
     """检查字符串是否为 IP 地址"""
     if not value:
         return False
-    import re as _re
     ipv4 = r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$'
-    return bool(_re.match(ipv4, str(value).strip()))
+    return bool(re.match(ipv4, str(value).strip()))
 
 
 def _serialize_match(match: Dict) -> Dict:

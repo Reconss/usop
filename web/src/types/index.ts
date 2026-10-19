@@ -1,14 +1,4 @@
-// @ts-nocheck
-export interface DashboardMetrics {
-  todayAlerts: number;
-  pendingEvents: number;
-  highRiskAssets: number;
-  agentHealthRate: number;
-  alertsTrend: number;
-  pendingTrend: number;
-  assetsTrend: number;
-  healthTrend: number;
-}
+// ==================== 仪表盘图表类型 ====================
 
 export interface EventTrendData {
   timestamps: string[];
@@ -21,13 +11,8 @@ export interface EventTrendData {
 export interface EventTypeDistribution {
   name: string;
   value: number;
-  color: string;
-}
-
-export interface AttackSource {
-  ip: string;
-  country: string;
-  count: number;
+  /** 可选：后端返回真实分类色时优先使用，缺失则用设计系统系列色 */
+  color?: string;
 }
 
 export interface RiskAsset {
@@ -38,31 +23,30 @@ export interface RiskAsset {
   lastSeen: string;
 }
 
-export interface Attachment {
+// ==================== 用户与审计 ====================
+
+export interface User {
   id: string;
-  name: string;
-  size: number;
-  type: string;
-  url: string;
-  uploadedAt: string;
-  uploadedBy?: string;
+  username: string;
+  role: string;
+  email: string;
+  lastLogin: string;
+  status: 'active' | 'inactive';
+  authType?: 'local' | 'ad';
+  adUpn?: string | null;
+  adDomain?: string | null;
 }
 
-export interface SecurityEvent {
+export interface AuditLog {
   id: string;
-  eventCode?: string;
-  title: string;
-  severity: 'critical' | 'high' | 'medium' | 'low';
-  affectedAssets: string[];
-  sourceIp: string;
   timestamp: string;
-  status: 'new' | 'investigating' | 'closed' | 'false_positive';
-  eventType: string;
-  description?: string;
-  attachments?: Attachment[];
-  extraData?: Record<string, any>;
-  relatedAlerts?: Array<{id: number; alert_code: string; title: string; severity: string}>;
+  user: string;
+  action: string;
+  details: Record<string, unknown>;
+  ip: string;
 }
+
+// ==================== 资产 ====================
 
 export interface AssetVulnInfo {
   vulnId: string;
@@ -85,12 +69,12 @@ export interface Asset {
   domain?: string;
   hostname?: string;
   ip?: string;
-  ports: { 
+  ports: {
     id?: number;
-    port: number; 
-    protocol?: string; 
-    service: string; 
-    version?: string; 
+    port: number;
+    protocol?: string;
+    service: string;
+    version?: string;
     state?: string;
     banner?: string;
     discovered_at?: string;
@@ -112,26 +96,32 @@ export interface Asset {
   metadata?: Record<string, any>;
 }
 
-export interface ScanTask {
-  id: string;
-  target: string;
-  type: string;
-  status: 'queued' | 'running' | 'completed' | 'failed';
-  agent: string;
-  createdAt: string;
-  completedAt?: string;
-  progress?: number;
-}
+// ==================== 安全事件（工作台） ====================
 
-export interface DetectionRule {
+export interface Attachment {
   id: string;
   name: string;
-  type: 'single' | 'correlation' | 'sequence';
-  status: 'enabled' | 'disabled';
-  hitCount: number;
-  lastHitTime?: string;
+  size: number;
+  type: string;
+  url: string;
+  uploadedAt: string;
+  uploadedBy?: string;
+}
+
+export interface SecurityEvent {
+  id: string;
+  eventCode?: string;
+  title: string;
+  severity: 'critical' | 'high' | 'medium' | 'low';
+  affectedAssets: string[];
+  sourceIp: string;
+  timestamp: string;
+  status: 'new' | 'acknowledged' | 'investigating' | 'resolved' | 'closed' | 'false_positive' | 'pending_approval' | 'approval_rejected';
+  eventType: string;
   description?: string;
-  dataSourceIds?: string[];
+  attachments?: Attachment[];
+  extraData?: Record<string, any>;
+  relatedAlerts?: Array<{ id: number; alert_code: string; title: string; severity: string }>;
 }
 
 export interface Playbook {
@@ -142,6 +132,8 @@ export interface Playbook {
   edges?: any[];
   status: 'draft' | 'published' | 'archived' | 'enabled' | 'disabled';
   version?: string;
+  /** 执行需审批（剧本配置项）：事件工作台执行时自动走审批流 */
+  approval_required?: boolean;
   created_at?: string;
   updated_at?: string;
   triggerType?: string;
@@ -149,322 +141,21 @@ export interface Playbook {
   nodeCount?: number;
 }
 
-export interface User {
-  id: string;
-  username: string;
-  role: string;
-  email: string;
-  lastLogin: string;
-  status: 'active' | 'inactive';
-}
+// ==================== 事件处置记录类型 ====================
 
-export interface AuditLog {
-  id: string;
-  timestamp: string;
-  user: string;
-  action: string;
-  details: Record<string, unknown>;
-  ip: string;
-}
-
-export interface MenuItem {
-  id: string;
-  label: string;
-  icon: string;
-  path: string;
-  children?: MenuItem[];
-}
-
-export interface Notification {
-  id: string;
-  title: string;
-  message: string;
-  type: 'info' | 'warning' | 'error' | 'success';
-  timestamp: string;
-  read: boolean;
-}
-
-// ==================== 漏洞管理模块类型 ====================
-
-export interface AffectedAsset {
-  id: string;
-  name: string;
-  type: string;
-  ip?: string;
-  owner: string;
-  riskScore: number;
-  tags: string[];
-}
-
-export interface Reassessment {
-  assetImportance: 'critical' | 'high' | 'medium' | 'low';
-  exploitability: 'easy' | 'moderate' | 'difficult';
-  remediationDifficulty: 'easy' | 'moderate' | 'difficult';
-  finalSeverity: 'critical' | 'high' | 'medium' | 'low';
-  needsFix: boolean;
-  reason: string;
-  assessedAt: string;
-}
-
-export interface Vulnerability {
-  id: string;
-  cveId?: string;
-  name: string;
-  description: string;
-  severity: 'critical' | 'high' | 'medium' | 'low';
-  cvssScore: number;
-  affectedAssets: AffectedAsset[];
-  vulnType: 'host' | 'application';
-  source: string;
-  status: 'open' | 'fixed' | 'ignored' | 'in_progress';
-  discoveredAt: string;
-  fixedAt?: string;
-  port?: number;
-  service?: string;
-  solution?: string;
-  references?: string[];
-  reassessment?: Reassessment;
-}
-
-// ==================== 数据接入模块类型 ====================
-
-export interface FieldMapping {
-  sourceField: string;
-  targetField: string;
-  type: string;
-}
-
-export interface TransformRule {
-  id: string;
-  name: string;
-  type: string;
-  enabled: boolean;
-}
-
-export type ParserType = 'json' | 'xml' | 'csv' | 'logfmt' | 'regex' | 'auto' | 'syslog' | 'cef' | 'grok';
-
-export type FilterOperator = 'eq' | 'ne' | 'gt' | 'lt' | 'contains' | 'regex';
-
-export interface FilterRule {
-  field: string;
-  operator: FilterOperator;
-  value: string;
-  logic: 'and' | 'or';
-}
-
-export interface ParsePipeline {
-  id: string;
-  name: string;
-  priority: number;
-  condition?: string;
-  parser: ParserType;
-  customRule?: string;
-  isActive: boolean;
-  description?: string;
-  fieldMappings?: FieldMapping[];
-  transformRules?: TransformRule[];
-  logTypeId?: string;
-  logTypeName?: string;
-  storageTableId?: string;
-  storageTableName?: string;
-  formatTemplateId?: string;
-  formatTemplateName?: string;
-  mode?: 'single' | 'multi';
-  smartDetect?: boolean;
-  parserConfig?: Record<string, any>;
-  sample?: string;
-  selectedRules?: string[];
-  linkedPipelines?: string[];
-  linkedTemplates?: string[];
-  templateStorageMap?: Record<string, { tableId: string; tableName: string }>;
-  filterRules?: FilterRule[];
-}
-
-export interface StorageConfigType {
-  tableName: string;
-  retentionDays: number;
-  partitionInterval: string;
-  indexes: string[];
-  compression: boolean;
-}
-
-export interface ProductMapping {
-  id: string;
-  productName: string;
-  vendor: string;
-  logType: string;
-  parsePipelineId: string;
-  enabled: boolean;
-}
-
-export interface ParseStats {
-  parsedSuccess: number;
-  parsedFailed: number;
-  lastError?: string;
-  lastErrorTime?: string;
-}
-
-export interface DataSource {
-  id: string;
-  name: string;
-  type: 'pull' | 'push';
-  protocol: string;
-  status: 'connected' | 'disconnected' | 'error' | 'syncing' | 'paused';
-  lastSync?: string;
-  eventsPerSecond?: number;
-  totalEvents?: number;
-  health?: number;
-  config: Record<string, any>;
-  parsePipelines?: ParsePipeline[];
-  storageConfig?: StorageConfigType;
-  productMappings?: ProductMapping[];
-  stats?: ParseStats;
-  // 关联配置
-  logTypeId?: string;
-  logTypeName?: string;
-  logTypeDescription?: string;
-  // Flink 任务状态
-  flinkJobId?: string;
-  flinkJobStatus?: 'running' | 'stopped' | 'failed' | 'finished' | null;
-  isLoading?: boolean;
-}
-
-// ==================== 格式模板类型 ====================
-
-export interface TemplateField {
-  name: string;
-  type: string;
-  sample?: string;
-  description?: string;
-}
-
-export interface ParserConfig {
-  jsonPath?: string;
-  kvDelimiter?: string;
-  pairDelimiter?: string;
-  grokPattern?: string;
-  regexPattern?: string;
-  regexFlags?: string;
-  csvDelimiter?: string;
-  csvHeader?: boolean;
-  syslogVariant?: 'rfc3164' | 'rfc5424';
-  cefVersion?: string;
-}
-
-export interface FormatTemplate {
-  id: string;
-  name: string;
-  description: string;
-  format: string;
-  category: string;
-  parserType: string;
-  parserConfig?: ParserConfig;
-  fields: TemplateField[];
-  sample: string;
-  usageCount: number;
-  isPreset: boolean;
-}
-
-// ==================== 日志类型 ====================
-
-export interface LogTypeField {
-  name: string;
-  type: string;
-  required: boolean;
-}
-
-export interface LogType {
-  id: string;
-  name: string;
-  description: string;
-  fields: LogTypeField[];
-}
-
-// ==================== 存储表类型 ====================
-
-export interface StorageTable {
-  id: string;
-  name: string;
-  displayName: string;
-  dataSource: string;
-  logType?: string;
-  retentionDays: number;
-  partitionInterval: string;
-  indexes: string[];
-  rowCount: number;
-  size: string;
-  compression: boolean;
-  autoCreated: boolean;
-  lastOptimized: string;
-  createdByPipeline?: string;
-}
-
-// ==================== 告警日志类型 ====================
-
-export interface AlertLog {
-  id: string;
-  timestamp: string;
-  severity: 'critical' | 'high' | 'medium' | 'low';
-  source: string;
-  sourceIp: string;
-  destIp?: string;
-  eventType: string;
-  message: string;
-  rawLog?: string;
-  status: 'new' | 'acknowledged' | 'resolved' | 'false_positive';
-  assignee?: string;
-  resolvedAt?: string;
-  duration?: number;
-}
-
-// ==================== 安全告警与事件管理类型 (从 security-alert.ts 导出) ====================
-// 请参考 src/types/security-alert.ts 获取完整的类型定义
-
-export {
-  // 类型
-  type Severity,
-  type AlertStatus,
-  type DataSourceType,
-  type DataSourceProtocol,
-  type DataSourceStatus,
-  type ParserFormat,
-  type RuleType,
-  type PlaybookStatus,
-  type EventActionType,
-  type FilterOperator,
-  type FilterRule,
-  type DataSourceConfig,
-  type DataSource,
-  type FieldMapping,
-  type TransformRule,
-  type Pipeline,
-  type Alert,
-  type AlertStats,
-  type AlertQueryParams,
-  type Event,
-  type RelatedAlert,
-  type EventStats,
-  type EventQueryParams,
-  type EventAction,
-  type PlaybookExecutionResult,
-  type StorageConfig,
-  type PaginatedResponse,
-  type ApiResponse,
-  type CreateEventRequest,
-  type UpdateEventStatusRequest,
-  type AggregateAlertsRequest,
-  type AssignEventRequest,
-  type CreateAlertRequest,
-  // 常量
-  EventActionLabels,
-  EventActionColors,
-  SeverityLabels,
-  SeverityConfig,
-  StatusLabels,
-  StatusConfig,
-} from './security-alert';
-
-// ==================== 事件处置记录类型 (兼容旧代码) ====================
+export type EventActionType =
+  | 'created'           // 事件创建
+  | 'status_changed'    // 状态变更
+  | 'severity_changed' // 严重度变更
+  | 'assigned'          // 分配处理人
+  | 'comment'           // 添加评论
+  | 'attachment'        // 添加附件
+  | 'playbook_triggered' // 剧本触发
+  | 'enriched'          // 事件 enrichment
+  | 'merged'            // 合并事件
+  | 'escalated'         // 升级处理
+  | 'approval_requested' // 剧本执行审批申请
+  | 'closed';           // 关闭事件
 
 export interface EventActionRecord {
   id: string;
@@ -482,18 +173,3 @@ export interface EventActionRecord {
   assignee?: string;
   metadata?: Record<string, any>;
 }
-
-export type EventActionType = 
-  | 'created'           // 事件创建
-  | 'status_changed'    // 状态变更
-  | 'severity_changed' // 严重度变更
-  | 'assigned'          // 分配处理人
-  | 'comment'           // 添加评论
-  | 'attachment'        // 添加附件
-  | 'playbook_triggered' // 剧本触发
-  | 'enriched'          // 事件 enrichment
-  | 'merged'            // 合并事件
-  | 'escalated'         // 升级处理
-  | 'closed';           // 关闭事件
-
-

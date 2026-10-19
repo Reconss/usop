@@ -9,12 +9,12 @@
  */
 
 import React, { useState, useMemo, useCallback } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
 import {
   Copy, Check, Search, ChevronDown, ChevronRight,
-  Globe, Server, Shield, Clock, FileText, Tag,
-  Network, Activity, AlertTriangle, Layers
+  Globe, Server, Clock, FileText,
+  Activity, AlertTriangle, Layers
 } from 'lucide-react';
+import { Button, SearchInput } from './ui';
 
 // ==================== 字段分组定义 ====================
 
@@ -28,23 +28,23 @@ interface FieldGroupDef {
 
 const FIELD_GROUPS: FieldGroupDef[] = [
   {
-    key: 'alert', label: '告警信息', icon: AlertTriangle, color: 'text-rose-400',
+    key: 'alert', label: '告警信息', icon: AlertTriangle, color: 'text-danger',
     fields: ['title', 'description', 'severity', 'status', 'alert_code', 'category', 'source', 'tags', 'confidence'],
   },
   {
-    key: 'network', label: '网络信息', icon: Globe, color: 'text-cyan-400',
+    key: 'network', label: '网络信息', icon: Globe, color: 'text-info',
     fields: ['src_ip', 'src_port', 'dst_ip', 'dst_port', 'protocol', 'ioc_type', 'ioc_value'],
   },
   {
-    key: 'asset', label: '资产信息', icon: Server, color: 'text-amber-400',
+    key: 'asset', label: '资产信息', icon: Server, color: 'text-warning',
     fields: ['hostname', 'affected_assets', 'event_id', 'event_code'],
   },
   {
-    key: 'time', label: '时间信息', icon: Clock, color: 'text-emerald-400',
+    key: 'time', label: '时间信息', icon: Clock, color: 'text-success',
     fields: ['first_seen', 'last_seen', 'created_at', 'updated_at'],
   },
   {
-    key: 'raw', label: '原始数据', icon: FileText, color: 'text-purple-400',
+    key: 'raw', label: '原始数据', icon: FileText, color: 'text-accent',
     fields: ['raw_log', 'parsed_data', 'extra_data', 'aggregated', 'aggregated_count', 'aggregated_ids'],
   },
 ];
@@ -117,7 +117,7 @@ export const FieldBrowser: React.FC<FieldBrowserProps> = ({
     const isComplex = isComplexValue(value);
 
     return (
-      <div key={field} className="group flex items-start gap-2 px-3 py-1.5 hover:bg-white/[0.03] rounded-lg">
+      <div key={field} className="group flex items-start gap-2 px-3 py-1.5 hover:bg-surface-2 rounded-lg">
         {/* 字段名 */}
         <div className="w-[140px] flex-shrink-0">
           <span className="text-xs font-mono text-text-muted truncate block" title={field}>
@@ -128,7 +128,7 @@ export const FieldBrowser: React.FC<FieldBrowserProps> = ({
         {/* 值 */}
         <div className="flex-1 min-w-0 flex items-start gap-1">
           <span
-            className={`text-xs font-mono break-all ${isComplex ? 'text-purple-300' : 'text-text-primary'}`}
+            className={`text-xs font-mono break-all ${isComplex ? 'text-accent' : 'text-text-primary'}`}
             style={isComplex ? { display: 'block', maxHeight: '60px', overflow: 'hidden' } : undefined}
           >
             {displayVal}
@@ -137,21 +137,25 @@ export const FieldBrowser: React.FC<FieldBrowserProps> = ({
 
         {/* 操作按钮 */}
         <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-          <button
-            onClick={() => copyValue(field, value)}
-            className="p-1 text-text-muted hover:text-primary rounded transition-colors"
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={isCopied ? Check : Copy}
+            className="h-6 w-6 px-0"
             title="复制值"
-          >
-            {isCopied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-          </button>
+            aria-label={`复制 ${field}`}
+            onClick={() => copyValue(field, value)}
+          />
           {onSearchField && value && (
-            <button
-              onClick={() => onSearchField(field, displayVal)}
-              className="p-1 text-text-muted hover:text-primary rounded transition-colors"
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={Search}
+              className="h-6 w-6 px-0"
               title={`搜索 ${field}:"${displayVal}"`}
-            >
-              <Search className="w-3 h-3" />
-            </button>
+              aria-label={`搜索 ${field}`}
+              onClick={() => onSearchField(field, displayVal)}
+            />
           )}
         </div>
       </div>
@@ -162,21 +166,17 @@ export const FieldBrowser: React.FC<FieldBrowserProps> = ({
     <div className={`flex flex-col ${className}`}>
       {/* 搜索过滤 */}
       <div className="px-4 py-2 border-b border-border-color">
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-muted" />
-          <input
-            type="text"
-            value={searchFilter}
-            onChange={(e) => setSearchFilter(e.target.value)}
-            placeholder="过滤字段..."
-            className="w-full pl-8 pr-3 py-1.5 bg-page-bg border border-border-color rounded-lg text-xs
-                       text-text-primary placeholder:text-text-muted focus:outline-none focus:border-primary"
-          />
-        </div>
+        <SearchInput
+          value={searchFilter}
+          onChange={setSearchFilter}
+          placeholder="过滤字段..."
+          width="full"
+          className="[&_input]:h-[34px]"
+        />
       </div>
 
       {/* 字段分组 */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto scrollbar-thin">
         {FIELD_GROUPS.map((group) => {
           const Icon = group.icon;
           const isExpanded = expandedGroups.has(group.key);
@@ -188,8 +188,10 @@ export const FieldBrowser: React.FC<FieldBrowserProps> = ({
             <div key={group.key} className="border-b border-border-color/50">
               {/* 组标题 */}
               <button
+                type="button"
                 onClick={() => toggleGroup(group.key)}
-                className="w-full flex items-center gap-2 px-4 py-2.5 hover:bg-white/[0.03] transition-colors"
+                className="w-full flex items-center gap-2 px-4 py-2.5 hover:bg-surface-2 transition-colors"
+                aria-expanded={isExpanded}
               >
                 {isExpanded
                   ? <ChevronDown className="w-3.5 h-3.5 text-text-muted" />
@@ -201,20 +203,11 @@ export const FieldBrowser: React.FC<FieldBrowserProps> = ({
               </button>
 
               {/* 组内字段 */}
-              <AnimatePresence>
-                {isExpanded && (
-                  <motion.div
-                    initial={{ height: 0, opacity: 0 }}
-                    animate={{ height: 'auto', opacity: 1 }}
-                    exit={{ height: 0, opacity: 0 }}
-                    className="overflow-hidden"
-                  >
-                    <div className="pb-2">
-                      {groupFields.map(f => renderFieldRow(f, data[f]))}
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
+              {isExpanded && (
+                <div className="pb-2">
+                  {groupFields.map(f => renderFieldRow(f, data[f]))}
+                </div>
+              )}
             </div>
           );
         })}
@@ -223,8 +216,10 @@ export const FieldBrowser: React.FC<FieldBrowserProps> = ({
         {ungroupedFields.length > 0 && (
           <div className="border-b border-border-color/50">
             <button
+              type="button"
               onClick={() => toggleGroup('__ungrouped')}
-              className="w-full flex items-center gap-2 px-4 py-2.5 hover:bg-white/[0.03] transition-colors"
+              className="w-full flex items-center gap-2 px-4 py-2.5 hover:bg-surface-2 transition-colors"
+              aria-expanded={expandedGroups.has('__ungrouped')}
             >
               {expandedGroups.has('__ungrouped')
                 ? <ChevronDown className="w-3.5 h-3.5 text-text-muted" />
@@ -235,20 +230,11 @@ export const FieldBrowser: React.FC<FieldBrowserProps> = ({
               <span className="text-[10px] text-text-muted ml-auto">{ungroupedFields.length} 字段</span>
             </button>
 
-            <AnimatePresence>
-              {expandedGroups.has('__ungrouped') && (
-                <motion.div
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: 'auto', opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  className="overflow-hidden"
-                >
-                  <div className="pb-2">
-                    {ungroupedFields.map(f => renderFieldRow(f, data[f]))}
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
+            {expandedGroups.has('__ungrouped') && (
+              <div className="pb-2">
+                {ungroupedFields.map(f => renderFieldRow(f, data[f]))}
+              </div>
+            )}
           </div>
         )}
       </div>

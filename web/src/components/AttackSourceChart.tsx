@@ -1,6 +1,6 @@
 import React from 'react';
-import { motion } from 'framer-motion';
 import { Globe } from 'lucide-react';
+import { useChartTokens } from '../styles/chartTheme';
 
 interface AttackSource {
   ip: string;
@@ -21,35 +21,37 @@ const countryFlags: Record<string, string> = {
 };
 
 export default function AttackSourceChart({ data }: AttackSourceChartProps) {
-  const maxCount = Math.max(...data.map(d => d.count));
+  const t = useChartTokens();
+  const maxCount = Math.max(1, ...data.map((d) => d.count));
+
+  if (!data.length) {
+    return <div className="py-8 text-center text-[12px] text-text-muted">暂无数据</div>;
+  }
 
   return (
     <div className="space-y-3">
       {data.map((source, index) => (
-        <motion.div
-          key={source.ip}
-          initial={{ opacity: 0, x: -20 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ delay: index * 0.1 }}
-          className="flex items-center gap-3"
-        >
-          <span className="text-text-muted text-sm w-6">{index + 1}</span>
-          <span className="text-lg">{countryFlags[source.country] || <Globe className="w-4 h-4 text-text-muted" />}</span>
-          <div className="flex-1">
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-text-primary text-sm font-medium">{source.ip}</span>
-              <span className="text-text-secondary text-xs">{source.count}次</span>
+        <div key={source.ip} className="flex items-center gap-3">
+          <span className="num w-5 shrink-0 text-[11px] text-text-muted">{index + 1}</span>
+          <span className="flex h-6 w-6 shrink-0 items-center justify-center text-[15px]">
+            {countryFlags[source.country] || <Globe className="h-3.5 w-3.5 text-text-muted" />}
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="mb-1 flex items-center justify-between gap-3">
+              <span className="truncate-1 font-mono text-[12.5px] text-text-primary">{source.ip}</span>
+              <span className="num shrink-0 text-[11px] text-text-muted">{source.count} 次</span>
             </div>
-            <div className="h-2 bg-card-bg rounded-full overflow-hidden">
-              <motion.div
-                initial={{ width: 0 }}
-                animate={{ width: `${(source.count / maxCount) * 100}%` }}
-                transition={{ duration: 0.5, delay: index * 0.1 }}
-                className="h-full rounded-full bg-gradient-to-r from-primary to-accent"
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-3">
+              <div
+                className="h-full rounded-full transition-[width] duration-500 ease-out"
+                style={{
+                  width: `${Math.max(3, (source.count / maxCount) * 100)}%`,
+                  background: `linear-gradient(90deg, ${t.primary}, ${t.accent})`,
+                }}
               />
             </div>
           </div>
-        </motion.div>
+        </div>
       ))}
     </div>
   );

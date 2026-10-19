@@ -1073,9 +1073,9 @@ def analyze():
 
 @ai_api_bp.route('/cron/analyze-alerts', methods=['GET'])
 def cron_analyze_alerts():
-    """无需认证的定时告警分析触发器（用于内部 cron 调用）"""
-    from app.ai_analysis.alert_analyzer import analyze_alert_batch
-    result = analyze_alert_batch(limit=50)
+    """无需认证的定时研判触发器（内部 cron 调用；与「告警监控」同一实现）"""
+    from app.routes.ai_judgment import run_batch_judgment
+    result = run_batch_judgment(limit=50)
     return jsonify(result)
 
 @ai_api_bp.route('/orchestrate', methods=['POST'])
@@ -1113,10 +1113,10 @@ def orchestrate():
                 break
 
     # ===== 动作型指令：直接执行实际功能 =====
-    # 定时分析告警
+    # 批量研判告警（与「AI 中心 → 告警监控」同一实现）
     if any(k in q for k in ['定时分析','批量分析','分析告警','运行分析','安全告警','告警分析','分析最近','分析告警数据','查看告警','查看安全告警']):
-        from app.ai_analysis.alert_analyzer import analyze_alert_batch
-        result = analyze_alert_batch(limit=50)
+        from app.routes.ai_judgment import run_batch_judgment
+        result = run_batch_judgment(limit=50)
         if result.get('success'):
             reply = f"✅ 分析完成！\n- 已分析: {result.get('analyzed',0)} 条\n- 创建事件: {result.get('events_created',0)} 个\n- 标记误报: {result.get('false_positives',0)} 条\n- {result.get('message','')}"
             if session_id:
@@ -1181,22 +1181,6 @@ def orchestrate():
             'response': '请输入事件编号，例如：追踪事件 INC-20240523 的攻击链',
             'session_id': session_id, 'intent': 'investigate', 'orchestrator': 'direct'
         }})
-
-    # 白名单管理
-    if any(k in q for k in ['白名单','误报名单','whitelist']):
-        from app.ai_analysis.whitelist import get_rules, save_rules
-        if '查看' in q or '查询' in q or '列表' in q or '所有' in q:
-            rules = get_rules()
-            rule_list = '\n'.join([f"- {r.get('name','')}: {r.get('reason','')}" for r in rules]) or '无规则'
-            return jsonify({'success': True, 'data': {
-                'response': f"## 白名单规则\n\n{rule_list}\n\n发送「添加白名单规则: 名称|条件|理由」添加新规则",
-                'session_id': session_id, 'intent': 'whitelist', 'orchestrator': 'direct'
-            }})
-        if '添加' in q:
-            return jsonify({'success': True, 'data': {
-                'response': '请在 AI 配置页面的白名单管理中配置规则，或输入格式: 添加白名单规则: 规则名称|{"src_ip":"10.0.0.1"}|理由',
-                'session_id': session_id, 'intent': 'whitelist', 'orchestrator': 'direct'
-            }})
 
     # ===== 技能执行：封禁IP/隔离主机/查询情报 =====
     if any(k in q for k in ['封禁','block','拉黑','屏蔽']):
@@ -1476,99 +1460,40 @@ def list_workflows():
 @ai_api_bp.route('/pipeline/status', methods=['GET'])
 @login_required
 def pipeline_status():
-    """获取告警处理流水线运行状态"""
-    import json, os
-    status_file = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'pipeline_status.json')
-    status = {"running": False, "last_run": None, "total_analyzed": 0, "total_events": 0, "error": None}
-    if os.path.exists(status_file):
-        try:
-            with open(status_file) as f:
-                status.update(json.load(f))
-        except: pass
-    return jsonify({'success': True, 'data': status})
+    """获取「告警监控」运行状态（真实调度任务状态 + 累计统计，PG 持久化）"""
+    from app.scheduler import get_pipeline_status
+    return jsonify({'success': True, 'data': get_pipeline_status()})
 
-
-# 模块启动时自动清理上一次遗留的状态
-import os as _pipeline_os
-_status_file = _pipeline_os.path.join(_pipeline_os.path.dirname(__file__), '..', '..', 'data', 'pipeline_status.json')
-if _pipeline_os.path.exists(_status_file):
-    try:
-        import json as _pipeline_json
-        with open(_status_file) as _pf:
-            _ps = _pipeline_json.load(_pf)
-        if _ps.get('running'):
-            _ps['running'] = False
-            _ps['error'] = '服务重启，上次分析中断'
-            with open(_status_file, 'w') as _pf:
-                _pipeline_json.dump(_ps, _pf)
-    except Exception:
-        pass
 
 @ai_api_bp.route('/pipeline/start', methods=['POST'])
 @login_required
 def pipeline_start():
-    """启动定时告警分析"""
-    import json, os, threading
-    from flask import current_app
-    status_file = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'pipeline_status.json')
-    
-    def run_analysis():
-        with current_app.app_context():
-            from app.ai_analysis.alert_analyzer import analyze_alert_batch
-            try:
-                result = analyze_alert_batch(limit=50)
-                # 累计当日统计（每次运行累加）
-                import json as _rj
-                _prev = {"total_analyzed": 0, "total_events": 0, "high_risk": 0}
-                if os.path.exists(status_file):
-                    try:
-                        with open(status_file) as _pf:
-                            _prev_data = _rj.load(_pf)
-                        if _prev_data.get('last_run'):
-                            _prev = _prev_data
-                    except: pass
-                status = {"running": False, "last_run": __import__('datetime').datetime.utcnow().isoformat(),
-                          "total_analyzed": _prev.get('total_analyzed', 0) + result.get('analyzed', 0),
-                          "total_events": _prev.get('total_events', 0) + result.get('events_created', 0),
-                          "high_risk": _prev.get('high_risk', 0) + max(0, result.get('analyzed', 0) - result.get('false_positives', 0)),
-                          "error": result.get('error')}
-            except Exception as e:
-                status = {"running": False, "error": str(e)}
-            os.makedirs(os.path.dirname(status_file), exist_ok=True)
-            with open(status_file, 'w') as f:
-                json.dump(status, f)
-    
-    os.makedirs(os.path.dirname(status_file), exist_ok=True)
-    with open(status_file, 'w') as f:
-        json.dump({"running": True, "last_run": None, "error": None}, f)
-    
-    t = threading.Thread(target=run_analysis, daemon=True)
-    t.start()
-    return jsonify({'success': True, 'message': '分析已启动'})
+    """启动定时批量研判（恢复 60s 调度任务；重启后按持久化开关自动恢复）"""
+    from app.scheduler import start_pipeline
+    ok, message = start_pipeline()
+    return jsonify({'success': ok, 'message': message})
 
 
 @ai_api_bp.route('/pipeline/stop', methods=['POST'])
 @login_required
 def pipeline_stop():
-    """停止定时分析（标记停止）"""
-    import json, os
-    status_file = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'pipeline_status.json')
-    os.makedirs(os.path.dirname(status_file), exist_ok=True)
-    with open(status_file, 'w') as f:
-        json.dump({"running": False, "last_run": None, "stopped": True}, f)
-    return jsonify({'success': True, 'message': '已停止'})
+    """停止定时批量研判（暂停调度任务，已研判结论保留）"""
+    from app.scheduler import stop_pipeline
+    ok, message = stop_pipeline()
+    return jsonify({'success': ok, 'message': message})
 
 
 @ai_api_bp.route('/alerts/schema', methods=['GET'])
 @login_required
 def get_alerts_schema():
-    from app.timescaledb import get_tsdb
-    from sqlalchemy import text
+    """告警字段清单（ES 为告警唯一真相源，字段以索引 mapping 为准）"""
+    from app.utils.es_alerts import ALERT_MAPPING
     try:
-        tsdb = get_tsdb(); sess = tsdb.get_session()
-        rows = sess.execute(text("SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_name = 'alerts' ORDER BY ordinal_position")).fetchall()
-        tsdb.close_session(sess)
-        fields = [{"name": r[0], "type": r[1], "nullable": r[2] == 'YES', "label": _alert_field_label(r[0])} for r in rows]
+        fields = [
+            {"name": name, "type": spec.get('type', 'text'),
+             "nullable": True, "label": _alert_field_label(name)}
+            for name, spec in ALERT_MAPPING.get('properties', {}).items()
+        ]
         parsed_sub = [
             {"name": "extra_data.parsed.attack_type", "type": "text", "label": "攻击类型(解析)"},
             {"name": "extra_data.parsed.method", "type": "text", "label": "请求方法(解析)"},
@@ -1582,42 +1507,6 @@ def get_alerts_schema():
 def _alert_field_label(name):
     labels = {'id':'ID','alert_code':'告警编号','title':'标题','description':'描述','severity':'严重度','status':'状态','source':'来源','source_product':'数据源产品','source_type':'数据源类型','category':'分类','confidence':'置信度','src_ip':'源IP','src_port':'源端口','dst_ip':'目标IP','dst_port':'目标端口','protocol':'协议','hostname':'主机名','raw_log':'原始日志','first_seen':'首次发现','last_seen':'最后发现','tags':'标签'}
     return labels.get(name, name)
-
-@ai_api_bp.route('/whitelist/rules', methods=['GET'])
-@login_required
-def get_whitelist_rules():
-    """获取白名单规则列表"""
-    from app.ai_analysis.whitelist import get_rules
-    rules = get_rules()
-    return jsonify({'success': True, 'data': rules})
-
-@ai_api_bp.route('/whitelist/rules', methods=['POST'])
-@login_required
-def add_whitelist_rule():
-    """添加白名单规则"""
-    data = request.get_json() or {}
-    name = data.get('name', '')
-    conditions = data.get('conditions', {})
-    reason = data.get('reason', '')
-    if not name:
-        return jsonify({'success': False, 'error': '规则名称不能为空'}), 400
-    from app.ai_analysis.whitelist import get_rules, save_rules
-    rules = get_rules()
-    rules.append({"name": name, "conditions": conditions, "reason": reason or name})
-    save_rules(rules)
-    return jsonify({'success': True, 'message': '规则已添加'})
-
-@ai_api_bp.route('/whitelist/rules/<int:index>', methods=['DELETE'])
-@login_required
-def delete_whitelist_rule(index):
-    """删除白名单规则"""
-    from app.ai_analysis.whitelist import get_rules, save_rules
-    rules = get_rules()
-    if index < 0 or index >= len(rules):
-        return jsonify({'success': False, 'error': '规则不存在'}), 404
-    rules.pop(index)
-    save_rules(rules)
-    return jsonify({'success': True, 'message': '规则已删除'})
 
 @ai_api_bp.route('/workflows', methods=['POST'])
 @login_required

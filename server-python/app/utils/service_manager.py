@@ -2,7 +2,6 @@
 大数据组件健康检查与启动管理
 
 在 Flask 后端启动前，确保所有依赖组件已就绪:
-- TimescaleDB (日志存储)
 - Kafka (消息队列)
 - Redis (缓存)
 - Flink (流处理)
@@ -43,13 +42,6 @@ class Component:
 
 # 组件配置
 COMPONENTS = {
-    'timescale': Component(
-        name='TimescaleDB',
-        host=os.getenv('TSDB_HOST', 'localhost'),
-        port=int(os.getenv('TSDB_PORT', '5433')),
-        check_type='tcp',
-        timeout=60
-    ),
     'kafka': Component(
         name='Kafka',
         host='localhost',
@@ -210,7 +202,7 @@ def check_all_components(show_details: bool = True) -> Dict[str, ComponentStatus
 
 def wait_for_all_components(timeout_multiplier: float = 1.0) -> Tuple[bool, List[str]]:
     """等待所有组件就绪"""
-    required_components = ['timescale', 'kafka', 'redis']  # 必需组件
+    required_components = ['kafka', 'redis']  # 必需组件
     optional_components = ['flink']  # 可选组件
     
     ready = []
@@ -283,25 +275,6 @@ def init_kafka_topics() -> bool:
         print(f"⚠ Kafka Topics 初始化失败: {e}")
         return False
 
-
-def init_timescale_db() -> bool:
-    """初始化 TimescaleDB 表"""
-    init_script = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'postgres', 'init.d', '01-init-timescale.sql')
-    
-    if not os.path.exists(init_script):
-        print("⚠ TimescaleDB 初始化脚本不存在，跳过")
-        return False
-    
-    try:
-        print("📝 初始化 TimescaleDB 表...")
-        subprocess.run([
-            'docker', 'exec', '-i', 'timescale',
-            'psql', '-U', 'postgres', '-d', 'timescale'
-        ], stdin=open(init_script), check=False)
-        return True
-    except Exception as e:
-        print(f"⚠ TimescaleDB 初始化失败: {e}")
-        return False
 
 
 # 直接运行时显示状态

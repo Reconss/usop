@@ -46,8 +46,7 @@ from app.utils.service_manager import (
     check_all_components,
     wait_for_all_components,
     ensure_docker_services_running,
-    init_kafka_topics,
-    init_timescale_db
+    init_kafka_topics
 )
 
 __all__ = [
@@ -58,6 +57,5 @@ __all__ = [
     'check_all_components',
     'wait_for_all_components',
     'ensure_docker_services_running',
-    'init_kafka_topics',
-    'init_timescale_db'
+    'init_kafka_topics'
 ]

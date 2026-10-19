@@ -1,23 +1,31 @@
 import React, { useState, useEffect } from 'react';
-import { motion } from 'framer-motion';
 import {
   AlertCircle,
   Activity,
   ShieldAlert,
   Server,
+  HardDrive,
   RefreshCw,
-  Loader2,
-  ArrowRight
+  ArrowRight,
+  type LucideIcon
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { dashboardApi, assetsApi, systemStatusApi } from '../services/api';
-import MetricCard from '../components/MetricCard';
 import EventTrendChart from '../components/EventTrendChart';
 import EventTypeChart from '../components/EventTypeChart';
 import AttackSourceChart from '../components/AttackSourceChart';
 import RiskAssetList from '../components/RiskAssetList';
+import {
+  Button,
+  ContentContainer,
+  PageHeader,
+  SectionCard,
+  StatCard,
+  LoadingState,
+  type StatTone,
+} from '../components/ui';
 
-// 默认数据（API失败时显示）
+// 默认数据（API 失败时显示，全部为 0 空值，不使用任何编造数据）
 const defaultMetrics = {
   todayAlerts: 0,
   pendingEvents: 0,
@@ -37,9 +45,7 @@ const defaultTrendData = {
   low: [0, 0, 0, 0, 0, 0, 0]
 };
 
-const defaultDistribution = [
-  { name: '无数据', value: 1, color: '#6366f1' }
-];
+const defaultDistribution: { name: string; value: number; color?: string }[] = [];
 
 const defaultAttackSources = [
   { ip: '-', country: '-', count: 0 }
@@ -54,8 +60,7 @@ const Dashboard: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdate, setLastUpdate] = useState(new Date());
-  const [hoveredCard, setHoveredCard] = useState<string | null>(null);
-  
+
   // 数据状态
   const [metrics, setMetrics] = useState(defaultMetrics);
   const [trendData, setTrendData] = useState(defaultTrendData);
@@ -165,101 +170,134 @@ const Dashboard: React.FC = () => {
     }
   };
 
-  const metricCards = [
-    { id: 'alerts', title: '今日告警数', value: (metrics.todayAlerts || 0).toLocaleString(), trend: metrics.alertsTrend || 0, icon: AlertCircle, color: '#6366f1', link: '/detection/investigation' },
-    { id: 'events', title: '待处理事件', value: (metrics.pendingEvents || 0).toString(), trend: metrics.pendingTrend || 0, icon: Activity, color: '#f97316', link: '/detection/events' },
-    { id: 'assets', title: '资产数量', value: (metrics.totalAssets || 0).toLocaleString(), trend: metrics.assetsTrend || 0, icon: Server, color: '#10b981', link: '/assets/inventory' },
-    { id: 'risk', title: '高危资产', value: (metrics.highRiskAssets || 0).toString(), trend: metrics.healthTrend || 0, icon: ShieldAlert, color: '#ef4444', link: '/assets/inventory' },
-    { id: 'storage', title: '存储状态', value: storageStatus?.elasticsearch?.status === 'healthy' ? '正常' : '未知', trend: 0, icon: Server, color: '#8b5cf6', link: '/data/ingestion' }
+  const storageHealthy = storageStatus?.elasticsearch?.status === 'healthy';
+
+  const metricCards: {
+    id: string;
+    title: string;
+    value: string;
+    trend: number;
+    icon: LucideIcon;
+    tone: StatTone;
+  }[] = [
+    { id: 'alerts', title: '今日告警数', value: (metrics.todayAlerts || 0).toLocaleString(), trend: metrics.alertsTrend || 0, icon: AlertCircle, tone: 'primary' },
+    { id: 'events', title: '待处理事件', value: (metrics.pendingEvents || 0).toString(), trend: metrics.pendingTrend || 0, icon: Activity, tone: 'warning' },
+    { id: 'assets', title: '资产数量', value: (metrics.totalAssets || 0).toLocaleString(), trend: metrics.assetsTrend || 0, icon: Server, tone: 'info' },
+    { id: 'risk', title: '高危资产', value: (metrics.highRiskAssets || 0).toString(), trend: metrics.healthTrend || 0, icon: ShieldAlert, tone: 'danger' },
+    { id: 'storage', title: '存储状态', value: storageHealthy ? '正常' : '未知', trend: 0, icon: HardDrive, tone: storageHealthy ? 'success' : 'neutral' }
   ];
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-[60vh]">
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex flex-col items-center gap-4">
-          <Loader2 className="w-10 h-10 text-primary animate-spin" />
-          <p className="text-text-secondary">加载中...</p>
-        </motion.div>
-      </div>
+      <ContentContainer>
+        <LoadingState label="正在加载安全态势数据…" />
+      </ContentContainer>
     );
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-page-title text-text-primary">安全态势仪表盘</h1>
-        <div className="flex items-center gap-4">
-          <span className="text-label text-text-muted">最后更新: {lastUpdate.toLocaleTimeString()}</span>
-          <motion.button
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
+    <ContentContainer>
+      <PageHeader
+        title="安全态势仪表盘"
+        icon={Activity}        meta={
+          <span className="text-caption text-text-muted">
+            最后更新 {lastUpdate.toLocaleTimeString()}
+          </span>
+        }
+        actions={
+          <Button
+            variant="secondary"
+            icon={RefreshCw}
+            loading={refreshing}
             onClick={handleRefresh}
-            disabled={refreshing}
-            className="flex items-center gap-2 px-4 py-2 bg-primary/10 text-primary rounded-lg hover:bg-primary/20 transition-colors disabled:opacity-50"
           >
-            <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
             刷新
-          </motion.button>
-        </div>
-      </div>
+          </Button>
+        }
+      />
 
-      <div className="grid grid-cols-4 gap-4">
-        {metricCards.map((metric, index) => (
-          <motion.div
+      {/* 核心指标 */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
+        {metricCards.map((metric) => (
+          <StatCard
             key={metric.id}
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: index * 0.1 }}
-            className="relative"
-            onMouseEnter={() => setHoveredCard(metric.id)}
-            onMouseLeave={() => setHoveredCard(null)}
-          >
-            <div onClick={() => handleCardClick(metric.id)} className="cursor-pointer">
-              <MetricCard title={metric.title} value={metric.value} icon={metric.icon} color={metric.color} trend={metric.trend} />
-            </div>
-            {/* 悬停时显示跳转提示 */}
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: hoveredCard === metric.id ? 1 : 0, y: hoveredCard === metric.id ? 0 : 10 }}
-              className="absolute bottom-2 right-2 flex items-center gap-1 text-xs text-primary"
-            >
-              <span>点击查看</span>
-              <ArrowRight className="w-3 h-3" />
-            </motion.div>
-          </motion.div>
+            label={metric.title}
+            value={metric.value}
+            icon={metric.icon}
+            tone={metric.tone}
+            emphasize={metric.id === 'alerts'}
+            hint={
+              metric.id === 'storage'
+                ? undefined
+                : metric.trend === 0
+                  ? '与昨日持平'
+                  : undefined
+            }
+            onClick={metric.id === 'storage' ? () => navigate('/data/ingestion') : () => handleCardClick(metric.id)}
+          />
         ))}
       </div>
 
-      <div className="grid grid-cols-3 gap-6">
-        <motion.div className="col-span-2" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}>
-          <div className="glass-card rounded-card p-5">
-            <h2 className="text-card-title text-text-primary mb-4">事件趋势 (24小时)</h2>
-            <EventTrendChart data={trendData} />
-          </div>
-        </motion.div>
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.5 }}>
-          <div className="glass-card rounded-card p-5">
-            <h2 className="text-card-title text-text-primary mb-4">事件类型分布</h2>
+      {/* 趋势与分布 */}
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
+        <SectionCard
+          className="lg:col-span-2"
+          title="事件趋势（24 小时）"
+          description="按严重级别统计的事件数量变化"
+          actions={
+            <span className="flex items-center gap-3 text-caption text-text-muted">
+              <span className="flex items-center gap-1"><i className="status-dot critical" />危急</span>
+              <span className="flex items-center gap-1"><i className="status-dot high" />高危</span>
+              <span className="flex items-center gap-1"><i className="status-dot medium" />中危</span>
+              <span className="flex items-center gap-1"><i className="status-dot low" />低危</span>
+            </span>
+          }
+        >
+          <EventTrendChart data={trendData} />
+        </SectionCard>
+
+        <SectionCard title="事件类型分布" description="按分类的事件占比">
+          {distribution.length === 0 ? (
+            <div className="flex h-64 items-center justify-center text-[12px] text-text-muted">
+              暂无分布数据
+            </div>
+          ) : (
             <EventTypeChart data={distribution} />
-          </div>
-        </motion.div>
+          )}
+        </SectionCard>
       </div>
 
-      <div className="grid grid-cols-2 gap-6">
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.6 }}>
-          <div className="glass-card rounded-card p-5">
-            <h2 className="text-card-title text-text-primary mb-4">Top 5 攻击源 IP</h2>
-            <AttackSourceChart data={attackSources} />
-          </div>
-        </motion.div>
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.7 }}>
-          <div className="glass-card rounded-card p-5">
-            <h2 className="text-card-title text-text-primary mb-4">Top 5 风险资产</h2>
+      {/* 攻击源与风险资产 */}
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+        <SectionCard
+          title="Top 5 攻击源 IP"
+          description="按告警条数排序"
+          actions={
+            <Button variant="ghost" size="sm" iconRight={ArrowRight} onClick={() => navigate('/detection/investigation')}>
+              查看告警
+            </Button>
+          }
+        >
+          <AttackSourceChart data={attackSources.filter((s) => s.ip !== '-')} />
+        </SectionCard>
+
+        <SectionCard
+          title="Top 5 风险资产"
+          description="风险分高于 70 的资产"
+          actions={
+            <Button variant="ghost" size="sm" iconRight={ArrowRight} onClick={() => navigate('/assets/inventory')}>
+              资产清单
+            </Button>
+          }
+        >
+          {riskAssets.filter((a) => a.id !== '-').length === 0 ? (
+            <div className="py-8 text-center text-[12px] text-text-muted">暂无高风险资产</div>
+          ) : (
             <RiskAssetList data={riskAssets} />
-          </div>
-        </motion.div>
+          )}
+        </SectionCard>
       </div>
-    </div>
+    </ContentContainer>
   );
 };
 

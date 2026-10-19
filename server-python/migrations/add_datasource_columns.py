@@ -21,6 +21,10 @@ def run_migration():
         
         # 需要添加的列
         columns_to_add = [
+            # Kafka 接入（与 DataSource 模型对齐：alert_consumer 按 kafka_topic 订阅）
+            ("kafka_topic", "VARCHAR(100)"),
+            ("product_type", "VARCHAR(50)"),
+
             # 关联日志类型
             ("log_type_id", "VARCHAR(50)"),
             ("log_type_name", "VARCHAR(100)"),

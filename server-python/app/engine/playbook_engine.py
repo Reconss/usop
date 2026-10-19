@@ -18,9 +18,51 @@ from app.engine.actions import (
 class PlaybookEngine:
     """剧本执行引擎"""
 
+    # 前端画布 typeId → 引擎执行语义类型
+    TYPE_ALIASES = {
+        'notify': 'notification',   # 多渠道通知
+    }
+
+    # 触发类型归一化：前端画布中文 / 引擎英文 → 统一键
+    TRIGGER_TYPE_ALIASES = {
+        '告警事件': 'alert', 'alert': 'alert', 'event': 'alert', '告警': 'alert',
+        '定时任务': 'schedule', 'schedule': 'schedule', 'cron': 'schedule',
+        '手动触发': 'manual', 'manual': 'manual',
+        'webhook': 'webhook', 'Webhook': 'webhook',
+    }
+
+    # 业务语义节点 → 内置动作名（前端 typeId 即决定调用哪个动作）
+    SEMANTIC_ACTION_MAP = {
+        'block': 'block_ip',            # IP 封堵
+        'isolate': 'quarantine_host',   # 主机隔离
+        'script': 'run_script',         # 执行脚本
+        'ticket': 'create_ticket',      # 创建工单
+        'query': 'query_data',          # 数据查询
+        'enrich': 'enrich_ip',          # 情报补全
+        'ai': 'ai_llm',                 # AI 大模型（Coze 风格：提示词 + 输出契约）
+        'recall': 'recall_experience',  # STE 经验库召回（知识库节点）
+        'email': 'send_email',          # SMTP 邮件发送
+        'create_event': 'create_event',  # 告警聚合生成事件（含去重）
+        'update_event': 'update_event',  # 更新事件状态/回写分析结论
+    }
+
+    # 前端画布中文运算符 → 引擎运算符
+    OPERATOR_ALIASES = {
+        '等于': 'equals', '不等于': 'not_equals',
+        '包含': 'contains', '不包含': 'not_contains',
+        '大于': 'greater_than', '小于': 'less_than',
+        '属于': 'in_list', '不属于': 'not_in_list',
+        '开头是': 'starts_with', '结尾是': 'ends_with',
+        '为空': 'is_empty', '不为空': 'is_not_empty',
+        '正则匹配': 'regex_match',
+    }
+
     # 条件运算符
     CONDITION_OPERATORS = {
-        'equals': lambda a, b: str(a) == str(b),
+        # equals/not_equals 对布尔值做大小写不敏感比较（AI 节点输出 True vs 配置 'true'）
+        'equals': lambda a, b: (str(a).lower() == str(b).lower()
+                                if isinstance(a, bool) or str(b).lower() in ('true', 'false')
+                                else str(a) == str(b)),
         'not_equals': lambda a, b: str(a) != str(b),
         'contains': lambda a, b: str(b).lower() in str(a).lower(),
         'not_contains': lambda a, b: str(b).lower() not in str(a).lower(),
@@ -64,11 +106,16 @@ class PlaybookEngine:
         self.node_results = []
         self.started_at = datetime.utcnow()
 
-        nodes = playbook.nodes or []
+        # 前端画布格式与引擎内部格式不同，进入执行前统一适配（见 _normalize_node）
+        nodes = [self._normalize_node(n) for n in (playbook.nodes or [])]
         edges = playbook.edges or []
+        # 老数据/前端直存时只有 nodes[].outputs，无 edges —— 就地补齐拓扑
+        if not edges:
+            edges = self._outputs_to_edges(playbook.nodes or [])
 
-        # 构建执行上下文
+        # 构建执行上下文（携带 playbook_id，供审批节点关联正确剧本）
         context = ActionContext(event=event, alert=alert, params=params)
+        context.playbook_id = playbook.id
 
         # 存储事件引用到上下文
         if event:
@@ -80,6 +127,8 @@ class PlaybookEngine:
         # 构建节点索引和邻接表
         node_map = {n.get('id'): n for n in nodes if n.get('id')}
         adjacency = self._build_adjacency(edges, node_map)
+        # 反向邻接：用于把上游节点的输出汇聚成当前节点的输入 items
+        reverse_adj = self._build_reverse_adjacency(edges, node_map)
 
         # 找到起始节点 (trigger 或第一个节点)
         start_nodes = self._find_start_nodes(nodes, edges, node_map, trigger_type)
@@ -101,15 +150,36 @@ class PlaybookEngine:
                 node = node_map[node_id]
                 executed.add(node_id)
 
+                # n8n 数据流：当前节点输入 = 直接上游已执行节点的输出
+                node_label = node.get('data', {}).get('label') or node.get('name') or node_id
+                context.current_node = node_label
+                context.current_node_id = node_id
+                in_items = self._collect_input_items(node_id, reverse_adj, context, executed)
+                context.set_input_items(in_items)
+
                 result = self._execute_node(node, context)
+
+                # 注册输出供下游 {{ $('节点名').json.x }} 引用
+                out_items = self._compose_output(result, context)
+                context.set_node_output(node_label, node_id, out_items)
 
                 self.node_results.append({
                     'node_id': node_id,
-                    'node_label': node.get('data', {}).get('label', node.get('type', '')),
+                    'node_label': node_label,
                     'type': node.get('type', ''),
                     'success': result.get('success', False),
                     'message': result.get('message', ''),
-                    'data': result.get('data', {})
+                    'data': result.get('data', {}),
+                    # 数据快照：这个节点向下游交出了哪些数据项（便于排障"数据怎么流动的"）
+                    'item_count': len(out_items),
+                    'items': [i.get('json') for i in out_items][:20],
+                    # 入/出字段清单：配置面板的引用选择器据此列出真实可引用字段
+                    'input_count': len(in_items),
+                    'input_keys': list((in_items[0].get('json') or {}).keys())[:20] if in_items else [],
+                    'output_keys': list((out_items[0].get('json') or {}).keys())[:20] if out_items else [],
+                    # AI 节点来源标记（is_ai=False 表示走了规则兜底，UI 需显式降级提示）
+                    'source': (result.get('data') or {}).get('source') if isinstance(result.get('data'), dict) else None,
+                    'is_ai': (result.get('data') or {}).get('is_ai') if isinstance(result.get('data'), dict) else None,
                 })
 
                 # 根据节点类型和结果选择下一个节点
@@ -154,13 +224,142 @@ class PlaybookEngine:
             'completed_nodes': len(executed)
         }
 
+    @staticmethod
+    def _build_reverse_adjacency(edges: List[Dict], node_map: Dict) -> Dict[str, list]:
+        """构建反向邻接表 {目标节点: [上游节点, ...]}，用于汇聚输入 items。"""
+        rev: Dict[str, list] = {}
+        for e in (edges or []):
+            if not isinstance(e, dict):
+                continue
+            s, t = e.get('source'), e.get('target')
+            if s in node_map and t in node_map:
+                rev.setdefault(t, [])
+                if s not in rev[t]:
+                    rev[t].append(s)
+        return rev
+
+    def _collect_input_items(self, node_id: str, reverse_adj: Dict,
+                             context: 'ActionContext', executed: set) -> list:
+        """当前节点的输入 items：所有直接上游已执行节点的输出按序拼接。
+
+        无上游（起始节点）或上游未产出数据时，回退为初始上下文负载单 item，
+        保证 {{ $json.xxx }} / {{ src_ip }} 在任何位置都能取到触发数据。
+        """
+        items = []
+        for src in reverse_adj.get(node_id, []):
+            if src not in executed:
+                continue
+            out = context.node_outputs.get(src)
+            if out is None:
+                continue
+            for idx, it in enumerate(out.items):
+                items.append({
+                    'json': dict(it.get('json') or {}),
+                    'paired_items': [{'node': src, 'index': idx}],
+                })
+        if not items:
+            items = [{'json': context.snapshot_json()}]
+        return items
+
+    def _compose_output(self, result: Dict, context: 'ActionContext') -> list:
+        """节点输出 items：显式 items 优先；否则把结果 data 合并进输入项后透传。
+
+        合并而非替换，是为了让数据在链路上持续累积（安全处置场景里下游常需要
+        同时拿到原始告警字段和本节点的处置结果）；需要精确整形时用「字段整形」节点。
+        """
+        if isinstance(result.get('items'), list):
+            return [{'json': i.get('json') if isinstance(i, dict) and 'json' in i else i,
+                     'paired_items': (i.get('paired_items') if isinstance(i, dict) else [])}
+                    for i in result['items']]
+        data = result.get('data') or {}
+        base_items = context.items or []
+        if not base_items:
+            return [{'json': dict(data) if isinstance(data, dict) else {'value': data}}]
+        merged = []
+        for it in base_items:
+            nj = dict(it.get('json') or {})
+            if isinstance(data, dict):
+                nj.update(data)
+            elif data:
+                nj['value'] = data
+            merged.append({'json': nj, 'paired_items': it.get('paired_items', [])})
+        return merged
+
+    @staticmethod
+    def _outputs_to_edges(nodes: List[Dict]) -> List[Dict]:
+        """nodes[].outputs[] → edges[]（引擎拓扑所需）。"""
+        edges = []
+        for n in (nodes or []):
+            if not isinstance(n, dict):
+                continue
+            src = n.get('id')
+            if not src:
+                continue
+            for tgt in (n.get('outputs') or []):
+                if tgt:
+                    edges.append({'id': f'e_{src}_{tgt}', 'source': src, 'target': tgt})
+        return edges
+
+    @staticmethod
+    def _parse_duration(expr: str) -> int:
+        """解析时长表达式：30s / 5m / 2h / 1d，纯数字按秒。"""
+        import re as _re
+        m = _re.fullmatch(r'(\d+)\s*([smhd]?)', str(expr or '').strip().lower())
+        if not m:
+            return 0
+        return int(m.group(1)) * {'': 1, 's': 1, 'm': 60, 'h': 3600, 'd': 86400}[m.group(2)]
+
+    @staticmethod
+    def _normalize_node(raw: Dict) -> Dict:
+        """前端画布节点 → 引擎内部节点格式。
+
+        前端: {id, typeId, name, config, position, outputs}
+        引擎: {id, type, data: {label, config}}
+        已是引擎格式的节点（含 data 且无 typeId）原样返回。
+        """
+        if not isinstance(raw, dict):
+            return {}
+        if raw.get('type') and not raw.get('typeId'):
+            return raw
+        return {
+            'id': raw.get('id'),
+            'type': raw.get('typeId') or raw.get('type') or '',
+            'data': {
+                'label': raw.get('name', ''),
+                'config': raw.get('config', {}) or {},
+            },
+            'position': raw.get('position', {}),
+        }
+
     def _execute_node(self, node: Dict, context: ActionContext) -> Dict:
-        """执行单个节点"""
-        node_type = node.get('type', '')
-        node_data = node.get('data', {})
+        """执行单个节点
+
+        前端画布的 typeId 是业务语义命名（block/isolate/script/ticket/query/enrich/notify），
+        引擎内部是执行语义命名（action/notification）；TYPE_ALIASES 负责归约。
+        """
+        raw_type = node.get('type', '')
+        node_data = node.get('data', {}) or {}
+        config = node_data.get('config', {}) or node.get('config', {}) or {}
+        node_type = self.TYPE_ALIASES.get(raw_type, raw_type)
+
+        # 业务语义节点：直接调用对应内置动作，不依赖 config.action 填写正确
+        builtin = self.SEMANTIC_ACTION_MAP.get(raw_type)
+        if builtin:
+            handler = get_action(builtin)
+            if not handler:
+                return {'success': False, 'message': f'未找到动作: {builtin}', 'data': {}}
+            result = handler.execute(config, context)
+            if result.success and result.data:
+                context.variables[f'action_{builtin}_result'] = result.data
+            return result.to_dict()
 
         if node_type == 'trigger':
-            return {'success': True, 'message': '触发器通过', 'data': {}}
+            # 触发数据作为输出项交给下游（引用选择器/ {{ $json.xxx }} 都能看到）
+            snapshot = context.snapshot_json()
+            return {'success': True, 'message': '触发器通过',
+                    'data': {k: v for k, v in snapshot.items()
+                             if not k.startswith('_')} or {'triggered': True},
+                    'items': [{'json': snapshot}]}
 
         elif node_type == 'ai_analysis':
             from app.engine.actions import AIAnalysisAction
@@ -178,48 +377,600 @@ class PlaybookEngine:
             return result.to_dict()
 
         elif node_type == 'action':
-            action_name = node_data.get('action', '')
-            action_config = node_data.get('config', {})
+            # 画布格式动作名在 config.action；旧引擎格式在 data.action
+            action_name = config.get('action') or node_data.get('action', '')
+            action_config = dict(config)
+            # params 字段：JSON 或每行 key=value，支持表达式 —— 通用动作的参数来源
+            params_raw = config.get('params')
+            if isinstance(params_raw, str) and params_raw.strip():
+                try:
+                    parsed = json.loads(params_raw)
+                    if isinstance(parsed, dict):
+                        for k, v in parsed.items():
+                            action_config[k] = context.resolve(v) if isinstance(v, str) else v
+                except (ValueError, TypeError):
+                    for line in params_raw.splitlines():
+                        if '=' in line:
+                            k, _, v = line.partition('=')
+                            k = k.strip()
+                            if k:
+                                action_config[k] = context.resolve(v.strip())
+            elif isinstance(params_raw, dict):
+                action_config.update(params_raw)
+            # values 字段：参数配置表单（schema 驱动）写入的结构化参数，优先于 params
+            values = config.get('values')
+            if isinstance(values, dict):
+                for k, v in values.items():
+                    if isinstance(v, str):
+                        action_config[k] = context.resolve(v)
+                    else:
+                        action_config[k] = v
             handler = get_action(action_name)
             if handler:
                 result = handler.execute(action_config, context)
+                # 标记动作名：执行记录页据此识别处置类型（封禁IP/隔离主机等）
+                if isinstance(result.data, dict):
+                    result.data.setdefault('action', action_name)
                 # 将结果存入上下文
                 if result.success and result.data:
                     context.variables[f'action_{action_name}_result'] = result.data
                 return result.to_dict()
-            return {'success': False, 'message': f'未找到动作: {action_name}', 'data': {}}
+            return {'success': False,
+                    'message': f'未找到动作: {action_name}（可用：block_ip / unblock_ip / '
+                               f'quarantine_host / create_ticket / enrich_ip / run_script ...）',
+                    'data': {'action': action_name}}
 
         elif node_type == 'condition':
-            return self._evaluate_condition(node_data, context)
+            return self._evaluate_condition(config, context)
 
         elif node_type == 'notification':
-            return self._execute_notification(node_data, context)
+            return self._execute_notification(config, context)
 
         elif node_type == 'api':
-            return self._execute_api_call(node_data, context)
+            return self._execute_api_call(config, context)
+
+        elif node_type == 'http_request':
+            return self._execute_http_request(config, context)
+
+        elif node_type == 'send_email':
+            from app.engine.actions import SendEmailAction
+            result = SendEmailAction.execute(config, context)
+            return result.to_dict()
+
+        # ---- 数据处理节点（对齐 n8n 的 Edit Fields / Code / Merge / Split Out / Aggregate / Filter）----
+        elif node_type == 'transform':
+            return self._execute_transform(config, context)
+
+        elif node_type == 'code':
+            return self._execute_code(config, context)
+
+        elif node_type == 'merge':
+            return self._execute_merge(config, context)
+
+        elif node_type == 'split':
+            return self._execute_split(config, context)
+
+        elif node_type == 'aggregate':
+            return self._execute_aggregate(config, context)
+
+        elif node_type == 'filter':
+            return self._execute_filter(config, context)
+
+        elif node_type == 'delay':
+            return self._execute_delay(config, context)
 
         elif node_type == 'approval':
             from app.engine.playbook_engine import execute_approval_node
-            return execute_approval_node(node_data, context, self.execution_id)
+            return execute_approval_node(config, context, self.execution_id)
 
         elif node_type == 'loop':
             from app.engine.playbook_engine import execute_loop_node
-            return execute_loop_node(node_data, context)
+            return execute_loop_node(config, context)
 
         elif node_type == 'switch':
             from app.engine.playbook_engine import execute_switch_node
-            return execute_switch_node(node_data, context)
+            return execute_switch_node(config, context)
 
         elif node_type == 'parallel':
             from app.engine.playbook_engine import execute_parallel_node
-            return execute_parallel_node(node_data, context)
+            return execute_parallel_node(config, context)
 
         return {'success': False, 'message': f'未知节点类型: {node_type}', 'data': {}}
+
+    def _execute_http_request(self, config: Dict, context: ActionContext) -> Dict:
+        """HTTP 请求节点执行体。
+
+        两种模式：
+        1. 绑定集成应用动作（config._app_id + _action_id）：加载应用与动作定义，
+           校验必填参数，把用户填的值（含表达式）渲染成请求后执行；
+           请求地址与认证由应用级配置提供。
+        2. 手动模式：直接用 config 里的 url/method/headers/query/body。
+        """
+        from app.engine.actions import HttpRequestAction
+
+        app_id = config.get('_app_id')
+        if not app_id:
+            return self._finalize_http_result(
+                HttpRequestAction.execute(config, context).to_dict(), config, context)
+
+        try:
+            from app.models import IntegrationApp
+            from app.services.integrations.importer import render_request
+            app = IntegrationApp.query.get(int(app_id))
+            if not app:
+                return {'success': False, 'message': f'集成应用不存在: {app_id}', 'data': {}}
+            if not app.enabled:
+                return {'success': False, 'message': f'集成应用已停用: {app.name}', 'data': {}}
+            action = next((a for a in (app.actions or [])
+                           if a.get('id') == config.get('_action_id')), None)
+            if not action:
+                return {'success': False,
+                        'message': f"动作不存在: {config.get('_action_id')}（应用 {app.name}）",
+                        'data': {}}
+
+            values = config.get('values') or {}
+            # 必填校验：path/query/header 参数 + body required 字段
+            missing = [p['name'] for p in (action.get('params') or [])
+                       if p.get('required') and not str(values.get(p['name']) or '').strip()]
+            missing += [k for k in ((action.get('body') or {}).get('required') or [])
+                        if not str(values.get(k) or '').strip()]
+            if missing:
+                return {'success': False,
+                        'message': f"缺少必填参数: {', '.join(missing)}",
+                        'data': {'missing': missing}}
+
+            # 值里的 {{ 表达式 }} 先解析，再替换 path/query/header
+            resolved = {k: (context.resolve(v) if isinstance(v, str) else v)
+                        for k, v in values.items()}
+            req = render_request(app.to_dict(), action, resolved)
+
+            result = HttpRequestAction.execute({
+                'url': req['url'],
+                'method': req['method'],
+                'headers': req['headers'],
+                'query': req['query'],
+                'body': req['body'],
+                'auth_app_id': app.id,
+                'timeout': config.get('timeout') or 15,
+            }, context)
+            out = result.to_dict()
+            # 附带应用/动作信息，便于执行记录排障
+            if isinstance(out.get('data'), dict):
+                out['data']['app'] = app.name
+                out['data']['action'] = action.get('name')
+            return self._finalize_http_result(out, config, context)
+        except Exception as e:
+            return self._finalize_http_result(
+                {'success': False, 'message': f'HTTP 请求节点异常: {str(e)[:200]}', 'data': {}},
+                config, context)
+
+    def _finalize_http_result(self, result: Dict, config: Dict, context) -> Dict:
+        """HTTP 节点结果收口：业务成败判定 + 结果注入上下文。
+
+        为什么需要：HttpRequestAction 仅按 HTTP 状态码判定 success，而真实设备
+        （防火墙 / EDR）常以 200 + 响应体错误码表示业务失败（如「IP 已在黑名单」）。
+        因此提供可选的 `success_path`：从响应体中取指定路径作为真正的成败依据。
+
+        config.success_path: 响应体中的点路径，如 `response.success` / `data.success`；
+            取到布尔直接用；字符串按 true/1/ok/success 判定；路径以 `code` 结尾时 0 视为成功。
+        写入上下文变量（供下游 condition / 通知节点用 {{ }} 引用）：
+            http_request_ok        最终成败（bool）
+            http_request_result    节点完整结果
+            http_request_response  响应体（dict 或文本）
+            http_request_data      响应体 data 段
+            http_request_message   响应体 message 字段
+        """
+        # 响应体位置：ActionResult.to_dict() 把 data 精简为 {status_code, url}，
+        # 完整响应（含 response）只存在于 items[0].json —— 两处都尝试。
+        data = result.get('data') or {}
+        payload = None
+        if isinstance(data, dict):
+            payload = data.get('response')
+        if payload is None:
+            items = result.get('items') or []
+            if items and isinstance(items[0], dict):
+                payload = (items[0].get('json') or {}).get('response')
+
+        path = str(config.get('success_path') or '').strip()
+        # 兼容两种写法：payload 本身就是响应体，故 `response.success` 与 `success` 等价
+        if path.startswith('response.') and isinstance(payload, dict) \
+                and 'response' not in payload:
+            path = path[len('response.'):]
+        biz_ok = None
+        if path and payload is not None:
+            cur = payload
+            for part in path.split('.'):
+                if isinstance(cur, dict):
+                    cur = cur.get(part)
+                elif isinstance(cur, list) and part.isdigit():
+                    cur = cur[int(part)] if int(part) < len(cur) else None
+                else:
+                    cur = None
+                    break
+            if isinstance(cur, bool):
+                biz_ok = cur
+            elif isinstance(cur, str):
+                biz_ok = cur.strip().lower() in ('true', '1', 'ok', 'success', 'yes')
+            elif isinstance(cur, (int, float)) and not isinstance(cur, bool):
+                biz_ok = (cur == 0) if path.endswith('code') else bool(cur)
+
+        if biz_ok is not None:
+            result['success'] = bool(biz_ok)
+            if isinstance(result.get('data'), dict):
+                result['data']['business_success'] = bool(biz_ok)
+            if not biz_ok and isinstance(payload, dict):
+                msg = payload.get('message') or payload.get('error') or '设备返回业务失败'
+                result['message'] = f"{result.get('message', '')} · 设备回执: {msg}"[:300]
+
+        try:
+            context.variables['http_request_result'] = result
+            context.variables['http_request_ok'] = bool(result.get('success'))
+            context.variables['http_request_response'] = payload
+            if isinstance(payload, dict):
+                context.variables['http_request_data'] = payload.get('data') or {}
+                context.variables['http_request_message'] = str(payload.get('message') or '')
+        except Exception:
+            pass
+        return result
+
+    def _execute_delay(self, config: Dict, context: ActionContext) -> Dict:
+        """延迟等待节点：解析 30s / 5m / 2h 形式的时长后休眠。
+
+        上限 5 分钟，避免长时间阻塞执行线程（剧本线程是串行消费模型）。
+        """
+        import time
+        seconds = self._parse_duration(config.get('duration', '5m'))
+        seconds = max(0, min(seconds, 300))
+        if seconds > 0:
+            time.sleep(seconds)
+        return {'success': True, 'message': f'已等待 {seconds} 秒', 'data': {'seconds': seconds}}
+
+    # ============ 数据处理节点（n8n 数据模型：items 在节点间流动）============
+
+    @staticmethod
+    def _input_items(context: ActionContext) -> list:
+        """取当前输入 items；无上游数据时回退为初始上下文负载单 item。"""
+        return context.items or [{'json': context.snapshot_json(), 'paired_items': []}]
+
+    @staticmethod
+    def _as_bool(val, default: bool = False) -> bool:
+        """把前端表单值（'是'/'否'/true/false/1/0）转成布尔。"""
+        if val is None:
+            return default
+        if isinstance(val, bool):
+            return val
+        s = str(val).strip().lower()
+        if s in ('', '否', 'false', 'no', '0', 'off'):
+            return False
+        if s in ('是', 'true', 'yes', '1', 'on'):
+            return True
+        return default
+
+    @staticmethod
+    def _coerce_scalar(val):
+        """字符串字面量做轻量类型推断，让整形结果带上正确类型。"""
+        if not isinstance(val, str):
+            return val
+        s = val.strip()
+        if s.lower() in ('true', 'false'):
+            return s.lower() == 'true'
+        if s.lower() in ('null', 'none', ''):
+            return None if s.lower() != '' else ''
+        try:
+            if s.lstrip('-').isdigit():
+                return int(s)
+            return float(s)
+        except ValueError:
+            return val
+
+    def _execute_transform(self, config: Dict, context: ActionContext) -> Dict:
+        """字段整形（n8n: Edit Fields / Set）。
+
+        config:
+          assignments / fields : [{'name': 'x', 'value': '{{...}}'}] 或 {'x': '...'}
+          keep_only            : 只保留本次赋值的字段（丢掉其余，输出干净负载）
+          remove_fields        : 要删除的字段名列表或逗号串
+          infer_types          : 字符串字面量是否做类型推断（默认 true）
+        """
+        raw = config.get('assignments') or config.get('fields') or []
+        pairs = []
+        if isinstance(raw, dict):
+            pairs = [(k, v) for k, v in raw.items()]
+        elif isinstance(raw, str):
+            # 前端 textarea 形式：每行一条 name = value
+            for line in raw.splitlines():
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if '=' in line:
+                    k, v = line.split('=', 1)
+                    pairs.append((k.strip(), v.strip()))
+        else:
+            for a in (raw or []):
+                if isinstance(a, dict) and a.get('name'):
+                    pairs.append((a.get('name'), a.get('value')))
+                elif isinstance(a, (list, tuple)) and len(a) == 2:
+                    pairs.append((a[0], a[1]))
+
+        keep_only = self._as_bool(config.get('keep_only'))
+        remove = config.get('remove_fields') or config.get('remove') or []
+        if isinstance(remove, str):
+            remove = [r.strip() for r in remove.split(',') if r.strip()]
+        infer = self._as_bool(config.get('infer_types'), default=True)
+
+        out = []
+        for it in self._input_items(context):
+            data = {} if keep_only else dict(it.get('json') or {})
+            for name, val in pairs:
+                resolved = context.resolve(val)
+                data[str(name)] = self._coerce_scalar(resolved) if infer else resolved
+            for r in remove:
+                data.pop(str(r), None)
+            out.append({'json': data, 'paired_items': it.get('paired_items', [])})
+
+        return {'success': True,
+                'message': f'字段整形完成：{len(out)} 项，{"覆盖" if keep_only else "追加"} {len(pairs)} 个字段',
+                'data': {'count': len(out), 'kept_only': keep_only},
+                'items': out}
+
+    # 代码节点可用内置函数白名单（禁用 import/open/exec/eval 等逃逸路径）
+    # 代码节点允许导入的标准库模块（受限 __import__ 白名单：
+    # datetime.date.today()/strftime 内部会 import time，缺 __import__ 会直接炸 —— 2026-10-18 修复）
+    CODE_IMPORT_WHITELIST = {
+        'datetime', 'time', 'json', 're', 'math', 'random', 'statistics',
+        'collections', 'itertools', 'functools', 'decimal', 'uuid',
+        'base64', 'hashlib', 'hmac', 'ipaddress', 'urllib.parse',
+    }
+
+    @staticmethod
+    def _restricted_import(name, globals=None, locals=None, fromlist=(), level=0):
+        import importlib
+        root = name.split('.')[0]
+        if name not in PlaybookEngine.CODE_IMPORT_WHITELIST:
+            raise ImportError(f'代码节点禁止导入模块: {name}（白名单: '
+                              + ', '.join(sorted(PlaybookEngine.CODE_IMPORT_WHITELIST)) + '）')
+        return importlib.import_module(name)
+
+    CODE_BUILTINS = {
+        'len': len, 'str': str, 'int': int, 'float': float, 'bool': bool,
+        'list': list, 'dict': dict, 'set': set, 'tuple': tuple,
+        'sum': sum, 'min': min, 'max': max, 'abs': abs, 'round': round,
+        'sorted': sorted, 'reversed': reversed, 'enumerate': enumerate, 'zip': zip,
+        'range': range, 'any': any, 'all': all, 'filter': filter, 'map': map,
+        'isinstance': isinstance, 'type': type, 'repr': repr, 'print': print,
+        # 受限导入器（延迟到调用期解析 PlaybookEngine，白名单见 CODE_IMPORT_WHITELIST）
+        '__import__': lambda name, *a, **k: PlaybookEngine._restricted_import(name, *a, **k),
+    }
+
+    def _execute_code(self, config: Dict, context: ActionContext) -> Dict:
+        """代码节点（n8n: Code）：Python 片段，可读写整组 items。
+
+        可用变量：
+          items   输入项 json 列表（只读语义，修改它不影响输出）
+          data    首项 json 的快捷别名
+          alert/event/params/vars   上下文来源
+          json/re/datetime   常用模块
+        约定：把结果写进 `result`（dict → 单输出项；list → 多项）。
+        不写 result 时透传输入。
+        """
+        code = config.get('code') or config.get('script') or ''
+        if not str(code).strip():
+            return {'success': True, 'message': '未配置代码，透传输入', 'data': {}}
+
+        src_items = self._input_items(context)
+        payload = [dict(i.get('json') or {}) for i in src_items]
+
+        import json as _json
+        import re as _re
+        import datetime as _dt
+
+        env = {
+            '__builtins__': dict(self.CODE_BUILTINS),
+            'items': payload,
+            'data': payload[0] if payload else {},
+            'alert': context.alert or {},
+            'event': context.event or {},
+            'params': context.params or {},
+            'vars': context.variables or {},
+            'json': _json, 're': _re, 'datetime': _dt,
+        }
+        try:
+            exec(str(code), env)  # noqa: S102 - 剧本代码节点，已限制 builtins
+        except Exception as e:
+            return {'success': False, 'message': f'代码执行失败: {str(e)}', 'data': {}}
+
+        ret = env.get('result')
+        if ret is None:
+            return {'success': True, 'message': '代码执行完成（未设置 result，透传输入）',
+                    'data': {}, 'items': src_items}
+
+        if isinstance(ret, dict):
+            items = [{'json': ret, 'paired_items': []}]
+        elif isinstance(ret, list):
+            items = [{'json': r if isinstance(r, dict) else {'value': r}, 'paired_items': []}
+                     for r in ret]
+        else:
+            items = [{'json': {'value': ret}, 'paired_items': []}]
+
+        return {'success': True, 'message': f'代码执行完成：产出 {len(items)} 项',
+                'data': {'count': len(items)}, 'items': items}
+
+    def _execute_merge(self, config: Dict, context: ActionContext) -> Dict:
+        """数据合并（n8n: Merge）。
+
+        mode:
+          append                上游项按序拼接（默认，也是节点默认的汇聚行为）
+          combine_by_position   按索引配对合并（第 i 项与第 i 项合并）
+          combine_by_field      按指定字段值做等值连接（SQL join 语义）
+        """
+        mode = config.get('mode', 'append')
+        items = self._input_items(context)
+        if mode == 'append':
+            return {'success': True, 'message': f'合并（拼接）：{len(items)} 项',
+                    'data': {'count': len(items)}, 'items': items}
+
+        # 按来源节点分组（依赖输入项携带的 paired_items 溯源信息）
+        groups: Dict[str, list] = {}
+        order: list = []
+        for it in items:
+            src = (it.get('paired_items') or [{}])[0].get('node', '_input')
+            if src not in groups:
+                groups[src] = []
+                order.append(src)
+            groups[src].append(it)
+
+        if mode == 'combine_by_position':
+            if len(order) < 2:
+                return {'success': True, 'message': '仅一个输入分支，无需按位置合并',
+                        'data': {'count': len(items)}, 'items': items}
+            size = max(len(g) for g in groups.values())
+            out = []
+            for i in range(size):
+                merged = {}
+                for src in order:
+                    g = groups[src]
+                    if i < len(g):
+                        merged.update(g[i].get('json') or {})
+                out.append({'json': merged, 'paired_items': []})
+            return {'success': True, 'message': f'合并（按位置）：{len(out)} 项',
+                    'data': {'count': len(out)}, 'items': out}
+
+        if mode == 'combine_by_field':
+            key = config.get('field') or config.get('join_field') or ''
+            if not key:
+                return {'success': False, 'message': '按字段合并需要指定 field', 'data': {}}
+            if len(order) < 2:
+                return {'success': True, 'message': '仅一个输入分支，无需按字段合并',
+                        'data': {'count': len(items)}, 'items': items}
+            out = []
+            base = groups[order[0]]
+            for b in base:
+                bj = b.get('json') or {}
+                kv = bj.get(key)
+                for src in order[1:]:
+                    for cand in groups[src]:
+                        cj = cand.get('json') or {}
+                        if cj.get(key) == kv and kv is not None:
+                            merged = dict(cj)
+                            merged.update(bj)
+                            out.append({'json': merged, 'paired_items': []})
+            return {'success': True, 'message': f'合并（按字段 {key}）：{len(out)} 项',
+                    'data': {'count': len(out)}, 'items': out}
+
+        return {'success': False, 'message': f'不支持的合并模式: {mode}', 'data': {}}
+
+    def _execute_split(self, config: Dict, context: ActionContext) -> Dict:
+        """拆分（n8n: Split Out）：把某字段的数组拆成多个独立数据项。"""
+        field = config.get('field') or config.get('source_field') or ''
+        if not field:
+            return {'success': False, 'message': '拆分节点需要指定 field', 'data': {}}
+        include = config.get('include_fields') or []
+        if isinstance(include, str):
+            include = [s.strip() for s in include.split(',') if s.strip()]
+
+        out = []
+        for it in self._input_items(context):
+            data = it.get('json') or {}
+            arr = data.get(field)
+            if not isinstance(arr, (list, tuple)):
+                arr = [arr] if arr not in (None, '') else []
+            for idx, el in enumerate(arr):
+                if include:
+                    base = {k: v for k, v in data.items() if k in include}
+                else:
+                    base = {k: v for k, v in data.items() if k != field}
+                if isinstance(el, dict):
+                    base.update(el)
+                else:
+                    base[field] = el
+                out.append({'json': base, 'paired_items': [{'node': context.current_node_id,
+                                                            'index': idx}]})
+        return {'success': True,
+                'message': f'拆分 {field}：{len(out)} 项',
+                'data': {'count': len(out)}, 'items': out}
+
+    def _execute_aggregate(self, config: Dict, context: ActionContext) -> Dict:
+        """聚合（n8n: Aggregate / Summarize）。
+
+        operation: count / sum / avg / min / max / collect / first / last
+        field    : 参与聚合的字段（count 可省略）
+        group_by : 可选分组字段，指定后按组输出多项
+        """
+        op = (config.get('operation') or 'count').lower()
+        field = config.get('field') or ''
+        group_by = config.get('group_by') or config.get('groupBy') or ''
+
+        items = [dict(i.get('json') or {}) for i in self._input_items(context)]
+
+        def _agg(rows):
+            vals = [r.get(field) for r in rows if r.get(field) is not None]
+            nums = [v for v in vals if isinstance(v, (int, float)) and not isinstance(v, bool)]
+            if op == 'count':
+                return len(rows)
+            if op == 'sum':
+                return sum(nums)
+            if op == 'avg':
+                return round(sum(nums) / len(nums), 4) if nums else 0
+            if op == 'min':
+                return min(nums) if nums else (min(vals) if vals else None)
+            if op == 'max':
+                return max(nums) if nums else (max(vals) if vals else None)
+            if op == 'collect':
+                # 未指定字段时归集整行（安全报告场景：把 N 条事件/告警合成一项交给 AI）
+                return vals if field else rows
+            if op == 'first':
+                return vals[0] if vals else None
+            if op == 'last':
+                return vals[-1] if vals else None
+            return None
+
+        out = []
+        if group_by:
+            groups: Dict[Any, list] = {}
+            for r in items:
+                groups.setdefault(r.get(group_by), []).append(r)
+            for key, rows in groups.items():
+                out.append({'json': {group_by: key,
+                                     f'{op}_{field}' if field else op: _agg(rows),
+                                     'group_count': len(rows)}, 'paired_items': []})
+        else:
+            out.append({'json': {f'{op}_{field}' if field else op: _agg(items),
+                                 'count': len(items)}, 'paired_items': []})
+
+        preview = out[0]['json'] if out else {}
+        return {'success': True,
+                'message': f'聚合 {op}{("." + field) if field else ""}：{len(out)} 组（共 {len(items)} 项）',
+                'data': {'result': preview, 'count': len(out)}, 'items': out}
+
+    def _execute_filter(self, config: Dict, context: ActionContext) -> Dict:
+        """过滤（n8n: Filter）：只放行满足条件的数据项。"""
+        field = config.get('field', '')
+        raw_op = config.get('operator', 'equals')
+        operator = self.OPERATOR_ALIASES.get(raw_op, raw_op)
+        expected = config.get('value', '')
+        op_func = self.CONDITION_OPERATORS.get(operator)
+        if not op_func:
+            return {'success': False, 'message': f'不支持的操作符: {operator}', 'data': {}}
+
+        out = []
+        for it in self._input_items(context):
+            data = it.get('json') or {}
+            actual = data.get(field, context.get(field))
+            try:
+                if op_func(actual, expected):
+                    out.append({'json': dict(data), 'paired_items': it.get('paired_items', [])})
+            except Exception:
+                continue
+
+        return {'success': True,
+                'message': f'过滤 {field} {operator} {expected}：保留 {len(out)} 项',
+                'data': {'kept': len(out)}, 'items': out}
 
     def _evaluate_condition(self, config: Dict, context: ActionContext) -> Dict:
         """评估条件节点"""
         field = config.get('field', '')
-        operator = config.get('operator', 'equals')
+        raw_op = config.get('operator', 'equals')
+        operator = self.OPERATOR_ALIASES.get(raw_op, raw_op)
         value = config.get('value', '')
 
         # 获取字段值
@@ -241,49 +992,55 @@ class PlaybookEngine:
             return {'success': False, 'message': f'条件评估异常: {str(e)}', 'data': {}}
 
     def _execute_notification(self, config: Dict, context: ActionContext) -> Dict:
-        """执行通知"""
-        title = config.get('title', '剧本通知')
-        message = config.get('message', '')
-        channel = config.get('channel', 'system')
+        """执行通知：委托 notify_service.execute_notification（与「发送通知」动作同一实现）。
 
-        try:
-            from app.models import Notification
-            notif = Notification(
-                title=context.resolve(title),
-                message=context.resolve(message),
-                type='info'
-            )
-            db.session.add(notif)
-            db.session.commit()
-            return {'success': True, 'message': f'通知已发送 [{channel}]', 'data': {'notification_id': notif.id}}
-        except Exception as e:
-            return {'success': False, 'message': f'通知发送失败: {str(e)}', 'data': {}}
+        webhook URL 解析顺序：节点 webhook_url → 全局配置→通知渠道 默认值。
+        邮件渠道：节点收件人(recipients/to) → 全局默认收件人，走 SMTP 发信。
+        """
+        from app.utils import notify_service
+        return notify_service.execute_notification(config, context)
 
     def _execute_api_call(self, config: Dict, context: ActionContext) -> Dict:
-        """执行 API 调用"""
+        """执行 API 调用（通用 REST 节点）。
+
+        body 接受 JSON 文本（含 {{ 表达式 }}，先解析再 JSON 校验）；
+        headers 接受「每行一条 名称: 值」文本或 dict。
+        """
         url = context.resolve(config.get('url', ''))
         method = config.get('method', 'GET').upper()
-        headers = config.get('headers', {})
 
         if not url:
             return {'success': False, 'message': '未指定 API URL', 'data': {}}
+
+        # headers：文本（每行 K: V）或 dict，值统一过表达式解析
+        headers = self._parse_headers(config.get('headers'), context)
+
+        # body：JSON 文本 → 解析表达式 → 重新序列化；dict 直接序列化
+        body = None
+        raw_body = config.get('body')
+        if raw_body:
+            try:
+                if isinstance(raw_body, str):
+                    resolved = context.resolve(raw_body)
+                    parsed = json.loads(resolved)
+                    body = json.dumps(parsed, ensure_ascii=False).encode('utf-8')
+                else:
+                    body = json.dumps(raw_body, ensure_ascii=False).encode('utf-8')
+            except (ValueError, TypeError) as e:
+                return {'success': False,
+                        'message': f'请求体不是合法 JSON: {str(e)[:80]}', 'data': {}}
 
         try:
             import urllib.request
             import urllib.error
 
-            body_json = config.get('body')
-            body = None
-            if body_json:
-                body = json.dumps(body_json).encode()
-
             req = urllib.request.Request(url, data=body, method=method)
             req.add_header('Content-Type', 'application/json')
-            for key, val in (headers or {}).items():
-                req.add_header(key, context.resolve(str(val)))
+            for key, val in headers.items():
+                req.add_header(key, val)
 
             with urllib.request.urlopen(req, timeout=30) as resp:
-                resp_body = resp.read().decode()
+                resp_body = resp.read().decode('utf-8', 'replace')
                 return {
                     'success': True,
                     'message': f'API 调用成功 (HTTP {resp.status})',
@@ -293,6 +1050,26 @@ class PlaybookEngine:
             return {'success': False, 'message': f'API 调用失败: HTTP {e.code}', 'data': {}}
         except Exception as e:
             return {'success': False, 'message': f'API 调用异常: {str(e)}', 'data': {}}
+
+    @staticmethod
+    def _parse_headers(raw, context: ActionContext) -> Dict:
+        """headers 归一为 dict：支持「每行 名称: 值」文本与 dict 两种输入。"""
+        headers: Dict = {}
+        if not raw:
+            return headers
+        if isinstance(raw, dict):
+            for k, v in raw.items():
+                headers[str(k)] = context.resolve(str(v))
+            return headers
+        for line in str(raw).splitlines():
+            line = line.strip()
+            if not line or ':' not in line:
+                continue
+            k, _, v = line.partition(':')
+            k = k.strip()
+            if k:
+                headers[k] = context.resolve(v.strip())
+        return headers
 
     def _build_adjacency(self, edges: List[Dict], node_map: Dict) -> Dict[str, List[str]]:
         """构建邻接表"""
@@ -319,13 +1096,19 @@ class PlaybookEngine:
         ]
 
         if trigger_nodes:
-            # 过滤匹配触发类型的节点
+            # 触发类型归一化（前端中文「告警事件」↔ 引擎 'alert' 等双向映射）
+            req_norm = self.TRIGGER_TYPE_ALIASES.get(str(trigger_type or '').strip(),
+                                                     str(trigger_type or '').strip().lower())
             matching = []
             for tid in trigger_nodes:
                 node = node_map.get(tid, {})
                 trigger_cfg = node.get('data', {}).get('config', {})
-                node_trigger = trigger_cfg.get('trigger_type', 'manual')
-                if node_trigger == trigger_type or node_trigger == 'any':
+                # 画布配置键是 triggerType（旧数据可能是 trigger_type）—— 两者都接受
+                raw_node_trigger = (trigger_cfg.get('trigger_type')
+                                    or trigger_cfg.get('triggerType') or 'manual')
+                node_trigger = self.TRIGGER_TYPE_ALIASES.get(
+                    str(raw_node_trigger).strip(), str(raw_node_trigger).strip().lower())
+                if node_trigger == req_norm or node_trigger == 'any':
                     matching.append(tid)
             if matching:
                 return matching
@@ -348,6 +1131,20 @@ class PlaybookEngine:
                 return neighbors[:1] if neighbors else []
             else:
                 return neighbors[1:2] if len(neighbors) > 1 else []
+
+        if node.get('type') == 'switch':
+            # 多分支真实分流：命中分支值 → 目标节点名/边 label 与之相等的邻居；
+            # 无匹配时回退全部邻居（保持图可走通）
+            branch = (result.get('data', {}) or {}).get('branch')
+            if not branch:
+                return neighbors
+            matched = []
+            for nb in neighbors:
+                nb_node = node_map.get(nb, {})
+                nb_label = nb_node.get('data', {}).get('label') or nb_node.get('name') or ''
+                if nb_label == branch:
+                    matched.append(nb)
+            return matched if matched else neighbors
 
         return neighbors
 
@@ -482,9 +1279,8 @@ def check_and_create_approval(playbook_id: int, action_type: str, params: Dict,
     
     import uuid
     from app.models import PlaybookApproval, Notification, User
-    
+
     approval = PlaybookApproval(
-        id=f"apr_{uuid.uuid4().hex[:8]}",
         playbook_id=playbook_id,
         execution_id=execution_id,
         approval_type=action_type,
@@ -517,14 +1313,13 @@ def check_and_create_approval(playbook_id: int, action_type: str, params: Dict,
                 user_id=approver.id,
                 type='approval_request',
                 title=f'待审批: {rule["label"]}',
-                content=f'用户 {requester_name} 请求执行 {rule["label"]} 操作，请及时审批',
+                message=f'用户 {requester_name} 请求执行 {rule["label"]} 操作，请及时审批',
                 data={
                     'approval_id': approval.id,
                     'playbook_id': playbook_id,
                     'action_type': action_type,
                     'params': params
-                },
-                priority='high' if rule['level'] == 3 else 'normal'
+                }
             )
             db.session.add(notif)
     
@@ -541,7 +1336,7 @@ def check_and_create_approval(playbook_id: int, action_type: str, params: Dict,
 def process_approval_result(approval_id: str, approved: bool, 
                             approver_id: int, approver_name: str) -> Dict:
     """处理审批结果"""
-    from app.models import PlaybookApproval, Notification
+    from app.models import PlaybookApproval, Notification, User
     
     approval = PlaybookApproval.query.get(approval_id)
     if not approval:
@@ -557,41 +1352,112 @@ def process_approval_result(approval_id: str, approved: bool,
         user_id=approval.requester_id,
         type='approval_result',
         title=f'审批{"通过" if approved else "拒绝"}: {approval.reason}',
-        content=f'您的{approval.reason}请求已被{"通过" if approved else "拒绝"}',
+        message=f'您的{approval.reason}请求已被{"通过" if approved else "拒绝"}',
         data={'approval_id': approval_id, 'approved': approved}
     )
     db.session.add(notif)
     db.session.commit()
     
     if approved:
-        # 执行实际动作
-        action_type = approval.approval_type
-        params = approval.params
-        handler = get_action(action_type)
-        if handler:
-            result = handler.execute(params, None)
-            approval.result = result.to_dict() if hasattr(result, 'to_dict') else result
-        
+        if approval.playbook_id and approval.approval_type == 'playbook_execute':
+            # ── 剧本执行审批：通过后进程内自动执行 ──
+            approval.result = _execute_approved_playbook(approval, approver_name)
+        else:
+            # ── 审批节点危险动作：执行单个动作 ──
+            action_type = approval.approval_type
+            params = approval.params
+            handler = get_action(action_type)
+            if handler:
+                result = handler.execute(params, None)
+                approval.result = result.to_dict() if hasattr(result, 'to_dict') else result
 
-        # 记录到事件
+        # 关联事件写处置记录（进程内，替代旧 HTTP 自调）
         if approval.related_event_id:
             try:
-                response = requests.post(
-                    'http://localhost:5000/events-api/approvals/trigger-event-action',
-                    json={
-                        'event_id': approval.related_event_id,
-                        'approval_id': approval.id
-                    },
-                    headers={'Authorization': f'Bearer {getattr(request, 'user_id', 1)}'},
-                    timeout=5
-                )
-                if response.status_code != 200:
-                    print(f'Warning: Failed to trigger event action: {response.text}')
+                from app.models import Event as DBEvent, EventAction
+                ev = (DBEvent.query.filter_by(event_code=approval.related_event_id).first()
+                      or (DBEvent.query.get(int(approval.related_event_id))
+                          if str(approval.related_event_id).isdigit() else None))
+                if ev:
+                    exec_status = (approval.result or {}).get('status', '')
+                    is_pb_exec = approval.approval_type == 'playbook_execute'
+                    summary = ('审批通过并自动执行剧本'
+                               + ('，执行' + ('成功' if exec_status == 'completed' else '失败'))
+                               if is_pb_exec else f'审批通过：{approval.approval_type}')
+                    pb_row = Playbook.query.get(approval.playbook_id) if approval.playbook_id else None
+                    # user_id 有 FK 约束：审批人非平台用户（如测试/系统账号）时置空
+                    safe_approver_id = approver_id if approver_id and User.query.get(approver_id) else None
+                    db.session.add(EventAction(
+                        event_id=ev.event_code,
+                        action='playbook_triggered',
+                        user_id=safe_approver_id,
+                        user_name=approver_name,
+                        content=f'{summary}（审批ID: {approval.id}，申请人: {approval.requester_name}）',
+                        playbook_id=approval.playbook_id,
+                        playbook_name=pb_row.name if (is_pb_exec and pb_row) else None,
+                        playbook_execution_id=(approval.result or {}).get('execution_id'),
+                        playbook_result=approval.result or {},
+                        extra_data={'approval_id': approval.id,
+                                    'approval_type': approval.approval_type,
+                                    'params': approval.params,
+                                    'approver': approver_name},
+                    ))
             except Exception as e:
-                print(f'Warning: Could not trigger event action after approval: {e}')
-    
+                print(f'Warning: record event action after approval failed: {e}')
+
     db.session.commit()
     return approval.to_dict()
+
+
+def _execute_approved_playbook(approval, approver_name: str) -> Dict:
+    """剧本执行审批通过后：用申请时保存的入参/事件上下文进程内执行剧本。"""
+    from app.models import Playbook, Event as DBEvent
+
+    playbook = Playbook.query.get(approval.playbook_id)
+    if not playbook:
+        return {'status': 'failed', 'error': f'剧本 #{approval.playbook_id} 不存在'}
+
+    # 关联事件 → 重建执行上下文
+    event_context, first_alert = {}, {}
+    if approval.related_event_id:
+        try:
+            from app.routes.events_api import build_event_execution_context
+            ev = (DBEvent.query.filter_by(event_code=approval.related_event_id).first()
+                  or (DBEvent.query.get(int(approval.related_event_id))
+                      if str(approval.related_event_id).isdigit() else None))
+            if ev:
+                event_context, first_alert = build_event_execution_context(ev)
+        except Exception as e:
+            print(f'Warning: rebuild event context failed: {e}')
+
+    # 入参：申请时保存的值优先，留空的声明入参回退事件预填
+    from app.engine.node_params import validate_execution_request
+    inputs, guard_error = validate_execution_request(
+        playbook, trigger_type='alert' if event_context else 'manual',
+        event=event_context, alert=first_alert, params=approval.params or {})
+    if guard_error:
+        # 审批已通过但入参/上下文不合法：不带着空数据空跑，直接记为失败
+        return {'status': 'failed', 'error': guard_error['message'],
+                'code': guard_error.get('code')}
+
+    result = playbook_engine.execute(
+        playbook=playbook,
+        trigger_type='alert' if event_context else 'manual',
+        event=event_context,
+        alert=first_alert,
+        params=inputs,
+        executor=f'审批通过（审批人: {approver_name}）',
+        request_info={'approval_id': approval.id},
+    )
+    approval.execution_id = result.get('execution_id') or approval.execution_id
+    return {
+        'status': result.get('status'),
+        'execution_id': result.get('execution_id'),
+        'nodes_executed': len(result.get('node_results', [])),
+        'failed_nodes': [n.get('node_label') for n in result.get('node_results', [])
+                         if not n.get('success')],
+        'inputs': inputs,
+    }
 
 
 
@@ -601,6 +1467,8 @@ def execute_approval_node(node_data: Dict, context: 'ActionContext', execution_i
     """执行审批节点 - 暂停并等待审批"""
     approval_type = node_data.get('approval_type', node_data.get('approvalType', ''))
     reason = node_data.get('reason', '剧本执行审批')
+    # 节点可显式给出 playbook_id；否则回退到上下文里的 current playbook
+    playbook_id = node_data.get('playbook_id') or getattr(context, 'playbook_id', None) or 0
     
     # 映射审批类型
     action_map = {
@@ -619,7 +1487,7 @@ def execute_approval_node(node_data: Dict, context: 'ActionContext', execution_i
     
     from app.engine.playbook_engine import check_and_create_approval
     approval = check_and_create_approval(
-        playbook_id=0,  # 动态获取
+        playbook_id=playbook_id,
         action_type=action_type,
         params=context.params,
         requester_id=requester_id,
@@ -642,39 +1510,38 @@ def execute_approval_node(node_data: Dict, context: 'ActionContext', execution_i
 
 
 def execute_loop_node(node_data: Dict, context: 'ActionContext') -> Dict:
-    """执行循环节点"""
+    """执行循环节点：把遍历对象解析为逐项输出（下游按项处理，受 max_iterations 限制）。"""
     iterable_var = node_data.get('iterable', node_data.get('iterable', ''))
     max_iterations = int(node_data.get('maxIterations', node_data.get('max_iterations', 10)))
-    
-    # 解析遍历对象
-    items = context.resolve(iterable_var)
+
+    # 解析遍历对象（表达式 → list；字符串按逗号拆分）
+    items = context.resolve(iterable_var) if iterable_var else []
     if isinstance(items, str):
-        items = [i.strip() for i in items.split(',')]
+        items = [i.strip() for i in items.split(',') if i.strip()]
     elif not isinstance(items, list):
-        items = [items]
-    
+        items = [items] if items else []
+
     items = items[:max_iterations]  # 限制最大次数
-    
+
+    out_items = [{'json': (i if isinstance(i, dict) else {'value': i}),
+                  'paired_items': []} for i in items]
     return {
         'success': True,
-        'message': f'循环执行 {len(items)} 次',
-        'data': {
-            'loop_count': len(items),
-            'items': items,
-            'max_iterations': max_iterations
-        }
+        'message': f'循环遍历产出 {len(items)} 项',
+        'data': {'loop_count': len(items), 'max_iterations': max_iterations},
+        'items': out_items,
     }
 
 
 def execute_switch_node(node_data: Dict, context: 'ActionContext') -> Dict:
-    """执行多分支节点"""
+    """执行多分支节点：按 field 值匹配 cases，产出命中分支（供 _get_next_nodes 分流）。"""
     field = node_data.get('field', '')
     cases_config = node_data.get('cases', '')
-    
+
     # 解析 cases: "critical:高危处理\nhigh:中危处理\ndefault:默认处理"
     cases = {}
     default_case = None
-    for line in cases_config.split('\n'):
+    for line in str(cases_config).split('\n'):
         if ':' in line:
             key, value = line.split(':', 1)
             key = key.strip()
@@ -682,14 +1549,17 @@ def execute_switch_node(node_data: Dict, context: 'ActionContext') -> Dict:
                 default_case = value.strip()
             else:
                 cases[key.strip()] = value.strip()
-    
-    # 获取字段值并匹配分支
-    field_value = str(context.get(field, '')).lower()
+
+    # 字段值：上下文自动查找（event/alert/params/variables）→ 当前输入项 → 顶层
+    field_value = str(context.get(field, '') or '').lower()
+    if not field_value and context.items:
+        first = context.items[0].get('json') or {}
+        field_value = str(first.get(field, '')).lower()
     matched_branch = cases.get(field_value, default_case)
-    
+
     return {
         'success': True,
-        'message': f'分支匹配: {field}={field_value} -> {matched_branch}',
+        'message': f'分支匹配: {field}={field_value or "(空)"} -> {matched_branch or "(无匹配)"}',
         'data': {
             'branch': matched_branch,
             'matched_value': field_value,

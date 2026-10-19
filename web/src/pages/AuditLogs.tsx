@@ -1,26 +1,47 @@
-import React, { useState, useEffect } from 'react';
-import { motion } from 'framer-motion';
-import { Search, Filter, Download, Calendar, User, Eye, RefreshCw } from 'lucide-react';
+import React, { useMemo, useState, useEffect } from 'react';
+import { Filter, Download, User, Eye, RefreshCw, ScrollText, Clock } from 'lucide-react';
 import type { AuditLog } from '../types';
 import { auditApi } from '../services/api';
+import {
+  Button,
+  ContentContainer,
+  EmptyState,
+  LoadingState,
+  Modal,
+  PageHeader,
+  SearchInput,
+  SectionCard,
+  Segmented,
+  TableWrap,
+} from '../components/ui';
 
 const actionColors: Record<string, string> = {
-  '用户登录': 'text-green-400',
-  '登录': 'text-green-400',
-  '事件确认': 'text-blue-400',
-  '规则更新': 'text-orange-400',
-  '资产扫描': 'text-purple-400',
+  '用户登录': 'text-success',
+  '登录': 'text-success',
+  '事件确认': 'text-info',
+  '规则更新': 'text-warning',
+  '资产扫描': 'text-accent',
   '用户创建': 'text-primary',
   '创建': 'text-primary',
-  '更新': 'text-orange-400',
-  '删除': 'text-red-400',
-  '登录失败': 'text-red-400'
+  '更新': 'text-warning',
+  '删除': 'text-danger',
+  '登录失败': 'text-danger'
+};
+
+type RangeKey = 'all' | '24h' | '7d';
+
+const RANGE_MS: Record<RangeKey, number> = {
+  all: Number.MAX_SAFE_INTEGER,
+  '24h': 24 * 3600 * 1000,
+  '7d': 7 * 24 * 3600 * 1000,
 };
 
 export default function AuditLogs() {
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const [actionFilter, setActionFilter] = useState('all');
+  const [range, setRange] = useState<RangeKey>('all');
   const [selectedLog, setSelectedLog] = useState<AuditLog | null>(null);
 
   const fetchLogs = async () => {
@@ -54,110 +75,205 @@ export default function AuditLogs() {
     fetchLogs();
   }, []);
 
-  const filteredLogs = logs.filter(log =>
-    log.user.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    log.action.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    log.ip.includes(searchTerm)
+  const actionOptions = useMemo(
+    () => Array.from(new Set(logs.map((l) => l.action).filter(Boolean))),
+    [logs]
   );
 
+  const filteredLogs = useMemo(() => {
+    const term = searchTerm.toLowerCase();
+    const now = Date.now();
+    return logs.filter((log) => {
+      const hitSearch =
+        !term ||
+        String(log.user).toLowerCase().includes(term) ||
+        String(log.action).toLowerCase().includes(term) ||
+        String(log.ip).includes(term);
+      const hitAction = actionFilter === 'all' || log.action === actionFilter;
+      const hitRange =
+        range === 'all' ||
+        now - new Date(log.timestamp).getTime() <= RANGE_MS[range];
+      return hitSearch && hitAction && hitRange;
+    });
+  }, [logs, searchTerm, actionFilter, range]);
+
+  const handleExport = () => {
+    const header = ['时间', '用户', '操作', 'IP地址', '详情'];
+    const rows = filteredLogs.map((l) => [
+      new Date(l.timestamp).toLocaleString(),
+      l.user,
+      l.action,
+      l.ip,
+      JSON.stringify(l.details ?? {}),
+    ]);
+    const csv = [header, ...rows]
+      .map((r) => r.map((c) => `"${String(c ?? '').replace(/"/g, '""')}"`).join(','))
+      .join('\n');
+    const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `audit_logs_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold text-text-primary">审计日志</h1>
-          <p className="text-text-secondary text-sm mt-1">查看系统操作记录</p>
-        </div>
-        <button className="flex items-center gap-2 px-4 py-2 bg-card-bg border border-border-color rounded-lg text-text-secondary hover:border-primary transition-colors">
-          <Download className="w-4 h-4" />导出
-        </button>
-        <button onClick={fetchLogs} disabled={loading} className="flex items-center gap-2 px-4 py-2 bg-card-bg border border-border-color rounded-lg text-text-secondary hover:border-primary transition-colors">
-          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />刷新
-        </button>
-      </div>
-
-      <div className="glass-card rounded-xl p-4 flex items-center gap-4">
-        <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
-          <input
-            type="text"
-            placeholder="搜索用户、操作或IP..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-10 pr-4 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary placeholder:text-text-muted focus:border-primary focus:outline-none"
-          />
-        </div>
-        <button className="flex items-center gap-2 px-4 py-2 border border-border-color rounded-lg text-text-secondary hover:bg-white/5 transition-colors">
-          <Calendar className="w-4 h-4" />时间范围
-        </button>
-        <button className="flex items-center gap-2 px-4 py-2 border border-border-color rounded-lg text-text-secondary hover:bg-white/5 transition-colors">
-          <Filter className="w-4 h-4" />筛选
-        </button>
-      </div>
-
-      <div className="glass-card rounded-xl overflow-hidden">
-        <table className="w-full">
-          <thead className="bg-card-bg/50 border-b border-border-color">
-            <tr>
-              <th className="px-6 py-4 text-left text-sm font-medium text-text-secondary">时间</th>
-              <th className="px-6 py-4 text-left text-sm font-medium text-text-secondary">用户</th>
-              <th className="px-6 py-4 text-left text-sm font-medium text-text-secondary">操作</th>
-              <th className="px-6 py-4 text-left text-sm font-medium text-text-secondary">详情</th>
-              <th className="px-6 py-4 text-left text-sm font-medium text-text-secondary">IP地址</th>
-              <th className="px-6 py-4 text-left text-sm font-medium text-text-secondary">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filteredLogs.map((log, index) => (
-              <motion.tr
-                key={log.id}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: index * 0.05 }}
-                className="table-row border-b border-border-color/50 last:border-0"
+    <ContentContainer>
+      <PageHeader
+        title="审计日志"
+        icon={ScrollText}        meta={<span className="num text-caption text-text-muted">共 {filteredLogs.length} 条</span>}
+        actions={
+          <>
+            <Button variant="secondary" icon={Download} onClick={handleExport} disabled={!filteredLogs.length}>
+              导出 CSV
+            </Button>
+            <Button variant="primary" icon={RefreshCw} loading={loading} onClick={fetchLogs}>
+              刷新
+            </Button>
+          </>
+        }
+        toolbar={
+          <>
+            <SearchInput
+              value={searchTerm}
+              onChange={setSearchTerm}
+              placeholder="搜索用户、操作或 IP"
+              width="lg"
+            />
+            <div className="relative">
+              <Filter size={13} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
+              <select
+                value={actionFilter}
+                onChange={(e) => setActionFilter(e.target.value)}
+                aria-label="按操作类型筛选"
+                className="app-select w-[168px] pl-8"
               >
-                <td className="px-6 py-4 text-sm text-text-secondary">{new Date(log.timestamp).toLocaleString()}</td>
-                <td className="px-6 py-4">
-                  <div className="flex items-center gap-2">
-                    <User className="w-4 h-4 text-text-muted" />
-                    <span className="text-sm text-text-primary">{log.user}</span>
-                  </div>
-                </td>
-                <td className="px-6 py-4">
-                  <span className={`text-sm font-medium ${actionColors[log.action] || 'text-text-primary'}`}>{log.action}</span>
-                </td>
-                <td className="px-6 py-4 text-sm text-text-secondary">{JSON.stringify(log.details).slice(0, 30)}...</td>
-                <td className="px-6 py-4 text-sm text-text-secondary font-mono">{log.ip}</td>
-                <td className="px-6 py-4">
-                  <button onClick={() => setSelectedLog(log)} className="p-2 hover:bg-white/5 rounded-lg transition-colors">
-                    <Eye className="w-4 h-4 text-text-secondary" />
-                  </button>
-                </td>
-              </motion.tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      {selectedLog && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setSelectedLog(null)}>
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="glass-card rounded-xl p-6 w-[500px]"
-            onClick={e => e.stopPropagation()}
-          >
-            <h2 className="text-lg font-semibold text-text-primary mb-4">日志详情</h2>
-            <div className="space-y-3 text-sm">
-              <div className="flex justify-between"><span className="text-text-secondary">时间</span><span className="text-text-primary">{new Date(selectedLog.timestamp).toLocaleString()}</span></div>
-              <div className="flex justify-between"><span className="text-text-secondary">用户</span><span className="text-text-primary">{selectedLog.user}</span></div>
-              <div className="flex justify-between"><span className="text-text-secondary">操作</span><span className="text-text-primary">{selectedLog.action}</span></div>
-              <div className="flex justify-between"><span className="text-text-secondary">IP地址</span><span className="text-text-primary font-mono">{selectedLog.ip}</span></div>
-              <div><span className="text-text-secondary">详情</span><pre className="mt-2 p-3 bg-page-bg rounded-lg text-text-primary overflow-auto">{JSON.stringify(selectedLog.details, null, 2)}</pre></div>
+                <option value="all">全部操作类型</option>
+                {actionOptions.map((a) => (
+                  <option key={a} value={a}>{a}</option>
+                ))}
+              </select>
             </div>
-            <button onClick={() => setSelectedLog(null)} className="mt-6 w-full py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors">关闭</button>
-          </motion.div>
-        </div>
-      )}
-    </div>
+            <Segmented<RangeKey>
+              items={[
+                { value: '24h', label: '近 24 小时', icon: Clock },
+                { value: '7d', label: '近 7 天' },
+                { value: 'all', label: '全部' },
+              ]}
+              value={range}
+              onChange={setRange}
+            />
+          </>
+        }
+      />
+
+      <SectionCard flush>
+        {loading ? (
+          <div className="p-4">
+            <LoadingState skeletonRows={8} />
+          </div>
+        ) : filteredLogs.length === 0 ? (
+          <EmptyState
+            icon={ScrollText}
+            title="没有匹配的审计记录"
+            description="调整搜索关键字、操作类型或时间范围后重试"
+          />
+        ) : (
+          <TableWrap maxHeight="calc(100vh - 320px)">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>用户</th>
+                  <th>操作</th>
+                  <th>详情</th>
+                  <th>IP 地址</th>
+                  <th className="text-right">查看</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredLogs.map((log) => (
+                  <tr key={log.id}>
+                    <td className="whitespace-nowrap text-text-muted">
+                      {new Date(log.timestamp).toLocaleString()}
+                    </td>
+                    <td>
+                      <div className="flex items-center gap-2">
+                        <User size={13} className="text-text-muted" />
+                        <span className="text-text-primary">{log.user}</span>
+                      </div>
+                    </td>
+                    <td>
+                      <span className={`font-medium ${actionColors[log.action] || 'text-text-primary'}`}>
+                        {log.action}
+                      </span>
+                    </td>
+                    <td className="max-w-[280px]">
+                      <span className="truncate-1 block font-mono text-[12px] text-text-muted">
+                        {JSON.stringify(log.details ?? {})}
+                      </span>
+                    </td>
+                    <td className="whitespace-nowrap font-mono text-[12px]">{log.ip || '—'}</td>
+                    <td className="text-right">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        icon={Eye}
+                        onClick={() => setSelectedLog(log)}
+                        className="ml-auto"
+                      >
+                        详情
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableWrap>
+        )}
+      </SectionCard>
+
+      <Modal
+        open={!!selectedLog}
+        onClose={() => setSelectedLog(null)}
+        title="日志详情"
+        width={560}
+        footer={
+          <Button variant="secondary" onClick={() => setSelectedLog(null)}>关闭</Button>
+        }
+      >
+        {selectedLog && (
+          <div className="space-y-4">
+            <div className="info-grid">
+              <div>
+                <div className="info-item-label">时间</div>
+                <div className="info-item-value">{new Date(selectedLog.timestamp).toLocaleString()}</div>
+              </div>
+              <div>
+                <div className="info-item-label">用户</div>
+                <div className="info-item-value">{selectedLog.user}</div>
+              </div>
+              <div>
+                <div className="info-item-label">操作</div>
+                <div className={`info-item-value ${actionColors[selectedLog.action] || ''}`}>
+                  {selectedLog.action}
+                </div>
+              </div>
+              <div>
+                <div className="info-item-label">IP 地址</div>
+                <div className="info-item-value font-mono">{selectedLog.ip || '—'}</div>
+              </div>
+            </div>
+            <div>
+              <div className="info-item-label mb-1.5">详情</div>
+              <pre className="scrollbar-thin max-h-64 overflow-auto rounded-lg border border-border-color bg-page-bg-subtle p-3 font-mono text-[12px] leading-relaxed text-text-secondary">
+                {JSON.stringify(selectedLog.details, null, 2)}
+              </pre>
+            </div>
+          </div>
+        )}
+      </Modal>
+    </ContentContainer>
   );
 }

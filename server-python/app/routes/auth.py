@@ -49,11 +49,33 @@ def login():
         return jsonify({'success': False, 'error': '用户名和密码不能为空'}), 400
 
     user = User.query.filter_by(username=username).first()
-    if not user or not verify_password(password, user.password_hash):
+    if not user:
         return jsonify({'success': False, 'error': '用户名或密码错误'}), 401
 
     if user.status != 'active':
         return jsonify({'success': False, 'error': '账户已被禁用'}), 403
+
+    # 按账号类型分流认证
+    if (user.auth_type or 'local') == 'ad':
+        from app.utils.ldap_auth import ldap_authenticate, AD_PASSWORD_PLACEHOLDER
+        ok, msg, ad_info = ldap_authenticate(username, password)
+        if not ok:
+            return jsonify({'success': False, 'error': msg}), 401
+        # 同步目录信息（可选，失败不影响登录）
+        try:
+            if ad_info:
+                if ad_info.get('mail') and not user.email:
+                    user.email = ad_info['mail']
+                if ad_info.get('upn') and not user.ad_upn:
+                    user.ad_upn = ad_info['upn']
+            user.ad_synced_at = datetime.utcnow()
+        except Exception:
+            pass
+    else:
+        # 本地账号：AD 占位密码不可通过本地校验（防止绕过域认证直登）
+        from app.utils.ldap_auth import AD_PASSWORD_PLACEHOLDER
+        if user.password_hash == AD_PASSWORD_PLACEHOLDER or not verify_password(password, user.password_hash):
+            return jsonify({'success': False, 'error': '用户名或密码错误'}), 401
 
     token = generate_token(user.id, user.username)
 
@@ -123,6 +145,9 @@ def change_password():
         return jsonify({'success': False, 'error': '密码不能为空'}), 400
 
     user = User.query.get(request.current_user['user_id'])
+    if (user.auth_type or 'local') == 'ad':
+        return jsonify({'success': False, 'error': 'AD 域账号请通过域密码策略修改密码'}), 400
+
     if not verify_password(old_password, user.password_hash):
         return jsonify({'success': False, 'error': '原密码错误'}), 400
 

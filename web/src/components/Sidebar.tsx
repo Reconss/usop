@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useAuth } from '../contexts/AuthContext';
+import BrandMark from './BrandMark';
 import {
   LayoutDashboard,
   Shield,
@@ -15,20 +17,21 @@ import {
   Brain,
   Workflow,
   ScrollText,
+  Plug,
+  FileText,
   List,
   Scan,
-  Cpu,
   Users,
   UserCog,
   ClipboardList,
   Sliders,
   Database,
-  FileJson,
+  Filter,
   Scroll,
-  Bug,
   ShieldAlert,
   AppWindow,
-  Star
+  Star,
+  Gauge
 } from 'lucide-react';
 
 interface MenuItem {
@@ -39,7 +42,8 @@ interface MenuItem {
   children?: MenuItem[];
 }
 
-const menuItems: MenuItem[] = [
+/** 侧边栏菜单（单一事实来源：Header 面包屑与 PageHeader 均从这里派生语义） */
+export const menuItems: MenuItem[] = [
   { id: 'dashboard', label: '仪表盘', icon: LayoutDashboard, path: '/' },
   {
     id: 'detection',
@@ -49,7 +53,8 @@ const menuItems: MenuItem[] = [
       { id: 'events', label: '工作台', icon: AlertTriangle, path: '/detection/events' },
       { id: 'investigation', label: '安全告警', icon: FileSearch, path: '/detection/investigation' },
       { id: 'hunting', label: '威胁狩猎', icon: Target, path: '/detection/hunting' },
-      { id: 'ai', label: 'AI中心', icon: Brain, path: '/detection/ai' }
+      { id: 'ai', label: 'AI中心', icon: Brain, path: '/detection/ai' },
+      { id: 'kpi', label: '运营总览', icon: Gauge, path: '/operations/kpi' }
     ]
   },
   {
@@ -68,6 +73,7 @@ const menuItems: MenuItem[] = [
     icon: Zap,
     children: [
       { id: 'playbooks', label: '剧本编排', icon: Workflow, path: '/response/playbooks' },
+      { id: 'integrations', label: '集成应用', icon: Plug, path: '/response/integrations' },
       { id: 'rules', label: '规则管理', icon: ScrollText, path: '/response/rules' }
     ]
   },
@@ -85,7 +91,9 @@ const menuItems: MenuItem[] = [
     label: '数据管理',
     icon: Database,
     children: [
-      { id: 'ingestion', label: '日志配置', icon: Scroll, path: '/data/ingestion' }
+      { id: 'ingestion', label: '数据采集', icon: Scroll, path: '/data/ingestion' },
+      { id: 'alert-filters', label: '告警过滤', icon: Filter, path: '/data/alert-filters' },
+      { id: 'templates', label: '资源管理', icon: FileText, path: '/data/resources' }
     ]
   },
   {
@@ -96,24 +104,60 @@ const menuItems: MenuItem[] = [
       { id: 'users', label: '用户管理', icon: Users, path: '/system/users' },
       { id: 'roles', label: '角色权限', icon: UserCog, path: '/system/roles' },
       { id: 'audit', label: '审计日志', icon: ClipboardList, path: '/system/audit' },
-      { id: 'config', label: '全局配置', icon: Sliders, path: '/system/config' }
+      { id: 'config', label: '全局配置', icon: Sliders, path: '/system/config' },
+      { id: 'backup', label: '备份与还原', icon: Database, path: '/system/backup' }
     ]
   }
 ];
+
+/** 角色标识 → 展示名（与用户管理角色体系对齐的常见值，未匹配到时原样展示） */
+const ROLE_LABELS: Record<string, string> = {
+  admin: '管理员',
+  analyst: '安全分析师',
+  auditor: '审计员',
+  viewer: '只读用户',
+  operator: '运营人员',
+};
 
 interface SidebarProps {
   collapsed: boolean;
   onCollapse: (collapsed: boolean) => void;
 }
 
+/** 当前路径所属的一级分组 id（用于自动展开） */
+const groupOfPath = (pathname: string): string | null => {
+  for (const group of menuItems) {
+    if (group.path && (pathname === group.path || pathname.startsWith(group.path + '/'))) return group.id;
+    for (const child of group.children || []) {
+      if (child.path && (pathname === child.path || pathname.startsWith(child.path + '/'))) {
+        return group.id;
+      }
+    }
+  }
+  return null;
+};
+
 const Sidebar: React.FC<SidebarProps> = ({ collapsed, onCollapse }) => {
   const location = useLocation();
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const displayName = user?.username || user?.name || '未登录';
+  const displayEmail = user?.email || '—';
+  const roleLabel = ROLE_LABELS[user?.role] || user?.role || '用户';
+  const avatarInitial = (displayName || 'U').charAt(0).toUpperCase();
   const [expandedMenus, setExpandedMenus] = useState<string[]>(['detection']);
 
+  // 进入某页面时自动展开其所属分组（不收起用户已展开的其它分组）
+  useEffect(() => {
+    const gid = groupOfPath(location.pathname);
+    if (gid) {
+      setExpandedMenus((prev) => (prev.includes(gid) ? prev : [...prev, gid]));
+    }
+  }, [location.pathname]);
+
   const toggleMenu = (menuId: string) => {
-    setExpandedMenus(prev =>
-      prev.includes(menuId) ? prev.filter(id => id !== menuId) : [...prev, menuId]
+    setExpandedMenus((prev) =>
+      prev.includes(menuId) ? prev.filter((id) => id !== menuId) : [...prev, menuId]
     );
   };
 
@@ -123,38 +167,37 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, onCollapse }) => {
   };
 
   const renderMenuItem = (item: MenuItem, level: number = 0) => {
-    const hasChildren = item.children && item.children.length > 0;
+    const hasChildren = !!item.children && item.children.length > 0;
     const isExpanded = expandedMenus.includes(item.id);
     const active = isActive(item.path);
+    const groupHasActiveChild =
+      hasChildren && (item.children || []).some((c) => isActive(c.path));
 
+    // 折叠态：一级分组以浮层弹出子项
     if (collapsed && level === 0 && hasChildren) {
       return (
         <div key={item.id} className="relative group">
           <button
-            className={`w-full flex items-center justify-center p-3 rounded-lg transition-all duration-200 ${
-              active ? 'bg-primary/15 text-primary' : 'text-text-secondary hover:bg-primary/5 hover:text-text-primary'
-            }`}
+            type="button"
+            aria-label={item.label}
+            title={item.label}
+            className={`sidebar-item justify-center px-0 ${groupHasActiveChild ? 'active' : ''}`}
           >
-            <item.icon size={20} />
+            <item.icon size={18} />
           </button>
-          <div className="absolute left-full top-0 ml-2 bg-card-bg border border-border-color rounded-lg shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50 min-w-[160px]">
-            <div className="p-2">
-              <div className="px-3 py-2 text-text-secondary text-xs font-medium border-b border-border-color mb-1">
-                {item.label}
-              </div>
-              {item.children?.map(child => (
-                <button
-                  key={child.id}
-                  onClick={() => child.path && navigate(child.path)}
-                  className={`w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors ${
-                    isActive(child.path) ? 'bg-primary/15 text-primary' : 'text-text-secondary hover:bg-primary/5 hover:text-text-primary'
-                  }`}
-                >
-                  <child.icon size={14} />
-                  {child.label}
-                </button>
-              ))}
-            </div>
+          <div className="invisible absolute left-full top-0 z-dropdown ml-3 min-w-[180px] rounded-card border border-border-color bg-card-bg p-1.5 opacity-0 shadow-panel transition-all duration-150 group-hover:visible group-hover:opacity-100">
+            <div className="nav-group-label !px-3 !py-1.5">{item.label}</div>
+            {item.children?.map((child) => (
+              <button
+                key={child.id}
+                type="button"
+                onClick={() => child.path && navigate(child.path)}
+                className={`sidebar-item !gap-2.5 ${isActive(child.path) ? 'active' : ''}`}
+              >
+                <child.icon size={15} />
+                <span className="truncate-1">{child.label}</span>
+              </button>
+            ))}
           </div>
         </div>
       );
@@ -163,43 +206,46 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, onCollapse }) => {
     return (
       <div key={item.id}>
         <button
+          type="button"
           onClick={() => {
-            if (hasChildren) {
-              toggleMenu(item.id);
-            } else if (item.path) {
-              navigate(item.path);
-            }
+            if (hasChildren) toggleMenu(item.id);
+            else if (item.path) navigate(item.path);
           }}
-          className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 ${
-            active ? 'bg-primary/15 text-primary' : 'text-text-secondary hover:bg-primary/5 hover:text-text-primary'
-          } ${level > 0 ? 'ml-4' : ''}`}
+          className={[
+            'sidebar-item',
+            active && !hasChildren ? 'active' : '',
+            groupHasActiveChild && !isExpanded ? 'text-text-primary' : '',
+          ]
+            .filter(Boolean)
+            .join(' ')}
         >
-          <item.icon size={18} />
+          <item.icon size={17} className="shrink-0" />
           {!collapsed && (
             <>
-              <span className="flex-1 text-sm font-medium text-left">{item.label}</span>
+              <span className="flex-1 truncate-1 text-left">{item.label}</span>
               {hasChildren && (
-                <motion.div
+                <motion.span
                   animate={{ rotate: isExpanded ? 90 : 0 }}
-                  transition={{ duration: 0.2 }}
+                  transition={{ duration: 0.18 }}
+                  className="flex items-center text-text-muted"
                 >
                   <ChevronRight size={14} />
-                </motion.div>
+                </motion.span>
               )}
             </>
           )}
         </button>
-        <AnimatePresence>
+        <AnimatePresence initial={false}>
           {hasChildren && isExpanded && !collapsed && (
             <motion.div
               initial={{ height: 0, opacity: 0 }}
               animate={{ height: 'auto', opacity: 1 }}
               exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: 0.2 }}
+              transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
               className="overflow-hidden"
             >
-              <div className="mt-1 space-y-0.5">
-                {item.children?.map(child => renderMenuItem(child, level + 1))}
+              <div className="mt-0.5 space-y-0.5 border-l border-border-color pl-2 ml-4">
+                {item.children?.map((child) => renderMenuItem(child, level + 1))}
               </div>
             </motion.div>
           )}
@@ -212,45 +258,72 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, onCollapse }) => {
     <motion.aside
       initial={false}
       animate={{ width: collapsed ? 72 : 260 }}
-      transition={{ duration: 0.3, ease: 'easeInOut' }}
-      className="bg-card-bg border-r border-border-color flex flex-col h-full"
+      transition={{ duration: 0.24, ease: [0.4, 0, 0.2, 1] }}
+      className="flex h-full shrink-0 flex-col border-r border-border-color bg-card-bg"
     >
-      <div className="h-14 flex items-center justify-between px-4 border-b border-border-color">
+      {/* 品牌区：高度与顶栏对齐 */}
+      <div className="flex h-[56px] shrink-0 items-center gap-2 border-b border-border-color px-3">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center">
+          <BrandMark size={27} variant="mark" />
+        </div>
         {!collapsed && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="flex items-center gap-2"
+            className="min-w-0 flex-1"
           >
-            <div className="w-8 h-8 bg-gradient-to-br from-primary to-accent rounded-lg flex items-center justify-center shadow-glow">
-              <Shield className="text-white" size={18} />
+            <div className="truncate-1 text-[15px] font-semibold tracking-wide text-text-primary">
+              USOP
             </div>
-            <span className="text-lg font-semibold text-text-primary">USOP</span>
+            <div className="truncate-1 text-[10px] leading-none text-text-muted">
+              统一安全运营平台
+            </div>
           </motion.div>
         )}
         <button
+          type="button"
           onClick={() => onCollapse(!collapsed)}
-          className="p-2 rounded-lg text-text-secondary hover:bg-card-bg hover:text-text-primary transition-colors"
+          aria-label={collapsed ? '展开侧边栏' : '收起侧边栏'}
+          title={collapsed ? '展开侧边栏' : '收起侧边栏'}
+          className={`shrink-0 rounded-lg p-2 text-text-muted transition-colors hover:bg-surface-3 hover:text-text-primary ${
+            collapsed ? 'mx-auto' : ''
+          }`}
         >
-          <Menu size={18} />
+          <Menu size={17} />
         </button>
       </div>
-      <nav className="flex-1 overflow-y-auto p-3 space-y-1 scrollbar-thin">
-        {menuItems.map(item => renderMenuItem(item))}
+
+      {/* 导航 */}
+      <nav className="scrollbar-thin flex-1 space-y-0.5 overflow-y-auto px-2 py-3">
+        {menuItems.map((item) => renderMenuItem(item))}
       </nav>
-      <div className="p-3 border-t border-border-color">
-        <div className={`flex items-center gap-3 px-3 py-2 rounded-lg bg-card-bg/50 border border-border-color/50 ${collapsed ? 'justify-center' : ''}`}>
-          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary to-accent flex items-center justify-center">
-            <span className="text-white text-sm font-medium">A</span>
-          </div>
+
+      {/* 当前用户：真实登录身份，点击进入个人中心 */}
+      <div className="shrink-0 border-t border-border-color p-2.5">
+        <button
+          type="button"
+          onClick={() => navigate('/profile')}
+          title={collapsed ? `${displayName} · ${displayEmail}` : '个人中心'}
+          className={`flex w-full items-center gap-2.5 rounded-lg border border-border-color bg-surface-2 px-2.5 py-2 text-left transition-colors hover:border-border-color-hover hover:bg-card-bg-hover ${
+            collapsed ? 'justify-center' : ''
+          }`}
+        >
+          <span className="relative flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-primary to-accent">
+            <span className="text-[12px] font-semibold text-white">{avatarInitial}</span>
+            <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-surface-2 bg-success" />
+          </span>
           {!collapsed && (
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-text-primary truncate">Admin</p>
-              <p className="text-xs text-text-muted truncate">admin@usop.com</p>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5">
+                <p className="truncate-1 text-[12.5px] font-medium text-text-primary">{displayName}</p>
+                <span className="shrink-0 rounded bg-primary/15 px-1 py-px text-[9.5px] font-medium leading-none text-primary">
+                  {roleLabel}
+                </span>
+              </div>
+              <p className="truncate-1 text-[10.5px] text-text-muted">{displayEmail}</p>
             </div>
           )}
-        </div>
+        </button>
       </div>
     </motion.aside>
   );

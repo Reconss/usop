@@ -1,10 +1,23 @@
 import React, { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Plus, Search, Edit2, Trash2, UserCheck, UserX, X, Mail, Shield, Key, Eye, EyeOff, RefreshCw } from 'lucide-react';
+import {
+  Plus, Edit2, Trash2, UserCheck, UserX, Mail, Shield, Key, Eye, EyeOff, RefreshCw, Users, Search,
+  Network, KeyRound,
+} from 'lucide-react';
 import type { User } from '../types';
 import { userApi, request as apiRequest } from '../services/api';
-
-
+import {
+  Button,
+  ContentContainer,
+  EmptyState,
+  Field,
+  LoadingState,
+  Modal,
+  PageHeader,
+  SectionCard,
+  Segmented,
+  StateBadge,
+  TableWrap,
+} from '../components/ui';
 
 export default function UserManagement() {
   const [users, setUsers] = useState<User[]>([]);
@@ -13,27 +26,34 @@ export default function UserManagement() {
   const [showForm, setShowForm] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [showPassword, setShowPassword] = useState(false);
-  const [resetPwdModal, setResetPwdModal] = useState<{open:boolean;userId:string;username:string}>({open:false,userId:'',username:''});
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState('');
+  const [resetPwdModal, setResetPwdModal] = useState<{ open: boolean; userId: string; username: string }>({
+    open: false, userId: '', username: '',
+  });
   const [resetPwdValue, setResetPwdValue] = useState('');
+  const [resetting, setResetting] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<User | null>(null);
   const [formData, setFormData] = useState({
     username: '',
     email: '',
     role: '',
     password: '',
-    confirmPassword: ''
+    confirmPassword: '',
+    authType: 'local' as 'local' | 'ad',
   });
 
-  const [roleOptions, setRoleOptions] = useState<{id:string;name:string}[]>([]);
-  const [toast, setToast] = useState<{type:string;message:string} | null>(null);
+  const [roleOptions, setRoleOptions] = useState<{ id: string; name: string }[]>([]);
+  const [toast, setToast] = useState<{ type: string; message: string } | null>(null);
   const addToast = (type: string, message: string) => {
     setToast({ type, message });
     setTimeout(() => setToast(null), 3000);
   };
-  
+
   useEffect(() => {
-    apiRequest('/roles-api/roles').then((r:any) => {
+    apiRequest('/roles-api/roles').then((r: any) => {
       if (r.success && r.data) {
-        setRoleOptions(r.data.map((role:any) => ({id: role.id, name: role.name})));
+        setRoleOptions(r.data.map((role: any) => ({ id: role.id, name: role.name })));
       }
     }).catch(() => {});
   }, []);
@@ -60,19 +80,31 @@ export default function UserManagement() {
     fetchUsers();
   }, []);
 
-  const filteredUsers = users.filter(u =>
+  const filteredUsers = users.filter((u) =>
     u.username.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    u.email.toLowerCase().includes(searchTerm.toLowerCase())
+    (u.email || '').toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  const toggleStatus = (id: string) => {
-    setUsers(prev => prev.map(u => u.id === id ? { ...u, status: u.status === 'active' ? 'inactive' : 'active' } : u));
+  /** 启停：真实调用 toggle-status，管理员账户后端会拒绝 */
+  const toggleStatus = async (user: User) => {
+    try {
+      const r: any = await apiRequest(`/users-api/users/${user.id}/toggle-status`, { method: 'POST' });
+      if (r.success) {
+        addToast('success', `已${user.status === 'active' ? '禁用' : '启用'} ${user.username}`);
+      } else {
+        addToast('error', r.error || '操作失败');
+      }
+    } catch (e: any) {
+      addToast('error', e?.message || '操作失败');
+    }
+    await fetchUsers();
   };
 
   const handleAdd = () => {
     setEditingUser(null);
-    setFormData({ username: '', email: '', role: '运营人员', password: '', confirmPassword: '' });
+    setFormData({ username: '', email: '', role: roleOptions[0]?.id || '运营人员', password: '', confirmPassword: '', authType: 'local' });
     setShowPassword(false);
+    setFormError('');
     setShowForm(true);
   };
 
@@ -83,320 +115,449 @@ export default function UserManagement() {
       email: user.email,
       role: user.role,
       password: '',
-      confirmPassword: ''
+      confirmPassword: '',
+      authType: user.authType === 'ad' ? 'ad' : 'local',
     });
     setShowPassword(false);
+    setFormError('');
     setShowForm(true);
   };
 
-  const handleSave = () => {
-    if (!formData.username || !formData.email) return;
-
-    if (editingUser) {
-      setUsers(prev => prev.map(u =>
-        u.id === editingUser.id
-          ? { ...u, username: formData.username, email: formData.email, role: formData.role }
-          : u
-      ));
-    } else {
-      if (formData.password !== formData.confirmPassword) {
-        alert('两次输入的密码不一致');
-        return;
-      }
-      const newUser: User = {
-        id: String(users.length + 1),
-        username: formData.username,
-        role: formData.role,
-        email: formData.email,
-        lastLogin: new Date().toISOString(),
-        status: 'active'
-      };
-      setUsers(prev => [...prev, newUser]);
+  const handleSave = async () => {
+    if (!formData.username.trim() || !formData.email.trim()) {
+      setFormError('用户名与邮箱不能为空');
+      return;
     }
-    setShowForm(false);
+    setFormError('');
+    setSaving(true);
+    try {
+      // 平台用户名即 AD 域登录名（后端自动回填 ad_upn），无需单独字段
+      const base = {
+        username: formData.username.trim(),
+        email: formData.email.trim(),
+        role: formData.role,
+        auth_type: formData.authType,
+      };
+      let r: any;
+      if (editingUser) {
+        // 本地 → AD 转换无需密码；AD → 本地必须带新密码
+        r = await apiRequest(`/users-api/users/${editingUser.id}`, {
+          method: 'PUT',
+          body: { ...base, ...(formData.authType === 'local' && formData.password ? { password: formData.password } : {}) },
+        });
+      } else {
+        if (formData.authType === 'local') {
+          if (formData.password !== formData.confirmPassword) {
+            setFormError('两次输入的密码不一致');
+            setSaving(false);
+            return;
+          }
+          if (!formData.password) {
+            setFormError('请设置初始密码');
+            setSaving(false);
+            return;
+          }
+        }
+        r = await apiRequest('/users-api/users', {
+          method: 'POST',
+          body: { ...base, password: formData.password },
+        });
+      }
+      if (r.success) {
+        addToast('success', editingUser ? '用户已更新' : '用户已创建');
+        setShowForm(false);
+        await fetchUsers();
+      } else {
+        setFormError(r.error || '保存失败');
+      }
+    } catch (e: any) {
+      setFormError(e?.message || '保存失败');
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const handleDelete = (id: string) => {
-    setUsers(prev => prev.filter(u => u.id !== id));
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    try {
+      const r: any = await apiRequest(`/users-api/users/${deleteTarget.id}`, { method: 'DELETE' });
+      if (r.success) addToast('success', `已删除 ${deleteTarget.username}`);
+      else addToast('error', r.error || '删除失败');
+    } catch (e: any) {
+      addToast('error', e?.message || '删除失败');
+    }
+    setDeleteTarget(null);
+    await fetchUsers();
   };
+
+  const submitResetPwd = async () => {
+    if (!resetPwdValue || resetPwdValue.length < 6) return;
+    setResetting(true);
+    try {
+      const r: any = await apiRequest(`/users-api/users/${resetPwdModal.userId}/reset-password`, {
+        method: 'POST', body: { password: resetPwdValue },
+      });
+      if (r.success) addToast('success', '密码已重置');
+      else addToast('error', r.error || '重置失败');
+    } catch (e: any) {
+      addToast('error', e.message);
+    } finally {
+      setResetting(false);
+      setResetPwdModal({ open: false, userId: '', username: '' });
+      setResetPwdValue('');
+    }
+  };
+
+  const activeCount = users.filter((u) => u.status === 'active').length;
+  const canSubmit = Boolean(
+    formData.username && formData.email && (
+      formData.authType === 'ad' ||
+      (formData.authType === 'local' &&
+        (editingUser || (formData.password && formData.password === formData.confirmPassword)))
+    )
+  );
+  const isAdUser = (u: User) => u.authType === 'ad';
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold text-text-primary">用户管理</h1>
-          <p className="text-text-secondary mt-1">管理系统用户和权限</p>
-        </div>
-        <motion.button
-          whileHover={{ scale: 1.02 }}
-          whileTap={{ scale: 0.98 }}
-          onClick={handleAdd}
-          className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
-        >
-          <Plus className="w-4 h-4" />新建用户
-        </motion.button>
-      </div>
-
-      <div className="glass-card rounded-xl p-4 flex items-center gap-4">
-        <div className="relative flex-1 max-w-md">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
-          <input
-            type="text"
-            placeholder="搜索用户名或邮箱..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-10 pr-4 py-2 bg-card-bg border border-border-color rounded-lg text-text-primary placeholder:text-text-muted focus:outline-none focus:border-primary"
-          />
-        </div>
-      </div>
-
-      <div className="glass-card rounded-xl overflow-hidden">
-        <table className="w-full">
-          <thead className="bg-card-bg border-b border-border-color">
-            <tr>
-              <th className="px-6 py-4 text-left text-sm font-medium text-text-secondary">用户名</th>
-              <th className="px-6 py-4 text-left text-sm font-medium text-text-secondary">角色</th>
-              <th className="px-6 py-4 text-left text-sm font-medium text-text-secondary">邮箱</th>
-              <th className="px-6 py-4 text-left text-sm font-medium text-text-secondary">最后登录</th>
-              <th className="px-6 py-4 text-left text-sm font-medium text-text-secondary">状态</th>
-              <th className="px-6 py-4 text-left text-sm font-medium text-text-secondary">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filteredUsers.map((user, index) => (
-              <motion.tr
-                key={user.id}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: index * 0.05 }}
-                className="table-row border-b border-border-color/50 last:border-0"
-              >
-                <td className="px-6 py-4">
-                  <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center">
-                      <span className="text-primary text-sm font-medium">{user.username[0].toUpperCase()}</span>
-                    </div>
-                    <span className="text-sm font-medium text-text-primary">{user.username}</span>
-                  </div>
-                </td>
-                <td className="px-6 py-4 text-sm text-text-secondary">{roleOptions.find(r=>r.id===user.role)?.name||user.role||'-'}</td>
-                <td className="px-6 py-4 text-sm text-text-secondary">{user.email}</td>
-                <td className="px-6 py-4 text-sm text-text-secondary">{user.lastLogin ? new Date(user.lastLogin).toLocaleString('zh-CN') : '-'}</td>
-                <td className="px-6 py-4">
-                  <button
-                    onClick={() => toggleStatus(user.id)}
-                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
-                      user.status === 'active' ? 'bg-green-500/20 text-green-400' : 'bg-gray-500/20 text-gray-400'
-                    }`}
-                  >
-                    {user.status === 'active' ? <UserCheck className="w-3.5 h-3.5" /> : <UserX className="w-3.5 h-3.5" />}
-                    {user.status === 'active' ? '启用' : '禁用'}
-                  </button>
-                </td>
-                <td className="px-6 py-4">
-                  <div className="flex items-center gap-2">
-                    <motion.button
-                      whileHover={{ scale: 1.1 }}
-                      whileTap={{ scale: 0.9 }}
-                      onClick={() => handleEdit(user)}
-                      className="p-2 text-text-secondary hover:text-primary transition-colors"
-                    >
-                      <Edit2 className="w-4 h-4" />
-                    </motion.button>
-                    <motion.button
-                      whileHover={{ scale: 1.1 }}
-                      whileTap={{ scale: 0.9 }}
-                      onClick={() => setResetPwdModal({open:true, userId:user.id, username:user.username})}
-                      className="p-2 text-text-secondary hover:text-amber-400 transition-colors"
-                      title="重置密码"
-                    >
-                      <Key className="w-4 h-4" />
-                    </motion.button>
-                    <motion.button
-                      whileHover={{ scale: 1.1 }}
-                      whileTap={{ scale: 0.9 }}
-                      onClick={() => handleDelete(user.id)}
-                      className="p-2 text-text-secondary hover:text-critical transition-colors"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </motion.button>
-                  </div>
-                </td>
-              </motion.tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <AnimatePresence>
-        {showForm && (
+    <ContentContainer>
+      <PageHeader
+        icon={Users}
+        title="用户管理"        meta={
+          users.length > 0 ? (
+            <span className="text-[11px] text-text-muted num">共 {users.length} 个用户 · 启用 {activeCount}</span>
+          ) : undefined
+        }
+        actions={
           <>
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 bg-black/50 z-50"
-              onClick={() => setShowForm(false)}
-            />
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none"
-            >
-              <div
-                className="glass-card rounded-xl p-6 w-[500px] pointer-events-auto max-h-[80vh] overflow-auto"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div className="flex items-center justify-between mb-6">
-                  <h2 className="text-lg font-semibold text-text-primary">
-                    {editingUser ? '编辑用户' : '新建用户'}
-                  </h2>
-                  <button
-                    onClick={() => setShowForm(false)}
-                    className="p-2 text-text-secondary hover:text-text-primary"
-                  >
-                    <X className="w-5 h-5" />
-                  </button>
-                </div>
-
-                <div className="space-y-4">
-                  <div>
-                    <label className="block text-text-secondary text-sm mb-2">用户名</label>
-                    <div className="relative">
-                      <UserCheck className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
-                      <input
-                        type="text"
-                        value={formData.username}
-                        onChange={(e) => setFormData({ ...formData, username: e.target.value })}
-                        placeholder="输入用户名"
-                        className="w-full pl-10 pr-4 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary focus:border-primary focus:outline-none"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-text-secondary text-sm mb-2">邮箱</label>
-                    <div className="relative">
-                      <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
-                      <input
-                        type="email"
-                        value={formData.email}
-                        onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                        placeholder="输入邮箱地址"
-                        className="w-full pl-10 pr-4 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary focus:border-primary focus:outline-none"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-text-secondary text-sm mb-2">角色</label>
-                    <div className="relative">
-                      <Shield className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
-                      <select
-                        value={formData.role}
-                        onChange={(e) => setFormData({ ...formData, role: e.target.value })}
-                        className="w-full pl-10 pr-4 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary focus:border-primary focus:outline-none"
-                      >
-                        {roleOptions.map(r => (
-                          <option key={r.id} value={r.id}>{r.name}</option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-
-                  {!editingUser && (
-                    <>
-                      <div>
-                        <label className="block text-text-secondary text-sm mb-2">密码</label>
-                        <div className="relative">
-                          <Key className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
-                          <input
-                            type={showPassword ? 'text' : 'password'}
-                            value={formData.password}
-                            onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                            placeholder="输入密码"
-                            className="w-full pl-10 pr-12 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary focus:border-primary focus:outline-none"
-                          />
-                          <button
-                            onClick={() => setShowPassword(!showPassword)}
-                            className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-primary"
-                          >
-                            {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                          </button>
-                        </div>
-                      </div>
-
-                      <div>
-                        <label className="block text-text-secondary text-sm mb-2">确认密码</label>
-                        <div className="relative">
-                          <Key className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
-                          <input
-                            type={showPassword ? 'text' : 'password'}
-                            value={formData.confirmPassword}
-                            onChange={(e) => setFormData({ ...formData, confirmPassword: e.target.value })}
-                            placeholder="再次输入密码"
-                            className="w-full pl-10 pr-4 py-2 bg-page-bg border border-border-color rounded-lg text-text-primary focus:border-primary focus:outline-none"
-                          />
-                        </div>
-                      </div>
-                    </>
-                  )}
-                </div>
-
-                <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-border-color">
-                  <button
-                    onClick={() => setShowForm(false)}
-                    className="px-4 py-2 text-text-secondary hover:text-text-primary"
-                  >
-                    取消
-                  </button>
-                  <button
-                    onClick={handleSave}
-                    disabled={!formData.username || !formData.email || (!editingUser && (!formData.password || formData.password !== formData.confirmPassword))}
-                    className="px-4 py-2 bg-primary hover:bg-primary-hover disabled:opacity-50 text-white rounded-lg"
-                  >
-                    {editingUser ? '保存' : '创建'}
-                  </button>
-                </div>
-              </div>
-            </motion.div>
+            <Button variant="secondary" icon={RefreshCw} onClick={fetchUsers}>
+              刷新
+            </Button>
+            <Button variant="primary" icon={Plus} onClick={handleAdd}>
+              新建用户
+            </Button>
           </>
-        )}
-      </AnimatePresence>
-      {/* 密码重置弹窗 */}
-      <AnimatePresence>{resetPwdModal.open&&(
-        <motion.div initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-          <motion.div initial={{opacity:0,scale:0.95}} animate={{opacity:1,scale:1}} exit={{opacity:0,scale:0.95}}
-            className="bg-card-bg border border-border-color rounded-2xl p-5 w-full max-w-sm mx-4 shadow-2xl" onClick={e=>e.stopPropagation()}>
-            <h3 className="text-sm font-semibold text-text-primary mb-1 flex items-center gap-2"><Key className="w-4 h-4 text-amber-400"/>重置密码</h3>
-            <p className="text-xs text-text-muted mb-4">为用户 <strong>{resetPwdModal.username}</strong> 设置新密码</p>
-            <input value={resetPwdValue} onChange={e=>setResetPwdValue(e.target.value)} type="text"
-              placeholder="输入新密码（至少6位）"
-              className="w-full px-3 py-2 bg-page-bg border border-border-color rounded-xl text-sm text-text-primary placeholder:text-text-muted/40 mb-4 focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/20 transition-all outline-none" />
-            <div className="flex gap-2 justify-end">
-              <button onClick={()=>{setResetPwdModal({open:false,userId:'',username:''});setResetPwdValue('');}}
-                className="px-4 py-2 text-xs text-text-secondary hover:text-text-primary transition-colors rounded-lg hover:bg-card-bg-hover">取消</button>
-              <button onClick={async()=>{
-                if (!resetPwdValue || resetPwdValue.length < 6) return;
-                try {
-                  const r = await apiRequest('/users-api/users/'+resetPwdModal.userId+'/reset-password', {
-                    method:'POST', body:{password: resetPwdValue}
-                  });
-                  if (r.success) addToast('success', '密码已重置');
-                  else addToast('error', r.error||'重置失败');
-                } catch(e:any) { addToast('error', e.message); }
-                setResetPwdModal({open:false,userId:'',username:''});
-                setResetPwdValue('');
-              }}
-                className="px-4 py-2 bg-gradient-to-br from-amber-600 to-orange-600 text-white rounded-lg text-xs font-medium hover:from-amber-500 hover:to-orange-500 transition-all disabled:opacity-40"
-                disabled={!resetPwdValue||resetPwdValue.length<6}>
-                确认重置
-              </button>
+        }
+        toolbar={
+          <>
+            <div className="relative w-[260px] max-w-full">
+              <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
+              <input
+                type="text"
+                placeholder="搜索用户名或邮箱…"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="app-input pl-8"
+              />
             </div>
-          </motion.div>
-        </motion.div>
-      )}</AnimatePresence>
-    </div>
+            {searchTerm && (
+              <span className="text-[11px] text-text-muted num">命中 {filteredUsers.length} 条</span>
+            )}
+          </>
+        }
+      />
+
+      <SectionCard flush>
+        {loading ? (
+          <LoadingState label="正在加载用户列表…" />
+        ) : filteredUsers.length === 0 ? (
+          <EmptyState
+            icon={Users}
+            title={searchTerm ? '没有匹配的用户' : '暂无用户'}
+            description={searchTerm ? '尝试更换关键词，或清空搜索条件。' : '创建第一个平台用户后即可分配角色与权限。'}
+            action={
+              searchTerm ? (
+                <Button variant="soft" onClick={() => setSearchTerm('')}>清空搜索</Button>
+              ) : (
+                <Button variant="soft" icon={Plus} onClick={handleAdd}>新建用户</Button>
+              )
+            }
+          />
+        ) : (
+          <TableWrap>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th style={{ minWidth: 200 }}>用户名</th>
+                  <th style={{ width: 110 }}>账号类型</th>
+                  <th style={{ minWidth: 120 }}>角色</th>
+                  <th style={{ minWidth: 180 }}>邮箱</th>
+                  <th style={{ minWidth: 170 }}>最后登录</th>
+                  <th style={{ width: 110 }}>状态</th>
+                  <th style={{ width: 140 }} className="text-right">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredUsers.map((user) => (
+                  <tr key={user.id}>
+                    <td>
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[12px] font-semibold text-primary">
+                          {(user.username || '?').charAt(0).toUpperCase()}
+                        </span>
+                        <span className="text-text-primary font-medium truncate-1">{user.username}</span>
+                      </div>
+                    </td>
+                    <td>
+                      {isAdUser(user) ? (
+                        <span
+                          className="inline-flex items-center gap-1 rounded-pill bg-primary/12 px-2 py-0.5 text-[11px] font-medium text-primary"
+                          title={user.adUpn || undefined}
+                        >
+                          <Network size={11} />
+                          AD 域
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 rounded-pill bg-surface-2 px-2 py-0.5 text-[11px] text-text-muted">
+                          本地账号
+                        </span>
+                      )}
+                    </td>
+                    <td>{roleOptions.find((r) => r.id === user.role)?.name || user.role || '—'}</td>
+                    <td className="font-mono text-[12px] truncate-1">{user.email || '—'}</td>
+                    <td className="num">{user.lastLogin ? new Date(user.lastLogin).toLocaleString('zh-CN') : '—'}</td>
+                    <td>
+                      <button
+                        type="button"
+                        onClick={() => toggleStatus(user)}
+                        title={user.status === 'active' ? '点击禁用' : '点击启用'}
+                        className="inline-flex items-center gap-1.5 rounded-pill border border-transparent px-1 py-0.5 transition-colors hover:border-border-color"
+                      >
+                        <StateBadge
+                          state={user.status}
+                          label={user.status === 'active' ? '启用' : '禁用'}
+                        />
+                        {user.status === 'active'
+                          ? <UserCheck size={13} className="text-success" />
+                          : <UserX size={13} className="text-text-muted" />}
+                      </button>
+                    </td>
+                    <td>
+                      <div className="flex items-center justify-end gap-1">
+                        <Button variant="ghost" size="sm" icon={Edit2} className="w-8 px-0"
+                          title="编辑" onClick={() => handleEdit(user)} />
+                        <Button variant="ghost" size="sm" icon={Key} className="w-8 px-0 text-warning"
+                          title={isAdUser(user) ? 'AD 域账号密码由域控制器管理' : '重置密码'}
+                          disabled={isAdUser(user)}
+                          onClick={() => setResetPwdModal({ open: true, userId: user.id, username: user.username })} />
+                        <Button variant="danger-ghost" size="sm" icon={Trash2} className="w-8 px-0"
+                          title="删除" onClick={() => setDeleteTarget(user)} />
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableWrap>
+        )}
+      </SectionCard>
+
+      {/* ── 新建 / 编辑用户 ─────────────────────────── */}
+      <Modal
+        open={showForm}
+        onClose={() => setShowForm(false)}
+        width={520}
+        title={editingUser ? '编辑用户' : '新建用户'}
+        description={editingUser ? `用户 #${editingUser.id}` : '新用户创建后立即可登录，初始密码请通过安全渠道传达'}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setShowForm(false)}>取消</Button>
+            <Button
+              variant="primary"
+              icon={editingUser ? Edit2 : Plus}
+              loading={saving}
+              disabled={!canSubmit}
+              onClick={handleSave}
+            >
+              {editingUser ? '保存' : '创建'}
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          <Field label="账号类型" help={formData.authType === 'ad' ? '登录时由 AD 域控制器校验口令，平台不存储密码' : undefined}>
+            <Segmented
+              items={[
+                { value: 'local', label: '本地账号' },
+                { value: 'ad', label: 'AD 域账号' },
+              ]}
+              value={formData.authType}
+              onChange={(v) => setFormData({ ...formData, authType: v as 'local' | 'ad' })}
+            />
+          </Field>
+
+          <Field
+            label="用户名"
+            required
+            help={formData.authType === 'ad' ? '即 AD 域登录名（sAMAccountName 或 UPN），登录时由域控校验' : undefined}
+          >
+            <input
+              type="text"
+              value={formData.username}
+              onChange={(e) => setFormData({ ...formData, username: e.target.value })}
+              placeholder={formData.authType === 'ad' ? '如 zhangwei 或 zhangwei@corp.com' : '输入用户名'}
+              className="app-input"
+            />
+          </Field>
+
+          <Field label="邮箱" required>
+            <div className="relative">
+              <Mail size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
+              <input
+                type="email"
+                value={formData.email}
+                onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                placeholder="输入邮箱地址"
+                className="app-input pl-8"
+              />
+            </div>
+          </Field>
+
+          <Field label="角色">
+            <div className="relative">
+              <Shield size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
+              <select
+                value={formData.role}
+                onChange={(e) => setFormData({ ...formData, role: e.target.value })}
+                className="app-select pl-8"
+              >
+                {roleOptions.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+              </select>
+            </div>
+          </Field>
+
+          {formData.authType === 'local' && editingUser && (
+            <Field label="重设登录密码" help="仅转换账号类型时必填；留空表示不修改">
+              <div className="relative">
+                <KeyRound size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  value={formData.password}
+                  onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                  placeholder="留空则不修改密码"
+                  className="app-input pl-8"
+                />
+              </div>
+            </Field>
+          )}
+
+          {formData.authType === 'local' && !editingUser && (
+            <>
+              <Field label="密码" required>
+                <div className="relative">
+                  <Key size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    value={formData.password}
+                    onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                    placeholder="输入初始密码"
+                    className="app-input pl-8 pr-9"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    aria-label={showPassword ? '隐藏密码' : '显示密码'}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-text-muted hover:text-text-primary"
+                  >
+                    {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                  </button>
+                </div>
+              </Field>
+
+              <Field
+                label="确认密码"
+                required
+                error={
+                  formData.confirmPassword && formData.password !== formData.confirmPassword
+                    ? '两次输入的密码不一致'
+                    : undefined
+                }
+              >
+                <div className="relative">
+                  <Key size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    value={formData.confirmPassword}
+                    onChange={(e) => setFormData({ ...formData, confirmPassword: e.target.value })}
+                    placeholder="再次输入密码"
+                    className="app-input pl-8"
+                  />
+                </div>
+              </Field>
+            </>
+          )}
+
+          {formError && <div className="callout callout-danger">{formError}</div>}
+        </div>
+      </Modal>
+
+      {/* ── 重置密码 ───────────────────────────────── */}
+      <Modal
+        open={resetPwdModal.open}
+        onClose={() => { setResetPwdModal({ open: false, userId: '', username: '' }); setResetPwdValue(''); }}
+        width={420}
+        title="重置密码"
+        description={`为用户 ${resetPwdModal.username} 设置新密码`}
+        footer={
+          <>
+            <Button
+              variant="secondary"
+              onClick={() => { setResetPwdModal({ open: false, userId: '', username: '' }); setResetPwdValue(''); }}
+            >
+              取消
+            </Button>
+            <Button
+              variant="primary"
+              icon={Key}
+              loading={resetting}
+              disabled={!resetPwdValue || resetPwdValue.length < 6}
+              onClick={submitResetPwd}
+            >
+              确认重置
+            </Button>
+          </>
+        }
+      >
+        <Field label="新密码" required help="至少 6 位">
+          <input
+            value={resetPwdValue}
+            onChange={(e) => setResetPwdValue(e.target.value)}
+            type="text"
+            placeholder="输入新密码"
+            className="app-input"
+          />
+        </Field>
+      </Modal>
+
+      {/* ── 删除确认 ───────────────────────────────── */}
+      <Modal
+        open={Boolean(deleteTarget)}
+        onClose={() => setDeleteTarget(null)}
+        width={420}
+        title="删除用户"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setDeleteTarget(null)}>取消</Button>
+            <Button variant="danger" icon={Trash2} onClick={handleDelete}>确认删除</Button>
+          </>
+        }
+      >
+        <p className="text-body text-text-secondary">
+          确定要删除用户 <strong className="text-text-primary">{deleteTarget?.username}</strong> 吗？该操作不可撤销，用户将立即失去登录权限。
+        </p>
+      </Modal>
+
+      {/* ── Toast ─────────────────────────────────── */}
+      {toast && (
+        <div
+          className={`fixed right-4 top-16 z-toast max-w-xs rounded-card border px-3.5 py-2.5 text-[12.5px] shadow-panel ${
+            toast.type === 'error'
+              ? 'border-danger/30 bg-danger/10 text-danger'
+              : 'border-success/30 bg-success/10 text-success'
+          }`}
+        >
+          {toast.message}
+        </div>
+      )}
+    </ContentContainer>
   );
 }

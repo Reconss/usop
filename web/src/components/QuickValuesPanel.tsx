@@ -10,12 +10,12 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
 import {
-  BarChart3, ChevronDown, Loader2, Plus, Minus, X,
+  BarChart3, ChevronDown, Plus, Minus, X,
   Shield, Globe, Server, Tag, Activity, AlertTriangle,
-  Network, Hash, Clock, Info, Box
+  Network, Hash, Info, Box
 } from 'lucide-react';
+import { Button, LoadingState } from './ui';
 import { alertsApi } from '../services/api';
 
 interface QuickValue {
@@ -33,16 +33,16 @@ interface FieldDef {
 }
 
 const AVAILABLE_FIELDS: FieldDef[] = [
-  { key: 'severity', label: '严重程度', icon: AlertTriangle, color: 'text-rose-400', defaultExpanded: true },
-  { key: 'status', label: '状态', icon: Activity, color: 'text-blue-400', defaultExpanded: true },
-  { key: 'source', label: '数据源', icon: Shield, color: 'text-purple-400', defaultExpanded: true },
-  { key: 'source_product', label: '产品', icon: Box, color: 'text-cyan-400', defaultExpanded: false },
-  { key: 'category', label: '分类', icon: Tag, color: 'text-amber-400', defaultExpanded: false },
-  { key: 'source_type', label: '数据类型', icon: Info, color: 'text-indigo-400', defaultExpanded: false },
-  { key: 'src_ip', label: '源 IP', icon: Globe, color: 'text-cyan-400', defaultExpanded: false },
-  { key: 'dst_ip', label: '目标 IP', icon: Server, color: 'text-green-400', defaultExpanded: false },
-  { key: 'protocol', label: '协议', icon: Network, color: 'text-teal-400', defaultExpanded: false },
-  { key: 'hostname', label: '主机名', icon: Hash, color: 'text-orange-400', defaultExpanded: false },
+  { key: 'severity', label: '严重程度', icon: AlertTriangle, color: 'text-danger', defaultExpanded: true },
+  { key: 'status', label: '状态', icon: Activity, color: 'text-info', defaultExpanded: true },
+  { key: 'source', label: '数据源', icon: Shield, color: 'text-accent', defaultExpanded: true },
+  { key: 'source_product', label: '产品', icon: Box, color: 'text-info', defaultExpanded: false },
+  { key: 'category', label: '分类', icon: Tag, color: 'text-warning', defaultExpanded: false },
+  { key: 'source_type', label: '数据类型', icon: Info, color: 'text-accent', defaultExpanded: false },
+  { key: 'src_ip', label: '源 IP', icon: Globe, color: 'text-info', defaultExpanded: false },
+  { key: 'dst_ip', label: '目标 IP', icon: Server, color: 'text-success', defaultExpanded: false },
+  { key: 'protocol', label: '协议', icon: Network, color: 'text-success', defaultExpanded: false },
+  { key: 'hostname', label: '主机名', icon: Hash, color: 'text-warning', defaultExpanded: false },
 ];
 
 interface ActiveFilter {
@@ -118,18 +118,22 @@ export const QuickValuesPanel: React.FC<QuickValuesPanelProps> = ({
     activeFilters.some(f => f.field === field && f.value === value && f.exclude);
 
   return (
-    <div className={`flex flex-col bg-card-bg border border-border-color rounded-xl overflow-hidden ${className}`}>
+    <div className={`app-card flex flex-col overflow-hidden ${className}`}>
       {/* 标题 */}
       <div className="px-4 py-3 border-b border-border-color flex items-center justify-between">
         <div className="flex items-center gap-2">
           <BarChart3 className="w-4 h-4 text-primary" />
-          <span className="text-sm font-semibold text-text-primary">Quick Values</span>
+          <span className="text-sm font-semibold text-text-primary">字段分布</span>
         </div>
         {activeFilters.length > 0 && (
-          <button onClick={() => activeFilters.forEach(f => onFilterRemove?.(f.field, f.value))}
-            className="text-[10px] text-text-muted hover:text-text-secondary">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 px-1.5 text-[10px]"
+            onClick={() => activeFilters.forEach(f => onFilterRemove?.(f.field, f.value))}
+          >
             清除筛选 ({activeFilters.length})
-          </button>
+          </Button>
         )}
       </div>
 
@@ -139,13 +143,18 @@ export const QuickValuesPanel: React.FC<QuickValuesPanelProps> = ({
           <div className="flex flex-wrap gap-1">
             {activeFilters.map((f, i) => (
               <span key={`${f.field}-${f.value}-${i}`}
-                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px]
-                  ${f.exclude ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
-                    : 'bg-primary/10 text-primary border border-primary/20'}`}>
+                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] border
+                  ${f.exclude ? 'bg-danger/10 text-danger border-danger/25'
+                    : 'bg-primary/10 text-primary border-primary/25'}`}>
                 {f.exclude ? <Minus className="w-2.5 h-2.5" /> : <Plus className="w-2.5 h-2.5" />}
-                <span className="font-mono">{f.field}:{f.value}</span>
+                <span className="font-mono truncate max-w-[180px]">{f.field}:{f.value}</span>
                 {onFilterRemove && (
-                  <button onClick={() => onFilterRemove(f.field, f.value)} className="ml-0.5 hover:opacity-70">
+                  <button
+                    type="button"
+                    onClick={() => onFilterRemove(f.field, f.value)}
+                    className="ml-0.5 hover:opacity-70"
+                    aria-label={`移除筛选 ${f.field}:${f.value}`}
+                  >
                     <X className="w-2.5 h-2.5" />
                   </button>
                 )}
@@ -156,7 +165,7 @@ export const QuickValuesPanel: React.FC<QuickValuesPanelProps> = ({
       )}
 
       {/* 字段值分布列表 */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto scrollbar-thin">
         {AVAILABLE_FIELDS.map((fieldDef) => {
           const isExpanded = expandedFields.has(fieldDef.key);
           const vals = fieldValues[fieldDef.key] || [];
@@ -167,13 +176,17 @@ export const QuickValuesPanel: React.FC<QuickValuesPanelProps> = ({
           return (
             <div key={fieldDef.key} className="border-b border-border-color/50 last:border-b-0">
               {/* 字段标题 - 点击展开/折叠 */}
-              <button onClick={() => toggleField(fieldDef.key)}
-                className="w-full flex items-center justify-between px-3 py-2.5 hover:bg-white/3 transition-colors">
+              <button
+                type="button"
+                onClick={() => toggleField(fieldDef.key)}
+                className="w-full flex items-center justify-between px-3 py-2.5 hover:bg-surface-2 transition-colors"
+                aria-expanded={isExpanded}
+              >
                 <div className="flex items-center gap-2">
                   <Icon className={`w-3.5 h-3.5 ${fieldDef.color}`} />
                   <span className="text-xs font-medium text-text-primary">{fieldDef.label}</span>
                   {vals.length > 0 && (
-                    <span className="text-[10px] text-text-muted bg-page-bg px-1.5 py-0.5 rounded">
+                    <span className="text-[10px] text-text-muted bg-surface-3 px-1.5 py-0.5 rounded">
                       {vals.length}
                     </span>
                   )}
@@ -182,50 +195,47 @@ export const QuickValuesPanel: React.FC<QuickValuesPanelProps> = ({
               </button>
 
               {/* 展开的值分布 */}
-              <AnimatePresence>
-                {isExpanded && (
-                  <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }}
-                    exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
-                    <div className="px-3 pb-2">
-                      {isLoading ? (
-                        <div className="flex items-center justify-center py-3">
-                          <Loader2 className="w-4 h-4 text-text-muted animate-spin" />
-                        </div>
-                      ) : vals.length === 0 ? (
-                        <div className="text-[10px] text-text-muted text-center py-2">暂无数据</div>
-                      ) : (
-                        <div className="space-y-0.5">
-                          {vals.map((val) => {
-                            const barPct = maxCount > 0 ? (val.count / maxCount) * 100 : 0;
-                            const active = isFilterActive(fieldDef.key, val.key);
-                            const excluded = isFilterExcluded(fieldDef.key, val.key);
-
-                            return (
-                              <div key={val.key} onClick={(e) => handleValueClick(fieldDef.key, val, e)}
-                                className={`group relative rounded px-2 py-1.5 cursor-pointer transition-all overflow-hidden
-                                  ${excluded ? 'bg-rose-500/5' : active ? 'bg-primary/5' : 'hover:bg-white/5'}`}
-                                title={`${val.key}: ${val.count} (${val.percentage}%) — 点击筛选, Ctrl+点击排除`}>
-                                <div className={`absolute top-0 left-0 h-full ${excluded ? 'bg-rose-500/8' : 'bg-primary/8'}`}
-                                  style={{ width: `${barPct}%` }} />
-                                <div className="relative flex items-center justify-between">
-                                  <span className={`text-[11px] font-mono truncate max-w-[140px]
-                                    ${excluded ? 'text-rose-400 line-through' : active ? 'text-primary font-medium' : 'text-text-primary'}`}>
-                                    {val.key || '(empty)'}
-                                  </span>
-                                  <div className="flex items-center gap-1.5 flex-shrink-0 ml-1">
-                                    <span className="text-[10px] text-text-muted">{val.count.toLocaleString()}</span>
-                                    <span className="text-[10px] text-text-muted/50 w-8 text-right">{val.percentage}%</span>
-                                  </div>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
+              {isExpanded && (
+                <div className="px-3 pb-2">
+                  {isLoading ? (
+                    <div className="flex items-center justify-center py-3">
+                      <LoadingState inline label="" className="gap-0" />
                     </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
+                  ) : vals.length === 0 ? (
+                    <div className="text-[10px] text-text-muted text-center py-2">暂无数据</div>
+                  ) : (
+                    <div className="space-y-0.5">
+                      {vals.map((val) => {
+                        const barPct = maxCount > 0 ? (val.count / maxCount) * 100 : 0;
+                        const active = isFilterActive(fieldDef.key, val.key);
+                        const excluded = isFilterExcluded(fieldDef.key, val.key);
+
+                        return (
+                          <div key={val.key} onClick={(e) => handleValueClick(fieldDef.key, val, e)}
+                            className={`group relative rounded px-2 py-1.5 cursor-pointer transition-colors overflow-hidden ${
+                              excluded ? 'bg-danger/10' : active ? 'bg-primary/10' : 'hover:bg-surface-2'
+                            }`}
+                            title={`${val.key}: ${val.count} (${val.percentage}%) — 点击筛选, Ctrl+点击排除`}>
+                            <div className={`absolute top-0 left-0 h-full ${excluded ? 'bg-danger/10' : 'bg-primary/10'}`}
+                              style={{ width: `${barPct}%` }} />
+                            <div className="relative flex items-center justify-between">
+                              <span className={`text-[11px] font-mono truncate max-w-[140px] ${
+                                excluded ? 'text-danger line-through' : active ? 'text-primary font-medium' : 'text-text-primary'
+                              }`}>
+                                {val.key || '(empty)'}
+                              </span>
+                              <div className="flex items-center gap-1.5 flex-shrink-0 ml-1">
+                                <span className="text-[10px] text-text-muted num">{val.count.toLocaleString()}</span>
+                                <span className="text-[10px] text-text-muted/60 w-8 text-right num">{val.percentage}%</span>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           );
         })}

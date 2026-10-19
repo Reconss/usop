@@ -5,10 +5,9 @@ services:
   flink-jobmanager:
     command: jobmanager
     container_name: flink-jobmanager
-    environment:
-    - FLINK_PROPERTIES=jobmanager.rpc.address=flink-jobmanager
-    - FLINK_PROPERTIES=state.backend=filesystem
-    - FLINK_PROPERTIES=state.checkpoints.dir=file:///opt/flink/checkpoints
+    # ⚠️ 不要再加 FLINK_PROPERTIES：flink 镜像 entrypoint 会把它追加进挂载的
+    # flink-conf.yaml（bind-mount 共享文件），每次重启都追加一批重复配置；
+    # 所有配置已统一写进 flink-conf/flink-conf.yaml
     healthcheck:
       interval: 30s
       retries: 5
@@ -25,15 +24,20 @@ services:
     - ./flink-jobs:/opt/flink/jobs
     - ./data/flink:/opt/flink/checkpoints
     - ./flink-conf/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml
+    # 连接器 jar（Kafka / JDBC / PostgreSQL）：Flink 发行版自带 lib 里没有，
+    # 必须逐个挂进 /opt/flink/lib（挂目录会遮蔽内置 jar，只能挂文件）
+    - ./flink-jars/flink-connector-kafka-3.2.0-1.18.jar:/opt/flink/lib/flink-connector-kafka-3.2.0-1.18.jar
+    - ./flink-jars/kafka-clients-3.4.0.jar:/opt/flink/lib/kafka-clients-3.4.0.jar
+    - ./flink-jars/flink-connector-jdbc-3.2.0-1.18.jar:/opt/flink/lib/flink-connector-jdbc-3.2.0-1.18.jar
+    - ./flink-jars/postgresql-42.6.0.jar:/opt/flink/lib/postgresql-42.6.0.jar
   flink-taskmanager:
     command: taskmanager
     depends_on:
     - flink-jobmanager
+    # 单机部署只跑 1 个关联分析作业（parallelism 1），4 slots 富余；
+    # 需要扩容时改回 replicas: 2 并调大 flink-conf.yaml 的 process.size
     deploy:
-      replicas: 2
-    environment:
-    - FLINK_PROPERTIES=jobmanager.rpc.address=flink-jobmanager
-    - FLINK_PROPERTIES=taskmanager.numberOfTaskSlots=4
+      replicas: 1
     image: flink:1.18.1-scala_2.12-java11
     networks:
     - log-platform
@@ -41,6 +45,36 @@ services:
     - ./flink-jobs:/opt/flink/jobs
     - ./data/flink:/opt/flink/checkpoints
     - ./flink-conf/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml
+    - ./flink-jars/flink-connector-kafka-3.2.0-1.18.jar:/opt/flink/lib/flink-connector-kafka-3.2.0-1.18.jar
+    - ./flink-jars/kafka-clients-3.4.0.jar:/opt/flink/lib/kafka-clients-3.4.0.jar
+    - ./flink-jars/flink-connector-jdbc-3.2.0-1.18.jar:/opt/flink/lib/flink-connector-jdbc-3.2.0-1.18.jar
+    - ./flink-jars/postgresql-42.6.0.jar:/opt/flink/lib/postgresql-42.6.0.jar
+  # SQL Gateway：后端通过它把「关联分析」Flint SQL 提交到会话集群。
+  # ⚠️ 会话关闭会连带取消其中提交的作业，因此 idle-timeout 设为很长（见 -D 参数）。
+  flink-sql-gateway:
+    image: flink:1.18.1-scala_2.12-java11
+    container_name: flink-sql-gateway
+    depends_on:
+    - flink-jobmanager
+    networks:
+    - log-platform
+    ports:
+    - 8083:8083
+    command: >
+      bash -c "/opt/flink/bin/sql-gateway.sh start-foreground
+      -D sql-gateway.endpoint.rest.address=0.0.0.0
+      -D sql-gateway.endpoint.rest.port=8083
+      -D sql-gateway.session.idle-timeout=365d
+      -D sql-gateway.session.max-num=200
+      -D rest.address=flink-jobmanager
+      -D rest.port=8081"
+    volumes:
+    - ./flink-jobs:/opt/flink/jobs
+    - ./flink-conf/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml
+    - ./flink-jars/flink-connector-kafka-3.2.0-1.18.jar:/opt/flink/lib/flink-connector-kafka-3.2.0-1.18.jar
+    - ./flink-jars/kafka-clients-3.4.0.jar:/opt/flink/lib/kafka-clients-3.4.0.jar
+    - ./flink-jars/flink-connector-jdbc-3.2.0-1.18.jar:/opt/flink/lib/flink-connector-jdbc-3.2.0-1.18.jar
+    - ./flink-jars/postgresql-42.6.0.jar:/opt/flink/lib/postgresql-42.6.0.jar
   kafka:
     container_name: kafka
     environment:
@@ -62,8 +96,7 @@ services:
       retries: 5
       test:
       - CMD
-      - kafka-broker-id
-      - --verify
+      - kafka-broker-api-versions
       - --bootstrap-server
       - localhost:9092
       timeout: 10s
@@ -135,27 +168,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-  timescale:
-    container_name: timescale
-    environment:
-      POSTGRES_DB: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_USER: postgres
-    healthcheck:
-      interval: 10s
-      retries: 5
-      test:
-      - CMD-SHELL
-      - pg_isready -U postgres
-      timeout: 5s
-    image: timescale/timescaledb:latest-pg16
-    networks:
-    - log-platform
-    ports:
-    - 5433:5432
-    restart: unless-stopped
-    volumes:
-    - ./data/timescale:/var/lib/postgresql/data
   usop:
     build:
       context: .
@@ -168,22 +180,18 @@ services:
         condition: service_healthy
       elasticsearch:
         condition: service_healthy
-      timescale:
-        condition: service_healthy
     environment:
     - SKIP_BIGDATA_CHECK=1
     - DATABASE_URL=postgresql://usop:usop_password@postgres:5432/usop_security
-    - TSDB_HOST=timescale
-    - TSDB_PORT=5432
-    - TSDB_USER=postgres
-    - TSDB_PASSWORD=postgres
-    - TSDB_NAME=usop_alert
     - USE_HERMES_PROXY=true
     - HERMES_BASE_URL=http://hermes-agent:8080
     - REDIS_HOST=redis
     - REDIS_PORT=6379
     - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
     - FLINK_REST_API=http://flink-jobmanager:8081
+    - FLINK_JOBMANAGER_URL=http://flink-jobmanager:8081
+    - FLINK_SQL_GATEWAY_URL=http://flink-sql-gateway:8083
+    - FLINK_JOBS_DIR=/app/flink-jobs
     - ES_HOSTS=http://elasticsearch:9200
     - ES_INDEX_PREFIX=usop-alerts
     networks:
@@ -195,3 +203,5 @@ services:
     volumes:
     - ./server-python/app:/app/app
     - ./web/src:/app/web/src
+    # 关联分析作业生成的 Flink SQL 落盘到宿主机，便于审计与手工重放
+    - ./flink-jobs:/app/flink-jobs

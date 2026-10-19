@@ -14,9 +14,11 @@ import {
   Loader2,
   Shield,
   X,
-  Check
+  Check,
+  Menu
 } from 'lucide-react';
 import { authApi, notificationsApi } from '../services/api';
+import { menuItems } from './Sidebar';
 
 interface Notification {
   id: number;
@@ -32,29 +34,26 @@ interface HeaderProps {
   onMenuClick: () => void;
 }
 
-const pageTitles: Record<string, string> = {
-  '/': '仪表盘',
-  '/detection/events': '事件工作台',
-  '/detection/investigation': '安全告警',
-  '/assets/inventory': '资产清单',
-  '/assets/scans': '扫描任务',
-  '/response/rules': '检测规则',
-  '/response/playbooks': '响应剧本',
-  '/system/users': '用户管理',
-  '/system/audit': '审计日志',
-  '/detection/hunting': '威胁狩猎',
-  '/detection/ai': 'AI 分析中心',
-  '/data/ingestion': '日志配置',
-  '/data/formats': '数据格式',
-  '/data/parsing': '解析规则',
-  '/vulnerabilities/host': '主机漏洞',
-  '/vulnerabilities/application': '应用漏洞',
-  '/vulnerabilities/assessment': '漏洞评估',
-  '/system/roles': '角色管理',
-  '/system/config': '全局配置',
+// 面包屑标题从 Sidebar.menuItems 派生（单一事实来源），此处仅补充不进菜单的路径
+const extraPageTitles: Record<string, string> = {
   '/system/notifications': '通知设置',
+  '/data/templates': '资源管理',   // 旧路径兼容
   '/profile': '个人中心'
 };
+
+const flatPageTitles: Record<string, [string, string]> = (() => {
+  const map: Record<string, [string, string]> = {};
+  for (const group of menuItems) {
+    if (group.path) {
+      map[group.path] = ['', group.label];
+      continue;
+    }
+    for (const item of group.children || []) {
+      if (item.path) map[item.path] = [group.label, item.label];
+    }
+  }
+  return map;
+})();
 
 const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
   const location = useLocation();
@@ -70,6 +69,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
   const consecutiveErrorsRef = React.useRef(0);
   const [notifyInterval, setNotifyInterval] = useState<number | null>(60000);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [markingAll, setMarkingAll] = useState(false);
 
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
     setToast({ message, type });
@@ -86,11 +86,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
       const res = await notificationsApi.getNotifications({ limit: 50 });
       if (res.success && res.data) {
         const items = Array.isArray(res.data) ? res.data : res.data.items || [];
-        setNotifications(items.map((n: any) => ({
-          ...n,
-          read: n.is_read,
-          message: n.content
-        })));
+        // 后端 to_dict 字段：title / message / type / read / data —— 无需再映射
+        setNotifications(items);
       }
       // 成功后重置错误计数
       consecutiveErrorsRef.current = 0;
@@ -147,14 +144,34 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
   const handleMarkAsRead = async (id: string | number) => {
     try {
       await notificationsApi.markAsRead(String(id));
-      setNotifications(notifications.map(n => 
+      setNotifications(prev => prev.map(n =>
         n.id === id ? { ...n, read: true } : n
       ));
     } catch (error) {
       console.error('标记已读失败:', error);
     }
   };
-  
+
+  // 全部已读：请求成功后本地乐观置为已读，并给出结果反馈
+  const handleMarkAllAsRead = async () => {
+    if (markingAll) return;
+    try {
+      setMarkingAll(true);
+      const res = await notificationsApi.markAllAsRead();
+      if (res && res.success === false) {
+        showToast(res.error || '操作失败，请重试', 'error');
+        return;
+      }
+      setNotifications(prev => prev.map(n => (n.read ? n : { ...n, read: true })));
+      showToast('已全部标记为已读');
+    } catch (error: any) {
+      console.error('全部标记已读失败:', error);
+      showToast(error?.message || '操作失败，请重试', 'error');
+    } finally {
+      setMarkingAll(false);
+    }
+  };
+
   // 处理审批操作
   const handleApproval = async (approvalId: string, approved: boolean) => {
     try {
@@ -180,6 +197,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+
   const [isDark, setIsDark] = useState(() => {
     if (typeof document !== 'undefined') {
       return document.documentElement.classList.contains('dark') ||
@@ -190,7 +208,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
   });
   const [searchQuery, setSearchQuery] = useState('');
 
-  const currentPageTitle = pageTitles[location.pathname] || '仪表盘';
+  const [parentTitle, currentPageTitle] =
+    flatPageTitles[location.pathname]
+    || (extraPageTitles[location.pathname]
+      ? (['', extraPageTitles[location.pathname]] as [string, string])
+      : (['', '仪表盘'] as [string, string]));
 
   const toggleTheme = () => {
     const newTheme = !isDark;
@@ -199,6 +221,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
       document.documentElement.classList.remove('light', 'dark');
       document.documentElement.classList.add(newTheme ? 'dark' : 'light');
       document.documentElement.setAttribute('data-theme', newTheme ? 'dark' : 'light');
+      try {
+        localStorage.setItem('usop-theme', newTheme ? 'dark' : 'light');
+      } catch {
+        /* 隐私模式下忽略 */
+      }
     }
   };
 
@@ -206,52 +233,74 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
 
   const getNotificationIcon = (type: string) => {
     switch (type) {
-      case 'error': return <AlertTriangle className="w-4 h-4 text-critical" />;
+      case 'error': return <AlertTriangle className="w-4 h-4 text-danger" />;
       case 'success': return <CheckCircle className="w-4 h-4 text-success" />;
-      case 'approval_request': return <Shield className="w-4 h-4 text-amber-400" />;
-      case 'approval_result': return <CheckCircle className="w-4 h-4 text-emerald-400" />;
-      default: return <Info className="w-4 h-4 text-medium" />;
+      case 'approval_request': return <Shield className="w-4 h-4 text-warning" />;
+      case 'approval_result': return <CheckCircle className="w-4 h-4 text-success" />;
+      default: return <Info className="w-4 h-4 text-info" />;
     }
   };
 
   return (
-    <header className="h-14 bg-card-bg/80 backdrop-blur-md border-b border-border-color flex items-center justify-between px-4 shrink-0 sticky top-0 z-40">
-      <div className="flex items-center gap-4">
-        <div className="flex items-center gap-2 text-sm text-text-secondary">
-          <span className="text-primary font-semibold">USOP</span>
-          <span>/</span>
-          <span>{currentPageTitle}</span>
-        </div>
+    <header className="sticky top-0 z-topbar flex h-[56px] shrink-0 items-center justify-between gap-4 border-b border-border-color bg-card-bg/80 px-4 backdrop-blur-md">
+      <div className="flex min-w-0 items-center gap-3">
+        <button
+          type="button"
+          onClick={onMenuClick}
+          aria-label="折叠或展开侧边栏"
+          title="折叠或展开侧边栏"
+          className="rounded-lg p-2 text-text-muted transition-colors hover:bg-surface-3 hover:text-text-primary lg:hidden"
+        >
+          <Menu size={17} />
+        </button>
+
+        <nav aria-label="当前位置" className="flex min-w-0 items-center gap-2 text-[12px]">
+          <span className="font-semibold text-primary">USOP</span>
+          {parentTitle && (
+            <>
+              <span className="text-text-muted">/</span>
+              <span className="truncate-1 text-text-muted">{parentTitle}</span>
+            </>
+          )}
+          <span className="text-text-muted">/</span>
+          <span className="truncate-1 font-medium text-text-primary">{currentPageTitle}</span>
+        </nav>
       </div>
 
-      <div className="flex items-center gap-4">
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
+      <div className="flex shrink-0 items-center gap-1.5">
+        <div className="relative hidden md:block">
+          <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
           <input
             type="text"
-            placeholder="全局搜索..."
+            aria-label="全局搜索"
+            placeholder="全局搜索…"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-64 pl-9 pr-4 py-2 bg-page-bg border border-border-color rounded-input text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
+            className="app-input w-56 pl-8 lg:w-64"
           />
         </div>
 
         <button
+          type="button"
           onClick={toggleTheme}
-          className="p-2 rounded-lg hover:bg-primary/10 transition-colors text-text-secondary hover:text-text-primary"
+          title={isDark ? '切换到浅色主题' : '切换到深色主题'}
+          aria-label={isDark ? '切换到浅色主题' : '切换到深色主题'}
+          className="rounded-lg p-2 text-text-secondary transition-colors hover:bg-surface-3 hover:text-text-primary"
         >
-          {isDark ? <Moon className="w-5 h-5 text-text-secondary" /> : <Sun className="w-5 h-5 text-text-secondary" />}
+          {isDark ? <Moon size={17} /> : <Sun size={17} />}
         </button>
 
         <div className="relative" ref={notificationRef}>
           <button
+            type="button"
             onClick={() => setShowNotifications(!showNotifications)}
-            className="p-2 rounded-lg hover:bg-primary/10 transition-colors relative text-text-secondary hover:text-text-primary"
+            aria-label="通知中心"
+            className="relative rounded-lg p-2 text-text-secondary transition-colors hover:bg-surface-3 hover:text-text-primary"
           >
-            <Bell className="w-5 h-5 text-text-secondary" />
+            <Bell size={17} />
             {unreadCount > 0 && (
-              <span className="absolute top-1 right-1 w-4 h-4 bg-critical rounded-full text-xs flex items-center justify-center text-white">
-                {unreadCount}
+              <span className="absolute right-0.5 top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-danger px-1 text-[10px] font-semibold text-white">
+                {unreadCount > 99 ? '99+' : unreadCount}
               </span>
             )}
           </button>
@@ -259,56 +308,64 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
           <AnimatePresence>
             {showNotifications && (
               <motion.div
-                initial={{ opacity: 0, y: 10 }}
+                initial={{ opacity: 0, y: 6 }}
                 animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 10 }}
-                className="absolute right-0 top-full mt-2 w-80 bg-card-bg border border-border-color rounded-card shadow-card-hover z-50"
+                exit={{ opacity: 0, y: 6 }}
+                transition={{ duration: 0.16 }}
+                className="absolute right-0 top-full z-dropdown mt-2 w-[340px] overflow-hidden rounded-card border border-border-color bg-card-bg shadow-panel"
               >
-                <div className="p-3 border-b border-border-color bg-card-bg/50 flex justify-between items-center">
-                  <span className="text-sm font-medium text-text-primary">通知中心</span>
+                <div className="flex items-center justify-between border-b border-border-color bg-surface-2 px-4 py-2.5">
+                  <span className="text-[13px] font-semibold text-text-primary">通知中心</span>
                   {unreadCount > 0 && (
-                    <button 
-                      onClick={() => notificationsApi.markAllAsRead()}
-                      className="text-xs text-primary hover:underline"
+                    <button
+                      type="button"
+                      onClick={handleMarkAllAsRead}
+                      disabled={markingAll}
+                      className="text-[11px] text-primary hover:underline disabled:opacity-50 disabled:no-underline"
                     >
-                      全部已读
+                      {markingAll ? '处理中…' : '全部已读'}
                     </button>
                   )}
                 </div>
-                <div className="max-h-96 overflow-y-auto">
+                <div className="scrollbar-thin max-h-96 overflow-y-auto">
                   {loadingNotifications ? (
-                    <div className="p-4 flex justify-center">
-                      <Loader2 className="w-5 h-5 text-primary animate-spin" />
+                    <div className="flex justify-center p-4">
+                      <Loader2 className="h-5 w-5 animate-spin text-primary" />
                     </div>
                   ) : notifications.length === 0 ? (
-                    <div className="p-4 text-center text-text-muted text-sm">暂无通知</div>
+                    <div className="p-6 text-center text-[12px] text-text-muted">暂无通知</div>
                   ) : (
                     notifications.map((n) => (
-                      <div 
-                        key={n.id} 
-                        className={`p-3 hover:bg-primary/5 cursor-pointer border-b border-border-color/50 last:border-0 transition-colors ${!n.read ? 'bg-primary/5' : ''}`}
+                      <div
+                        key={n.id}
+                        className={`cursor-pointer border-b border-border-color px-4 py-3 transition-colors last:border-0 hover:bg-surface-2 ${
+                          !n.read ? 'bg-primary/5' : ''
+                        }`}
                       >
                         <div className="flex items-start gap-3" onClick={() => handleMarkAsRead(n.id)}>
                           {getNotificationIcon(n.type)}
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm text-text-primary truncate">{n.title}</p>
-                            <p className="text-xs text-text-muted mt-1">{n.message}</p>
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate-1 text-[13px] text-text-primary">{n.title}</p>
+                            <p className="mt-0.5 truncate-2 text-[11px] text-text-muted">{n.message}</p>
                           </div>
+                          {!n.read && <span className="status-dot primary mt-1.5" />}
                         </div>
                         {/* 审批操作按钮 */}
                         {n.type === 'approval_request' && n.data && n.data.approval_id && (
-                          <div className="flex gap-2 mt-2 ml-7">
+                          <div className="ml-7 mt-2 flex gap-2">
                             <button
+                              type="button"
                               onClick={(e) => { e.stopPropagation(); handleApproval(String(n.data!.approval_id), true); }}
-                              className="flex items-center gap-1 px-2 py-1 text-xs bg-emerald-500/20 text-emerald-400 rounded hover:bg-emerald-500/30"
+                              className="app-btn app-btn-sm app-btn-primary"
                             >
-                              <Check className="w-3 h-3" /> 批准
+                              <Check size={12} /> 批准
                             </button>
                             <button
+                              type="button"
                               onClick={(e) => { e.stopPropagation(); handleApproval(String(n.data!.approval_id), false); }}
-                              className="flex items-center gap-1 px-2 py-1 text-xs bg-rose-500/20 text-rose-400 rounded hover:bg-rose-500/30"
+                              className="app-btn app-btn-sm app-btn-danger-ghost"
                             >
-                              <X className="w-3 h-3" /> 拒绝
+                              <X size={12} /> 拒绝
                             </button>
                           </div>
                         )}
@@ -323,56 +380,66 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
 
         <div className="relative" ref={userMenuRef}>
           <button
+            type="button"
             onClick={() => setShowUserMenu(!showUserMenu)}
-            className="flex items-center gap-2 p-2 rounded-lg hover:bg-primary/10 transition-colors"
+            className="flex items-center gap-2 rounded-lg p-1 pr-2 transition-colors hover:bg-surface-3"
           >
-            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary to-accent flex items-center justify-center">
-              <User className="w-4 h-4 text-white" />
-            </div>
-            <span className="text-sm text-text-primary hidden lg:block">管理员</span>
+            <span className="flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br from-primary to-accent">
+              <User className="h-3.5 w-3.5 text-white" />
+            </span>
+            <span className="hidden text-[12.5px] text-text-primary lg:block">管理员</span>
           </button>
 
           <AnimatePresence>
             {showUserMenu && (
               <motion.div
-                initial={{ opacity: 0, y: 10 }}
+                initial={{ opacity: 0, y: 6 }}
                 animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 10 }}
-                className="absolute right-0 top-full mt-2 w-48 bg-card-bg border border-border-color rounded-card shadow-card-hover z-50"
+                exit={{ opacity: 0, y: 6 }}
+                transition={{ duration: 0.16 }}
+                className="absolute right-0 top-full z-dropdown mt-2 w-48 overflow-hidden rounded-card border border-border-color bg-card-bg p-1.5 shadow-panel"
               >
-                <div className="p-2">
-                  <button 
-                    onClick={handleProfile}
-                    className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-primary/5 text-sm text-text-primary transition-colors"
-                  >
-                    <User className="w-4 h-4" />
-                    个人中心
-                  </button>
-                  <div className="border-t border-border-color my-2" />
-                  <button 
-                    onClick={handleLogout}
-                    className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-critical/10 text-sm text-critical transition-colors"
-                  >
-                    <LogOut className="w-4 h-4" />
-                    退出登录
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  onClick={handleProfile}
+                  className="sidebar-item !py-2"
+                >
+                  <User size={15} />
+                  <span>个人中心</span>
+                </button>
+                <div className="my-1 h-px bg-border-color" />
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="sidebar-item !py-2 text-danger hover:!bg-danger/10 hover:!text-danger"
+                >
+                  <LogOut size={15} />
+                  <span>退出登录</span>
+                </button>
               </motion.div>
             )}
           </AnimatePresence>
         </div>
       </div>
-      
+
       {/* Toast 提示 */}
-      {toast && (
-        <div className={`fixed top-4 right-4 px-4 py-3 rounded-lg shadow-lg z-50 text-sm ${
-          toast.type === 'success' 
-            ? 'bg-emerald-500 text-white' 
-            : 'bg-critical text-white'
-        }`}>
-          {toast.message}
-        </div>
-      )}
+      <AnimatePresence>
+        {toast && (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            className={`fixed right-4 top-16 z-toast flex items-center gap-2 rounded-lg border px-4 py-2.5 text-[13px] shadow-panel ${
+              toast.type === 'success'
+                ? 'border-success/30 bg-card-bg text-success'
+                : 'border-danger/30 bg-card-bg text-danger'
+            }`}
+          >
+            {toast.type === 'success' ? <CheckCircle size={15} /> : <AlertTriangle size={15} />}
+            {toast.message}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </header>
   );
 };

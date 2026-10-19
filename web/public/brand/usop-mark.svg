@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-labelledby="usop-mark-title">
+  <title id="usop-mark-title">USOP 统一安全运营平台</title>
+  <defs>
+    <!-- 品牌对角渐变：primary #38BDF8 → accent #818CF8 -->
+    <linearGradient id="usop-grad" x1="8" y1="4" x2="56" y2="60" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#38BDF8"/>
+      <stop offset="1" stop-color="#818CF8"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 盾牌：安全底座 -->
+  <path d="M32 4 L56 12.8 V32.5 C56 45.2 46.4 54.8 32 60 C17.6 54.8 8 45.2 8 32.5 V12.8 Z" fill="url(#usop-grad)"/>
+
+  <!-- 负形：三条数据源流线 Y 形汇入中心（多源日志统一接入） -->
+  <g stroke="#0B1020" stroke-width="5.6" stroke-linecap="round" fill="none">
+    <path d="M32 14.5 V25.6"/>
+    <path d="M15.2 45.4 L27.9 37.7"/>
+    <path d="M48.8 45.4 L36.1 37.7"/>
+  </g>
+
+  <!-- 负形：运营监控焦点（靶心） -->
+  <circle cx="32" cy="32.5" r="5.4" fill="#0B1020"/>
+  <circle cx="32" cy="32.5" r="1.9" fill="#38BDF8"/>
+</svg>

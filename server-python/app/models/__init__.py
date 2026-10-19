@@ -7,6 +7,7 @@ from app.models.extensions import (
     PlaybookApproval,
     Vulnerability,
     AssetVulnerability,
+    VulnerabilityAttachment,
     ScanProfile,
     ScanAgent,
     HuntingResult,
@@ -19,6 +20,9 @@ from app.models.extensions import (
     ScanResult,
     DetectionRuleExtended,
     PlaybookExecution,
+    IntegrationApp,
+    as_json_list,
+    as_json_dict,
 )
 
 # 导入事件处置记录模型
@@ -37,6 +41,12 @@ class User(db.Model):
     password_hash = db.Column(db.String(255), nullable=False)
     role = db.Column(db.String(20), default='analyst')
     status = db.Column(db.String(20), default='active')
+    # 账号来源：local=本地密码认证；ad=AD 域 LDAP 认证（password_hash 存不可验证占位）
+    auth_type = db.Column(db.String(10), default='local')
+    # AD 域登录名（UPN 如 user@corp.com 或 sAMAccountName 如 corp\user / user）
+    ad_upn = db.Column(db.String(120), nullable=True)
+    ad_domain = db.Column(db.String(120), nullable=True)
+    ad_synced_at = db.Column(db.DateTime, nullable=True)
     last_login_at = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -48,6 +58,9 @@ class User(db.Model):
             'email': self.email,
             'role': self.role,
             'status': self.status,
+            'auth_type': self.auth_type or 'local',
+            'ad_upn': self.ad_upn,
+            'ad_domain': self.ad_domain,
             'last_login_at': self.last_login_at.isoformat() if self.last_login_at else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
@@ -65,6 +78,7 @@ class Event(db.Model):
     category = db.Column(db.String(50))
     source = db.Column(db.String(100))
     status = db.Column(db.String(20), default='new')
+    src_ip = db.Column(db.String(50))               # 主责源 IP（多告警事件取首条/最高危告警的源 IP）
     raw_log = db.Column(db.Text)
     extra_data = db.Column(db.JSON, default=dict)  # 扩展数据，包含附件等
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
@@ -75,6 +89,12 @@ class Event(db.Model):
         extra = self.extra_data or {}
         related_alerts = extra.get('related_alerts', [])
         attachments = extra.get('attachments', [])
+        # 源 IP：优先事件字段，回退统计/关联告警（存量事件无 src_ip 列值时仍可读）
+        src_ip = self.src_ip or (extra.get('summary') or {}).get('src_ips') or ''
+        if not src_ip and related_alerts:
+            src_ip = related_alerts[0].get('src_ip') or ''
+        if isinstance(src_ip, (list, tuple)):
+            src_ip = src_ip[0] if src_ip else ''
         return {
             'id': self.id,
             'event_code': self.event_code,
@@ -84,6 +104,8 @@ class Event(db.Model):
             'category': self.category,
             'source': self.source,
             'status': self.status,
+            'src_ip': src_ip,
+            'source_ip': src_ip,           # 前端历史键名兼容
             'raw_log': self.raw_log,
             'extra_data': extra,
             'related_alerts': related_alerts,
@@ -99,10 +121,12 @@ class Alert(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     alert_code = db.Column(db.String(20), unique=True, nullable=False)
+    alert_log_id = db.Column(db.String(120))            # 标准告警字段：关联原始日志/事件ID
     title = db.Column(db.String(200), nullable=False)
     description = db.Column(db.Text)
     severity = db.Column(db.String(20), default='medium')
     status = db.Column(db.String(20), default='new')
+    operation = db.Column(db.String(50))                # 标准告警字段：操作/动作类型代码
     source = db.Column(db.String(100))
     source_product = db.Column(db.String(100))
     source_type = db.Column(db.String(50))
@@ -126,6 +150,8 @@ class Alert(db.Model):
     parsed_data = db.Column(db.JSON, default=dict)
     extra_data = db.Column(db.JSON, default=dict)
     tags = db.Column(db.JSON, default=list)
+    # 告警幂等去重指纹（sha256[:32]，Kafka 入流查重用）
+    dedup_hash = db.Column(db.String(32), index=True)
 
     # 关联
     assigned_to = db.Column(db.Integer, db.ForeignKey('users.id'))
@@ -137,10 +163,12 @@ class Alert(db.Model):
         return {
             'id': self.id,
             'alert_code': self.alert_code,
+            'alert_log_id': self.alert_log_id,
             'title': self.title,
             'description': self.description,
             'severity': self.severity,
             'status': self.status,
+            'operation': self.operation,
             'source': self.source,
             'source_product': self.source_product,
             'source_type': self.source_type,
@@ -298,6 +326,7 @@ class Notification(db.Model):
     message = db.Column(db.Text)
     type = db.Column(db.String(20), default='info')
     read = db.Column(db.Boolean, default=False)
+    data = db.Column(db.JSON)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     def to_dict(self):
@@ -308,6 +337,7 @@ class Notification(db.Model):
             'message': self.message,
             'type': self.type,
             'read': self.read,
+            'data': self.data,
             'created_at': self.created_at.isoformat() if self.created_at else None
         }
 

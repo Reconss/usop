@@ -1,91 +1,76 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import ReactECharts from 'echarts-for-react';
 import type { EventTypeDistribution } from '../types';
+import { useChartTokens } from '../styles/chartTheme';
 
 interface EventTypeChartProps {
   data: EventTypeDistribution[];
 }
 
 export default function EventTypeChart({ data }: EventTypeChartProps) {
-  const [isLight, setIsLight] = useState(false);
-
-  useEffect(() => {
-    const checkTheme = () => {
-      setIsLight(document.documentElement.classList.contains('light'));
-    };
-    checkTheme();
-
-    const observer = new MutationObserver(checkTheme);
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ['class']
-    });
-
-    return () => observer.disconnect();
-  }, []);
+  const t = useChartTokens();
 
   const option = {
+    backgroundColor: 'transparent',
     tooltip: {
       trigger: 'item',
-      backgroundColor: isLight ? 'rgba(255, 255, 255, 0.95)' : 'rgba(20, 20, 24, 0.95)',
-      borderColor: isLight ? '#e4e4e7' : '#27272e',
-      textStyle: { color: isLight ? '#18181b' : '#fafafa' }
+      backgroundColor: t.tooltipBg,
+      borderColor: t.tooltipBorder,
+      borderWidth: 1,
+      padding: [8, 12],
+      textStyle: { color: t.textPrimary, fontSize: 12 },
     },
     legend: {
       orient: 'vertical',
-      right: '5%',
+      right: '4%',
       top: 'center',
-      textStyle: { color: isLight ? '#52525b' : '#a1a1aa', fontSize: 12 },
-      itemWidth: 12,
-      itemHeight: 12
+      icon: 'roundRect',
+      itemWidth: 8,
+      itemHeight: 8,
+      itemGap: 10,
+      textStyle: { color: t.textSecondary, fontSize: 11 },
     },
     series: [
       {
         name: '事件类型',
         type: 'pie',
-        radius: ['45%', '70%'],
-        center: ['35%', '50%'],
+        radius: ['48%', '72%'],
+        center: ['34%', '50%'],
         avoidLabelOverlap: false,
         itemStyle: {
-          borderRadius: 6,
-          borderColor: isLight ? '#ffffff' : '#141418',
-          borderWidth: 2
+          borderRadius: 4,
+          borderColor: t.surface,
+          borderWidth: 2,
         },
-        label: {
-          show: false
-        },
+        label: { show: false },
         emphasis: {
           label: {
             show: true,
-            fontSize: 14,
+            fontSize: 13,
             fontWeight: 'bold',
-            color: isLight ? '#18181b' : '#fafafa'
+            color: t.textPrimary,
           },
           itemStyle: {
-            shadowBlur: 10,
+            shadowBlur: 12,
             shadowOffsetX: 0,
-            shadowColor: isLight ? 'rgba(0, 0, 0, 0.2)' : 'rgba(0, 0, 0, 0.5)'
-          }
+            shadowColor: t.alpha(t.pageBg, 0.6),
+          },
         },
-        labelLine: {
-          show: false
-        },
-        data: data.map(item => ({
+        labelLine: { show: false },
+        // 统一使用设计系统系列色（后端返回的装饰性色值不参与视觉决策）
+        data: data.map((item, i) => ({
           value: item.value,
           name: item.name,
-          itemStyle: { color: item.color }
-        }))
-      }
-    ]
+          itemStyle: { color: t.series[i % t.series.length] },
+        })),
+      },
+    ],
+    textStyle: { fontFamily: 'Inter, PingFang SC, Microsoft YaHei, sans-serif' },
   };
 
   return (
     <div className="h-64">
-      <ReactECharts
-        option={option}
-        style={{ height: '100%', width: '100%' }}
-        theme={isLight ? 'light' : 'dark'}
-      />
+      <ReactECharts option={option} style={{ height: '100%', width: '100%' }} notMerge />
     </div>
   );
 }

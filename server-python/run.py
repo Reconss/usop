@@ -5,7 +5,7 @@ USOP 安全运营平台 - 后端服务启动脚本
 功能:
 - 启动前检查大数据组件状态
 - 自动等待组件就绪
-- 初始化 Kafka Topics 和 TimescaleDB
+- 初始化 Kafka Topics
 """
 
 import os
@@ -29,7 +29,6 @@ def check_bigdata_services():
         from app.utils.service_manager import (
             wait_for_all_components,
             init_kafka_topics,
-            init_timescale_db,
             check_all_components
         )
         
@@ -56,7 +55,6 @@ def check_bigdata_services():
             # 初始化
             print("初始化数据存储...")
             init_kafka_topics()
-            init_timescale_db()
         
         return success
         
@@ -101,7 +99,6 @@ def main():
 ║   • GET  /api/hunting/*          - 威胁狩猎                ║
 ║   • GET  /api/ai/*               - AI中心                  ║
 ║   • GET  /api/notifications/*    - 通知管理                ║
-║   • GET  /api/log-search/*       - 日志搜索 (TimescaleDB)  ║
 ║                                                           ║
 ║   默认管理员账号: admin / admin123                         ║
 ║                                                           ║
