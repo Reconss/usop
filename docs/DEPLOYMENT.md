@@ -1,148 +1,174 @@
-# USOP 统一安全运营平台 — 部署要求评估
+# USOP 部署方案
 
-> 评估基准：2026-10 当前版本（git 8608ca3 之后），资源数据为本机实测（Apple M1 Pro / Docker 虚拟机 15.66GiB 环境），生产规格按实测上浮推算。
+> 目标：说清三件事——**要几台机器、每台什么配置、能扛多少日志**；以及一条命令怎么装起来。
+> 部署物在 `deploy/`，入口 `./deploy.sh`（等同 `./deploy/usop-deploy.sh`）。
 
-## 1. 组件架构与实测资源
+## 1. 要几台机器
 
-数据流：`日志源 → Kafka → pipeline(标准化/过滤去重/分流) → ES → Flink 关联 → PG events`，应用层为 nginx(静态) + Flask(API) 单容器 `usop_all`。
+| 形态 | 机器数 | 适用 | 说明 |
+|---|---|---|---|
+| 单机 | 1 | 演示 / POC / ≤100 EPS | 全组件挤一台，没有冗余，重启要等全部起来 |
+| 双机 | 2 | ≤800 EPS 小规模生产 | A：应用 + PG + Redis + Kafka + Flink；B：只有 ES |
+| **三机（推荐）** | **3** | **≤2,000 EPS 生产** | 应用 / 数据管道 / 检索各自独立，故障域分开 |
+| 规模化 | 6+ | 5,000+ EPS、要 HA | app×2 + LB、data×2~3、ES×3 |
 
-| 组件 | 镜像/版本 | 镜像体积 | 实测内存 | 实测 CPU | 端口 |
-|---|---|---|---|---|---|
-| usop_all（nginx + Flask + 前端静态） | usop-usop:latest | 547MB | ~190MiB | 7~8%（常态） | 3266 / 5001 |
-| PostgreSQL | postgres:16-alpine | 390MB | ~63MiB | ≈0 | 5432 |
-| Redis | redis:7-alpine | 60MB | ~5MiB | ≈1% | 6379 |
-| Kafka（KRaft 单节点） | cp-kafka:7.5.0 | 1.35GB | ~1.24GiB | ~6% | 9092 / 29092 |
-| Elasticsearch | 8.11.0 | 1.23GB | ~1.15GiB | ≈0.5% | 9200 |
-| Flink JobManager | flink:1.18.1 | 1.38GB | ~671MiB | ~2% | 8081 |
-| Flink TaskManager | flink:1.18.1 | 同上 | ~417MiB | ~2% | — |
-| Flink SQL Gateway | flink:1.18.1 | 同上 | ~545MiB | ≈0 | 8083 |
-| **合计** | | **~4.9GB 镜像** | **~3.6GiB 空载** | | |
+**为什么 ES 必须单独一台**：它是内存和磁盘的绝对大头（堆 + 段合并 IO），和 Kafka/Flink 抢 IO 会互相拖垮。
+**为什么 Kafka/Flink 放一起**：两者都是 CPU/内存型、磁盘只做顺序写，混部代价小；但不要和磁盘紧张的 ES 混。
 
-当前数据体量参考：ES 索引（alerts-valid/invalid）< 1MB、PG 库 31MB —— 属早期数据量，磁盘规划主要按增长预估（见 §3）。
+## 2. 每台的资源
 
-## 2. 资源规格分档
+三机形态（推荐配置）：
 
-| 档位 | 适用场景 | CPU | 内存 | 系统盘 | 数据盘 |
-|---|---|---|---|---|---|
-| **最小可用** | POC / 演示 / 功能验证 | 4 核 | 8GB | 60GB | 50GB |
-| **推荐（小规模生产）** | ≤ 500 EPS（每秒事件数），1000 以内资产 | 8 核 | 16GB | 100GB | 500GB（SSD） |
-| **生产规模化** | > 2000 EPS，组件拆分部署 | 16 核+ | 32GB+ | 100GB | 1TB+（SSD/RAID） |
+| 节点 | 角色 | CPU | 内存 | 系统盘 | 数据盘 | 跑什么 |
+|---|---|---|---|---|---|---|
+| `usop-app` | 应用 + 业务库 | 8C | 16G | 200G | 200G SSD | nginx+Flask（:3266/:5001）、PostgreSQL 16、Redis 7 |
+| `usop-data` | 采集缓冲 + 关联分析 | 8C | 16G | 200G | 1T SSD | Kafka、Flink JobManager/TaskManager/SQL Gateway |
+| `usop-es` | 告警检索 | 16C | 32G | 200G | **2T NVMe** | Elasticsearch 单节点（堆 16G） |
 
-说明：
-- 空载即占 ~3.6GB 内存，8GB 内存机器跑最小档已无余量，JVM 类组件（Kafka/ES/Flink 合计 ~3.9GB 堆外+堆）是内存大头。
-- **内存是第一瓶颈，其次 ES/Kafka 的磁盘 IO**；CPU 压力很小（解析与关联均为轻量计算）。
-- 若与其它业务混部，请按上表预留独占资源，尤其 ES（默认 1GB 堆，建议生产调至物理内存一半、不超过 31GB）。
+其它档位：
 
-## 3. 磁盘增长预估（数据盘规划依据）
+| 形态 | 规格 |
+|---|---|
+| 演示单机 | 8C / 16G / 系统 200G + 数据 1T（ES 堆 2~4G，够跑通不追求吞吐） |
+| 生产单机 | 16C / 32G / 系统 200G + 数据 1T（≤300 EPS） |
+| 双机 | A 16C32G（应用+PG+Redis+Kafka+Flink）、B 16C32G + 1.5T NVMe（ES） |
+| 规模化 | app 8C16G×2 + LB；data 8C16G×2（Kafka 3 broker）；ES 16C32G×3（每台 2T NVMe） |
 
-| 数据 | 位置 | 估算方式 |
-|---|---|---|
-| 告警原始日志（ES） | `data/`（ES volume） | 单条标准告警 ~2KB；500 EPS × 7 天保留 ≈ **60GB/周** |
-| Kafka | `data/kafka` | 与吞吐同量级，保留 7 天 ≈ 50~80GB（500 EPS） |
-| PostgreSQL | PG volume | 业务数据（事件/漏洞/剧本执行记录），增长慢，10GB 预留足够一年 |
-| Flink checkpoint | `data/flink` | 小，5GB 预留 |
-| 漏洞附件 | `server-python/app/uploads/` | 单文件 ≤20MB，按量另计 |
-| **合计（推荐档）** | | **500GB 数据盘 ≈ 2~4 周告警滚动 + 冗余**；更长时间需调 ES ILM 或扩盘 |
+内存分配原则：ES 堆 = 机器内存的一半（不超过 31G），Kafka/Flink 各 1~4G，剩下的留给页缓存。
+部署脚本首次运行会按本机内存自动写这组值（`deploy/usop.env`），不用手调。
 
-> 生产建议开启 ES 索引生命周期（hot→delete 7/30 天可配），否则告警盘会线性涨满。
+系统要求（三台一致）：Linux x86_64（Ubuntu 22.04 / Rocky 9 均可）、Docker 24+、Docker Compose v2、NTP 时间同步（Kafka 与 ES 对时间敏感）。
 
-## 4. 依赖版本矩阵
+## 3. 网络关系
 
-| 依赖 | 版本 | 备注 |
-|---|---|---|
-| Python | 3.11（容器）/ 3.11+（裸机） | requirements.txt 已含 pyyaml、ldap3（2026-10 补入，重建镜像/裸机必装） |
-| Node.js + pnpm | 20.x | 仅构建期需要，产物为纯静态文件 |
-| PostgreSQL | 16 | 库名 `usop_security`；无 Alembic，初始化走 `db.create_all()` + `migrations/*.py` |
-| Redis | 7 | 队列/缓存 |
-| Kafka | 7.5.0（KRaft 模式，免 ZooKeeper） | 单节点即可；`replication_factor=1` 仅适合单机 |
-| Elasticsearch | 8.11.0 | 告警唯一真相源，**禁用 security 强制项需固定**（见 §5 容器部署） |
-| Flink | 1.18.1 (scala_2.12, java11) | 需外挂 4 个连接器 jar（kafka/jdbc/postgresql，见 `flink-jars/`） |
-| nginx | 任意 1.2x | 容器内置；裸机自装，承载 3266 静态 + 反代 5001 |
-
-## 5. 方式一：容器部署（推荐，已有完整编排）
-
-仓库已含 `docker-compose.yml`（7 服务）+ `Dockerfile.all`（三阶段构建：前端 pnpm build → Python 依赖 → 合并+nginx）。
-
-```bash
-# 1. 构建并启动（首次约 10~20 分钟，取决于网络）
-docker compose up -d --build
-
-# 2. 初始化（按需执行）
-docker exec usop_all sh -c 'cd /app && PYTHONPATH=/app python3 migrations/add_vuln_fields.py'
-docker exec usop_all python3 scripts/pipeline_setup.py      # 7 产品全链路管道（幂等）
-docker exec usop_all python3 scripts/setup_block_playbooks.py  # 封禁剧本 id=36/37
+```
+        办公网 / 分析师
+              │ 3266
+              ▼
+   ┌──────────────────────┐   9092（发布/消费）    ┌───────────────────────┐
+   │ usop-app  10.0.0.11  │ ────────────────────► │ usop-data 10.0.0.12   │
+   │ nginx 3266           │ ◄──────────────────── │ kafka 9092 / 29092    │
+   │ flask 5001           │   8081/8083（作业）    │ flink jm 8081         │
+   │ postgres 5432        │ ◄──────────────────── │ flink tm / gateway    │
+   │ redis 6379           │   5432（关联结果回写）  │                       │
+   └─────────┬────────────┘                       └──────────┬────────────┘
+             │ 9200                                           │ 9200
+             ▼                                                ▼
+        ┌─────────────────────────────────────────────────────────┐
+        │ usop-es  10.0.0.13   elasticsearch 9200                 │
+        └─────────────────────────────────────────────────────────┘
+                     ▲ 9092
+              采集器 / 设备 / syslog 转发
 ```
 
-**关键注意事项（均为实际踩坑项）：**
+端口矩阵（防火墙按此开）：
 
-1. **Flink 环境变量**：禁止给 Flink 容器加 `FLINK_PROPERTIES`——entrypoint 会把它追加进 bind-mount 的 `flink-conf.yaml`，每次重启重复追加。所有 Flink 配置统一写在 `flink-conf/flink-conf.yaml`。
-2. **Flink 连接器 jar 必须逐文件挂载**进 `/opt/flink/lib/`（挂目录会遮蔽镜像内置 jar）。
-3. **SQL Gateway 会话**：会话关闭会连带取消其中提交的关联分析作业，idle-timeout 已设 365d；**关联作业无自动重提**，宿主机重启后需 `POST /api/pipeline/correlation/deploy` 手工重提并确认 RUNNING。
-4. **关联作业绑 host.docker.internal**：剧本联动模拟器（宿主机 8800）等跨容器调用必须走 `http://host.docker.internal:<port>`，Linux 需在 compose 加 `extra_hosts: host.docker.internal:host-gateway`。
-5. **bind mount**：`./server-python/app → /app/app`、`./web/src → /app/web/src`，改后端代码只需 `docker restart usop_all`；改前端需本地 `pnpm build` 后 `docker cp dist/. usop_all:/app/static/`（或重建镜像）。
-6. **ES 必须可写 `_id` 场景**：告警以 ES 为唯一真相源，`_id` 为告警字符串 ID，不要启用会重写 `_id` 的 ingest 策略。
-7. 生产建议为 ES/Kafka/PG 显式配置 volume（当前默认落在 compose 项目目录 `data/` 下）。
+| 源 | 目的 | 端口 | 用途 | 开放范围 |
+|---|---|---|---|---|
+| 办公网用户 | usop-app | 3266 | 控制台 | 办公网段 |
+| 采集器 / 设备 | usop-data | 9092 | 日志接入 | 仅采集网段 |
+| usop-app | usop-data | 9092 | 业务 topic 读写 | 内网 |
+| usop-app | usop-data | 8081 / 8083 | Flink 作业提交与查询 | 内网 |
+| usop-data | usop-app | 5432 | 关联结果写 PG | 内网 |
+| usop-app / usop-data | usop-es | 9200 | 告警读写 | 内网 |
+| 运维跳板 | usop-* | 22 / 8081 | SSH、Flink UI | 仅运维网段 |
 
-## 6. 方式二：裸机/虚拟机部署（不使用容器）
+不要对办公网开放的端口：`9200`（ES 无鉴权，暴露等于全量告警泄露）、`5432`、`6379`、`29092`、`5001`。
+两网卡机器建议：业务口走内网，采集口单独一块网卡并只放 9092。
 
-适合有安全红线不允许容器运行时的环境。以 Linux x86_64 单机为例：
+注意：分机部署时脚本会把应用节点的 PG 地址自动写成它自己的内网 IP（Flink 关联作业的 JDBC 串取自应用的
+`DATABASE_URL`，数据节点必须能直连 PG），所以 **5432 必须对数据节点开放**。
 
-### 6.1 基础设施（原生安装或复用已有实例）
+单机形态下所有地址都是容器名，无需改防火墙。
 
-| 组件 | 安装要点 |
-|---|---|
-| PostgreSQL 16 | 建库 `usop_security`、用户 `usop`；监听 5432 |
-| Redis 7 | 默认配置即可，6379 |
-| Kafka 7.5（KRaft） | 单节点；`advertised.listeners` 必须写**客户端可达的真实 IP/主机名**（容器里的 `localhost:9092` 写法不可照搬） |
-| Elasticsearch 8.11 | `xpack.security.enabled=false`（内网）或配置证书；`ES_HOSTS` 指向 9200；堆内存建议 2~4GB |
-| Flink 1.18.1 | 下载对应发行版，将 `flink-jars/` 下 4 个 jar 复制到 `flink/lib/`；分别以 `jobmanager` / `taskmanager` / `sql-gateway.sh start-foreground` 启动，配置同容器版 `flink-conf.yaml` |
+## 4. 能处理多少日志
 
-### 6.2 应用层
+口径：单条标准告警约 **2KB**（含截断后的原始日志），端到端能力取最慢的一段。
+
+各段能力：
+
+| 环节 | 能力 | 什么时候成为瓶颈 |
+|---|---|---|
+| Kafka（单 broker） | ≥15,000 条/秒 | 基本不会；除非磁盘写满或开了多副本同步 |
+| Flask 解析/去重（单进程多线程，每数据源一线程） | 约 800~1,200 条/秒 | 数据源很多、单条正则很重时 |
+| Flink 关联分析（parallelism=1） | 约 1,000~2,000 条/秒 | 开多窗口复杂关联时，加 TaskManager |
+| **Kafka→ES 存储任务（当前代码）** | **约 20~50 条/秒** | **现在就是瓶颈，见下方必改项** |
+| ES 单节点 16C32G（批量写入） | 3,000~5,000 条/秒 | 查询并发高时先吃 CPU |
+
+> **必改项**：`server-python/app/alert_pipeline/pipeline.py` 的存储任务仍是
+> `es.index(refresh='wait_for')` 逐条写。`wait_for` 会等下一次 refresh（默认 1s），
+> 单线程被压到几十条/秒。改成 `helpers.bulk(...)` 批量提交、`refresh=false`，
+> 同一台 ES 立刻能到数千条/秒。**不改这一处，再大的机器也只能跑几十 EPS。**
+
+端到端结论（改造为批量写入后）：
+
+| 形态 | 持续吞吐 | 日处理量 | 7 天 ES 占用 | 典型场景 |
+|---|---|---|---|---|
+| 单机 16C32G | 300 条/秒 | 2,600 万条/天 | 360GB | 单园区、几百台设备 |
+| 三机（推荐） | 2,000 条/秒 | 1.7 亿条/天 | 2.4TB | 集团总部 + 多分支汇聚 |
+| 扩容后 | 5,000+ 条/秒 | 4 亿条/天 | 按公式算 | 等保三级、全量流量日志 |
+
+磁盘估算公式：**日增 GB ≈ EPS × 0.17**（2KB/条）。
+- Kafka 只做缓冲，默认保留 48 小时 → 2,000 EPS 约 690GB，1T 数据盘够用；
+- ES 是真相源，保留 7 天 → 2,000 EPS 需要 2.4TB，**必须开 ILM**（hot 7 天 → delete）；
+- 要保留 30 天就把 ES 盘 ×4，或只保留关键级别。
+
+## 5. 一键部署
+
+三台机器都把代码放到同一路径（如 `/opt/usop`），各自执行一条命令：
 
 ```bash
-# 后端（Python 3.11）
-cd server-python
-python3.11 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt        # 已含 pyyaml、ldap3
-cp .env.example .env                   # 配置 JWT_SECRET、DATABASE_URL、ES_HOSTS、KAFKA_BOOTSTRAP_SERVERS 等
-python3 migrations/add_vuln_fields.py  # 建表/补列（幂等）
-gunicorn -w 2 -b 0.0.0.0:5001 'app:create_app()'   # 或沿用容器内启动命令；WebSocket 需 eventlet/gevent worker
+# ① 检索节点 10.0.0.13
+cd /opt/usop && ./deploy.sh es
 
-# 前端（Node 20 + pnpm，构建一次）
-cd web && pnpm install && pnpm build   # 产物 dist/
+# ② 数据节点 10.0.0.12
+cd /opt/usop && ./deploy.sh data
 
-# nginx
-#   listen 3266; root <web/dist>;
-#   location /api|/socket.io → proxy_pass http://127.0.0.1:5001;  （参照 Dockerfile.all 内置 nginx 配置）
+# ③ 应用节点 10.0.0.11（最后装，要连前两台）
+cd /opt/usop && ./deploy.sh app --data-host 10.0.0.12 --es-host 10.0.0.13
 ```
 
-### 6.3 裸机部署差异点
+单机形态只要一条：
 
-- 无 bind mount 便利：改后端需重启 gunicorn，改前端需重新 `pnpm build` 并发布 dist。
-- 建议配 systemd unit（flask、flink 三个进程、各基础设施）+ 开机自启。
-- Flask 单进程为 SocketIO 保留（容器内即单进程），gunicorn 多 worker 会破坏 WebSocket，**建议 1 进程多线程或 1 worker**。
+```bash
+cd /opt/usop && ./deploy.sh            # 等同 all-in-one
+```
 
-## 7. 部署后验收清单
+脚本会自动完成：生成 `deploy/usop.env`（随机数据库密码、按内存分配 JVM 堆）→ 校验编排 →
+建数据目录并修正 ES/Flink 目录属主 → 调 `vm.max_map_count` → 构建镜像 → 启动 →
+等健康检查 → 建表 / 配管道 / 初始化封禁剧本 → 自检并打印访问地址。**可重复执行**，
+第二次跑就是"应用配置变更"。
 
-- [ ] `http://<host>:3266` 可登录（默认 admin）
-- [ ] `curl :5001/api/health`（或任一 API）200
-- [ ] ES `GET :9200/_cat/indices` 出现 alerts-valid
-- [ ] Flink UI `:8081` 关联作业 RUNNING（无则手工重提）
-- [ ] 用 `scripts/kafka_alert_sender.py` 注入一条测试告警，安全告警页可见且状态联动正常
-- [ ] AD/LDAP 登录（如启用）验证——依赖 pyyaml/ldap3，裸机环境最容易漏
+常用命令：
 
-## 8. 扩容与高可用路径
-
-| 方向 | 做法 |
+| 命令 | 作用 |
 |---|---|
-| 告警吞吐↑ | Kafka 加 broker（replication_factor 改 ≥2）→ pipeline 无状态可直接多实例 → ES 扩节点/分片 |
-| 关联分析↑ | Flink TaskManager `replicas: 2`（compose 已留注释位）并调大 slot/process.size |
-| 应用层 HA | 双 usop_all + 前置 LB；SocketIO 需改 Redis message queue 才能多实例 |
-| 数据安全 | PG 每日 `pg_dump`；ES 开快照仓库；`server-python/app` 内 uploads 目录纳入备份 |
+| `./deploy.sh verify` | 逐项自检（PG/Redis/API/ES/Kafka/Flink），失败项会列出来 |
+| `./deploy.sh status` | 容器状态 |
+| `./deploy.sh logs usop` | 看某个服务日志（`-f` 跟随） |
+| `./deploy.sh upgrade` | 重新构建镜像并重建应用容器，不清库 |
+| `./deploy.sh backup` | 备份 PG 与 uploads 到 `deploy/backups/<时间戳>/` |
+| `./deploy.sh stop` | 停容器，数据目录保留 |
 
-## 9. 风险与遗留项
+可选参数：`--no-build`（用现有镜像，离线环境先 `docker load`）、`--skip-init`、
+`--env <文件>`（多套环境）、`--data-host` / `--es-host`（分机部署写连接地址）。
 
-1. `requirements.txt` 此前缺 pyyaml/ldap3（已补），但**运行中容器**仍是手装的旧层，下次重建镜像后需回归验证 AD 登录与剧本 YAML 解析。
-2. Kafka `replication_factor=1`、ES 单节点：仅适合单机部署档，规模化前必须改造。
-3. 集成应用凭证明文存储（遗留项 #7）：对外部署前建议加密或接入密管。
-4. Tracecat SOAR 为独立栈（8090/8091），非本套部署必选，本评估未计入其资源（另需 +4GB 内存）。
+目录约定：数据全部落 `USOP_DATA_DIR`（默认 `/data/usop`），含 `postgres/ redis/ kafka/
+elasticsearch/ flink/ uploads/`；配置、日志、备份都不在容器里，容器随时可重建。
+
+## 6. 装完必做三件事
+
+1. **改密码**：默认 `admin / admin123`，登录后立刻改；`deploy/usop.env` 里的 `PG_PASSWORD` 已是随机值。
+2. **重提关联分析作业**：Flink 作业不随宿主机重启自动恢复。重启后在控制台「关联分析」点部署，
+   或 `POST /api/pipeline/correlation/deploy`，并在 Flink UI 确认 RUNNING。
+3. **配 ES 索引生命周期**：不开 ILM，告警盘会被线性写满（见第 4 节公式）。
+
+## 7. 排障对照
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| ES 容器反复重启 | `vm.max_map_count` 太小 / 目录属主不对 | `sudo sysctl -w vm.max_map_count=262144`；`sudo chown -R 1000:1000 /data/usop/elasticsearch` |
+| 采集器连不上 Kafka | `advertised.listeners` 通告了回环地址 | 改 `deploy/usop.env` 的 `KAFKA_ADVERTISED_LISTENERS` 为数据节点真实 IP 后重跑 |
+| 应用起不来、日志报连不上 kafka/es | 分机部署没传 `--data-host` / `--es-host` | 补参数重跑 `./deploy.sh app ...` |
+| Flink UI 里作业消失 | JM 重启后作业不会自动重提 | 控制台重新部署关联分析 |
+| 告警页面查不到数据 | 存储任务没配 / ES 索引为空 | `./deploy.sh verify`；控制台「存储配置」检查 topic→索引映射 |

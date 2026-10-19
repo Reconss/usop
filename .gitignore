@@ -55,3 +55,8 @@ _archive/
 
 # WorkBuddy workspace data
 .workbuddy/
+
+# 部署运行时产物（配置含密码、备份含数据）
+deploy/usop.env
+deploy/conf/
+deploy/backups/

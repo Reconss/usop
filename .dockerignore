@@ -17,3 +17,10 @@ issues_and_fixes.md
 frontend_test_report.md
 final_test_report.md
 comprehensive_test_report.md
+
+# 部署产物 / 运行数据不进构建上下文
+deploy/
+data/
+_archive/
+docs/
+backups/

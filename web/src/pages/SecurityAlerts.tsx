@@ -631,14 +631,21 @@ export default function SecurityAlerts() {
     finally { setAnalyzing(false); }
   }, [showToast]);
 
-  // ---- 批量研判（对最近未闭环告警批量执行结构化研判）----
+  // ---- 批量研判（优先研判选中的告警；未选中则研判最近未闭环告警）----
   const handleBatchAnalyze = useCallback(async () => {
     setBatchAnalyzing(true);
     try {
-      const res: any = await aiJudgmentApi.analyzeBatch(20);
+      const alertIds = selectedIds.size > 0 ? Array.from(selectedIds).map(String) : undefined;
+      const res: any = await aiJudgmentApi.analyzeBatch(20, alertIds);
       if (res?.success) {
-        showToast(`已完成 ${res.data?.analyzed ?? 0} 条告警的批量研判`);
+        const n = res.data?.analyzed ?? 0;
+        const scope = alertIds ? `选中的 ${alertIds.length} 条中` : '';
+        showToast(
+          `已完成 ${scope}${n} 条告警的批量研判` +
+          (res.data?.events_created ? `，创建事件 ${res.data.events_created} 个` : '')
+        );
         fetchAlerts();
+        if (alertIds) setSelectedIds(new Set());
       } else {
         showToast(res?.error || '批量研判失败', 'error');
       }
@@ -647,7 +654,7 @@ export default function SecurityAlerts() {
     } finally {
       setBatchAnalyzing(false);
     }
-  }, [showToast, fetchAlerts]);
+  }, [selectedIds, showToast, fetchAlerts]);
 
   // ---- 搜索字段（FieldBrowser 回调）----
   const handleSearchField = useCallback((field: string, value: string) => {
@@ -711,11 +718,32 @@ export default function SecurityAlerts() {
   }, [aggregateForm, selectedIds, showToast, fetchAlerts, navigate]);
 
   // ---- 导出 ----
-  const handleExport = useCallback(() => {
-    const params: any = {};
-    if (timeRange.start) params.start_time = timeRange.start;
-    if (timeRange.end) params.end_time = timeRange.end;
-    alertsApi.exportAlerts(params).catch(() => showToast('导出失败', 'error'));
+  const handleExport = useCallback(async () => {
+    try {
+      const params: any = {};
+      if (timeRange.start) params.start_time = timeRange.start;
+      if (timeRange.end) params.end_time = timeRange.end;
+      const resp = await alertsApi.exportAlertsBlob(params);
+      if (!resp.ok) {
+        showToast('导出失败', 'error');
+        return;
+      }
+      const blob = await resp.blob();
+      const cd = resp.headers.get('Content-Disposition') || '';
+      const m = cd.match(/filename\*?=(?:UTF-8'')?([^;]+)/i);
+      const filename = m ? decodeURIComponent(m[1].replace(/["']/g, '')) : 'alerts_export.csv';
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      showToast('导出成功', 'success');
+    } catch (e) {
+      showToast('导出失败', 'error');
+    }
   }, [timeRange, showToast]);
 
   // ==================== 渲染 ====================
@@ -765,7 +793,7 @@ export default function SecurityAlerts() {
               icon={Brain}
               loading={batchAnalyzing}
               onClick={handleBatchAnalyze}
-              title="对最近未闭环的告警批量执行结构化 AI 研判，并自动闭环（误报标记 / 高危创建事件）"
+              title="优先研判列表勾选的告警；未勾选时研判最近未闭环告警。结论为真实攻击且高危将自动创建事件并闭环，误报自动标记"
             >
               批量研判
             </Button>

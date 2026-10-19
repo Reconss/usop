@@ -1034,6 +1034,8 @@ class AlertPipeline:
                             data = self._normalize(alert_data)
                             if profile_name:
                                 data['parse_profile'] = profile_name
+                                # 解析配置路径：保留原始日志，否则「原始日志」标签无法核对（曾遗漏 raw_log）
+                                data['raw_log'] = json.dumps(raw, ensure_ascii=False, default=str)[:8000]
                             data['source_topic'] = topic
                             self._send(producer, TOPIC_STANDARDIZED, data)
                             with self._lock:
@@ -1132,6 +1134,8 @@ class AlertPipeline:
                                 data['source_topic'] = 'raw-logs'
                                 data.setdefault('device_type', profile_hit.name)  # 显式映射优先
                                 data['parse_profile'] = profile_hit.name
+                                # 解析配置路径（raw-logs 路由）：同样保留原始日志
+                                data['raw_log'] = json.dumps(raw, ensure_ascii=False, default=str)[:8000]
                                 self._send(producer, TOPIC_STANDARDIZED, data)
                                 with self._lock:
                                     self._stats['raw_normalized'] = self._stats.get('raw_normalized', 0) + 1

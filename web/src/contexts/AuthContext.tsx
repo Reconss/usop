@@ -16,6 +16,18 @@ const AuthContext = createContext<AuthContextType>({
 
 export const useAuth = () => useContext(AuthContext);
 
+/** 判断当前用户是否拥有权限点（user.permissions 缺失时放行，兼容旧登录态；admin 恒通过） */
+export const usePermission = () => {
+  const { user } = useAuth();
+  return (perm?: string): boolean => {
+    if (!perm) return true;
+    if (user?.role === 'admin') return true;
+    const perms: string[] | undefined = user?.permissions;
+    if (!perms) return true;
+    return perms.includes(perm);
+  };
+};
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [user, setUser] = useState<any>(null);
@@ -43,7 +55,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (res.ok) {
           const data = await res.json();
           if (!cancelled) {
-            setUser(data.user || JSON.parse(userData));
+            // /me 返回的 data 即用户对象且带 permissions（按数据库实际角色解析）
+            const base = data.user || JSON.parse(userData);
+            setUser({ ...base, permissions: data.permissions || base.permissions || [] });
             setIsAuthenticated(true);
           }
         } else if (res.status === 401 || res.status === 403) {

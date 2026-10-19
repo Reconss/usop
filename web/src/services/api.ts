@@ -214,6 +214,18 @@ export const alertsApi = {
     if (params?.end_time) searchParams.append('end_time', params.end_time);
     return request(`/alerts-api/alerts/export?${searchParams.toString()}`);
   },
+  // 导出返回原始 Response（CSV 文件流），由调用方负责触发浏览器下载
+  exportAlertsBlob: (params?: { severity?: string; status?: string; start_time?: string; end_time?: string }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.severity) searchParams.append('severity', params.severity);
+    if (params?.status) searchParams.append('status', params.status);
+    if (params?.start_time) searchParams.append('start_time', params.start_time);
+    if (params?.end_time) searchParams.append('end_time', params.end_time);
+    return rawApiFetch(`/alerts-api/alerts/export?${searchParams.toString()}`, {
+      method: 'GET',
+      token: localStorage.getItem('token'),
+    });
+  },
   initHypertable: () => request('/alerts-api/alerts/init-hypertable', { method: 'POST' }),
 
   // ===== Graylog-style ES 搜索 API =====
@@ -1086,8 +1098,11 @@ export const pipelineApi = {
 export const aiJudgmentApi = {
   analyze: (alertId: string | number) =>
     request('/ai-judgment/analyze', { method: 'POST', body: { alert_id: alertId } }),
-  analyzeBatch: (limit?: number) =>
-    request('/ai-judgment/analyze-batch', { method: 'POST', body: { limit: limit || 20 } }),
+  analyzeBatch: (limit?: number, alert_ids?: string[]) =>
+    request('/ai-judgment/analyze-batch', {
+      method: 'POST',
+      body: { limit: limit || 20, alert_ids: alert_ids && alert_ids.length ? alert_ids : undefined },
+    }),
   getExperiences: (params?: Record<string, any>) =>
     request(`/ai-judgment/ste${buildQuery(params)}`),
   createExperience: (data: any) =>

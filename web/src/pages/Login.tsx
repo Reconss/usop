@@ -102,7 +102,8 @@ export default function Login() {
       }
       const data = await res.json();
       if (data.success && data.data?.token) {
-        authLogin(data.data.token, data.data.user);
+        // userData 附带角色权限点（登录响应 data.permissions），供侧边栏菜单过滤
+        authLogin(data.data.token, { ...data.data.user, permissions: data.data.permissions || [] });
       } else {
         setError(data.error || '用户名或密码错误');
       }

@@ -460,14 +460,27 @@ def _create_event_from_judgment(alert, judgment: dict) -> str:
     return ec
 
 
-def run_batch_judgment(limit: int = 20, create_events: bool = True) -> dict:
+def run_batch_judgment(limit: int = 20, create_events: bool = True, alert_ids: list = None) -> dict:
     """批量结构化研判 + 自动闭环（ES 为告警唯一真相源）。
 
+    若传入 alert_ids（用户在前端勾选的告警），则优先研判这些告警；
+    否则回落到「最近未闭环」的 limit 条。
     返回 {success, analyzed, events_created, false_positives, high_risk,
           items, message}；items 为逐条结论摘要（alert_id/verdict/risk_level/event_id）。
     """
     try:
-        alerts = _select_unclosed_alerts(limit)
+        if alert_ids:
+            alerts = []
+            for aid in alert_ids:
+                a = es_alerts.load_alert(aid)
+                if a:
+                    alerts.append(a)
+            if not alerts:
+                return {'success': True, 'analyzed': 0, 'events_created': 0,
+                        'false_positives': 0, 'high_risk': 0, 'items': [],
+                        'message': '指定的告警均不存在或已被删除'}
+        else:
+            alerts = _select_unclosed_alerts(limit)
         if not alerts:
             return {'success': True, 'analyzed': 0, 'events_created': 0,
                     'false_positives': 0, 'high_risk': 0, 'items': [],
@@ -567,7 +580,8 @@ def analyze_batch():
     误报→false_positive，真实攻击且高危→创建事件并 closed，其余保留待处置。"""
     data = request.get_json() or {}
     limit = int(data.get('limit', 20))
-    result = run_batch_judgment(limit=limit)
+    alert_ids = data.get('alert_ids') or None
+    result = run_batch_judgment(limit=limit, alert_ids=alert_ids)
     return jsonify({
         'success': result.get('success', False),
         'error': result.get('error'),

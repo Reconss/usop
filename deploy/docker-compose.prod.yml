@@ -1,0 +1,258 @@
+# =============================================================================
+# USOP 生产编排 —— 单文件多角色，用 profiles 选择本机要跑哪一组服务
+#
+#   --profile allinone   单机全栈（POC / 小规模）
+#   --profile app        应用节点：usop(nginx+Flask) + postgres + redis
+#   --profile data       数据节点：kafka + flink(jobmanager/taskmanager/sql-gateway)
+#   --profile search     检索节点：elasticsearch
+#
+# 与根目录 docker-compose.yml（开发用）的区别：
+#   - 代码烘焙进镜像，不挂源码目录（不覆盖容器内代码）
+#   - 数据落 ${USOP_DATA_DIR}，便于备份与独立数据盘
+#   - 全部 restart: unless-stopped + 日志轮转
+#   - 连接地址全部来自 deploy/usop.env，分机部署只改一处
+# =============================================================================
+name: usop-prod
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "3"
+
+networks:
+  usop:
+    name: usop-net
+    driver: bridge
+
+services:
+  # ---------------------------------------------------------------- 应用节点
+  postgres:
+    profiles: ["allinone", "app"]
+    image: postgres:16-alpine
+    container_name: usop_pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${PG_DB}
+      POSTGRES_USER: ${PG_USER}
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+      TZ: ${TZ}
+    command:
+      - postgres
+      - -c
+      - max_connections=${PG_MAX_CONNECTIONS}
+      - -c
+      - shared_buffers=${PG_SHARED_BUFFERS}
+    volumes:
+      - ${USOP_DATA_DIR}/postgres:/var/lib/postgresql/data
+    ports:
+      - "${PG_PORT}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER} -d ${PG_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [usop]
+    logging: *default-logging
+
+  redis:
+    profiles: ["allinone", "app"]
+    image: redis:7-alpine
+    container_name: usop_cache
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - ${USOP_DATA_DIR}/redis:/data
+    ports:
+      - "${REDIS_PORT}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [usop]
+    logging: *default-logging
+
+  usop:
+    profiles: ["allinone", "app"]
+    build:
+      context: ..
+      dockerfile: Dockerfile.all
+    image: ${USOP_IMAGE}
+    container_name: usop_app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ}
+      SKIP_BIGDATA_CHECK: "1"
+      DATABASE_URL: postgresql://${PG_USER}:${PG_PASSWORD}@${PG_HOST}:${PG_PORT}/${PG_DB}
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT}
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
+      # 告警读写走 ES_URL，系统状态页走 ES_HOSTS，两者必须一致
+      ES_URL: ${ES_URL}
+      ES_HOSTS: ${ES_HOSTS}
+      ES_INDEX_PREFIX: ${ES_INDEX_PREFIX}
+      FLINK_JOBMANAGER_URL: ${FLINK_JOBMANAGER_URL}
+      FLINK_REST_API: ${FLINK_REST_API}
+      FLINK_SQL_GATEWAY_URL: ${FLINK_SQL_GATEWAY_URL}
+      FLINK_JOBS_DIR: /app/flink-jobs
+      JWT_SECRET: ${JWT_SECRET}
+      SECRET_KEY: ${SECRET_KEY}
+    volumes:
+      - ${USOP_DATA_DIR}/uploads:/app/app/uploads
+      - ${USOP_DATA_DIR}/flink-jobs:/app/flink-jobs
+      # 初始化脚本（pipeline_setup / setup_block_playbooks）不进镜像，直接挂载
+      - ../scripts:/opt/usop-scripts:ro
+    ports:
+      - "${USOP_PORT}:3266"
+      - "${API_PORT}:5001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://127.0.0.1:5001/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 120s
+    networks: [usop]
+    logging: *default-logging
+
+  # ---------------------------------------------------------------- 数据节点
+  kafka:
+    profiles: ["allinone", "data"]
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: usop_kafka
+    restart: unless-stopped
+    environment:
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID}
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT_INTERNAL://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: ${KAFKA_ADVERTISED_LISTENERS}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: ${KAFKA_LOG_RETENTION_HOURS}
+      KAFKA_HEAP_OPTS: ${KAFKA_HEAP_OPTS}
+      TZ: ${TZ}
+    volumes:
+      - ${USOP_DATA_DIR}/kafka:/var/lib/kafka/data
+    ports:
+      - "9092:9092"
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+    networks: [usop]
+    logging: *default-logging
+
+  flink-jobmanager:
+    profiles: ["allinone", "data"]
+    image: flink:1.18.1-scala_2.12-java11
+    container_name: usop_flink_jm
+    restart: unless-stopped
+    command: jobmanager
+    ports:
+      - "8081:8081"
+    volumes:
+      - ../flink-jobs:/opt/flink/jobs
+      - ${USOP_DATA_DIR}/flink:/opt/flink/checkpoints
+      - ./conf/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml:ro
+      - ../flink-jars/flink-connector-kafka-3.2.0-1.18.jar:/opt/flink/lib/flink-connector-kafka-3.2.0-1.18.jar
+      - ../flink-jars/kafka-clients-3.4.0.jar:/opt/flink/lib/kafka-clients-3.4.0.jar
+      - ../flink-jars/flink-connector-jdbc-3.2.0-1.18.jar:/opt/flink/lib/flink-connector-jdbc-3.2.0-1.18.jar
+      - ../flink-jars/postgresql-42.6.0.jar:/opt/flink/lib/postgresql-42.6.0.jar
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://127.0.0.1:8081/overview || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+    networks: [usop]
+    logging: *default-logging
+
+  flink-taskmanager:
+    profiles: ["allinone", "data"]
+    image: flink:1.18.1-scala_2.12-java11
+    container_name: usop_flink_tm
+    restart: unless-stopped
+    command: taskmanager
+    depends_on:
+      - flink-jobmanager
+    volumes:
+      - ../flink-jobs:/opt/flink/jobs
+      - ${USOP_DATA_DIR}/flink:/opt/flink/checkpoints
+      - ./conf/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml:ro
+      - ../flink-jars/flink-connector-kafka-3.2.0-1.18.jar:/opt/flink/lib/flink-connector-kafka-3.2.0-1.18.jar
+      - ../flink-jars/kafka-clients-3.4.0.jar:/opt/flink/lib/kafka-clients-3.4.0.jar
+      - ../flink-jars/flink-connector-jdbc-3.2.0-1.18.jar:/opt/flink/lib/flink-connector-jdbc-3.2.0-1.18.jar
+      - ../flink-jars/postgresql-42.6.0.jar:/opt/flink/lib/postgresql-42.6.0.jar
+    networks: [usop]
+    logging: *default-logging
+
+  flink-sql-gateway:
+    profiles: ["allinone", "data"]
+    image: flink:1.18.1-scala_2.12-java11
+    container_name: usop_flink_gw
+    restart: unless-stopped
+    depends_on:
+      - flink-jobmanager
+    ports:
+      - "8083:8083"
+    command: >
+      bash -c "/opt/flink/bin/sql-gateway.sh start-foreground
+      -D sql-gateway.endpoint.rest.address=0.0.0.0
+      -D sql-gateway.endpoint.rest.port=8083
+      -D sql-gateway.session.idle-timeout=365d
+      -D sql-gateway.session.max-num=200
+      -D rest.address=flink-jobmanager
+      -D rest.port=8081"
+    volumes:
+      - ../flink-jobs:/opt/flink/jobs
+      - ./conf/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml:ro
+      - ../flink-jars/flink-connector-kafka-3.2.0-1.18.jar:/opt/flink/lib/flink-connector-kafka-3.2.0-1.18.jar
+      - ../flink-jars/kafka-clients-3.4.0.jar:/opt/flink/lib/kafka-clients-3.4.0.jar
+      - ../flink-jars/flink-connector-jdbc-3.2.0-1.18.jar:/opt/flink/lib/flink-connector-jdbc-3.2.0-1.18.jar
+      - ../flink-jars/postgresql-42.6.0.jar:/opt/flink/lib/postgresql-42.6.0.jar
+    networks: [usop]
+    logging: *default-logging
+
+  # ---------------------------------------------------------------- 检索节点
+  elasticsearch:
+    profiles: ["allinone", "search"]
+    image: ${ES_IMAGE:-elasticsearch:8.11.0}
+    container_name: usop_es
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      bootstrap.memory_lock: "true"
+      ES_JAVA_OPTS: -Xms${ES_JAVA_HEAP} -Xmx${ES_JAVA_HEAP}
+      TZ: ${TZ}
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - ${USOP_DATA_DIR}/elasticsearch:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://127.0.0.1:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    networks: [usop]
+    logging: *default-logging

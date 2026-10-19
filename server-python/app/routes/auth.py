@@ -2,6 +2,7 @@ from flask import Blueprint, request, jsonify, make_response
 from app.database import db
 from app.models import User, AuditLog
 from app.utils import hash_password, verify_password, generate_token, decode_token
+from app.utils.permissions import permissions_for_role
 from functools import wraps
 from datetime import datetime
 
@@ -98,7 +99,8 @@ def login():
         'success': True,
         'data': {
             'token': token,
-            'user': user.to_dict()
+            'user': user.to_dict(),
+            'permissions': permissions_for_role(user.role),
         }
     })
 
@@ -128,9 +130,11 @@ def get_current_user():
     if not user:
         return jsonify({'success': False, 'error': '用户不存在'}), 404
 
+    data = user.to_dict()
+    data['permissions'] = permissions_for_role(user.role)
     return jsonify({
         'success': True,
-        'data': user.to_dict()
+        'data': data
     })
 
 

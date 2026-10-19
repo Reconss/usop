@@ -277,6 +277,32 @@ def create_app():
     app.register_blueprint(roles_api_bp, url_prefix='/api/roles-api')
     app.register_blueprint(assessment_api_bp, url_prefix='/api/vulnerabilities-api')
 
+    # 角色权限：注册集中式写操作拦截 + 种子系统角色（admin/operator/analyst/auditor）。
+    # rbac_seed_version 标记：版本变更（首次部署/默认分配调整）时强制同步为内置默认；
+    # 之后管理员在角色页的调整持久生效，重启不覆盖。UI「恢复默认」走 POST /roles-api/roles/seed。
+    from app.utils.permissions import register_write_guard, seed_system_roles, RBAC_SEED_VERSION
+    register_write_guard(app)
+    try:
+        with app.app_context():
+            from app.models import SystemConfig
+            marker = SystemConfig.query.filter_by(key='rbac_seed_version').first()
+            if not marker or str(marker.value) != RBAC_SEED_VERSION:
+                seed_result = seed_system_roles(force=True)
+                if marker:
+                    marker.value = RBAC_SEED_VERSION
+                else:
+                    db.session.add(SystemConfig(key='rbac_seed_version', value=RBAC_SEED_VERSION))
+                db.session.commit()
+                print(f"系统角色权限已按 v{RBAC_SEED_VERSION} 分配: "
+                      f"更新 {', '.join(seed_result['updated']) or '无'} / 新建 {', '.join(seed_result['created']) or '无'}")
+    except Exception as e:
+        print(f"系统角色种子化失败 (非致命): {e}")
+        try:
+            with app.app_context():
+                db.session.rollback()
+        except Exception:
+            pass
+
     # 告警处理链路：默认走分阶段流水线（标准化→过滤去重→valid/invalid 分流→ES 双索引→关联分析→事件）；
     # ALERT_PIPELINE=0 时回退旧通用告警消费者（仅 PG 直写）
     if os.getenv('ALERT_PIPELINE', '1') == '1':

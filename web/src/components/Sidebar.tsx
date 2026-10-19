@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../contexts/AuthContext';
@@ -38,21 +38,23 @@ interface MenuItem {
   label: string;
   icon: React.ElementType;
   path?: string;
+  /** 访问所需权限点（缺省=登录即可见） */
+  perm?: string;
   children?: MenuItem[];
 }
 
-/** 侧边栏菜单（单一事实来源：Header 面包屑与 PageHeader 均从这里派生语义） */
+/** 侧边栏菜单（单一事实来源：Header 面包屑与 PageHeader 均从这里派生语义）。perm 与角色权限点体系对齐 */
 export const menuItems: MenuItem[] = [
-  { id: 'dashboard', label: '仪表盘', icon: LayoutDashboard, path: '/' },
+  { id: 'dashboard', label: '仪表盘', icon: LayoutDashboard, path: '/', perm: 'dashboard.view' },
   {
     id: 'detection',
     label: '检测与分析',
     icon: Shield,
     children: [
-      { id: 'events', label: '工作台', icon: AlertTriangle, path: '/detection/events' },
-      { id: 'investigation', label: '安全告警', icon: FileSearch, path: '/detection/investigation' },
-      { id: 'hunting', label: '威胁狩猎', icon: Target, path: '/detection/hunting' },
-      { id: 'ai', label: 'AI中心', icon: Brain, path: '/detection/ai' },
+      { id: 'events', label: '工作台', icon: AlertTriangle, path: '/detection/events', perm: 'events.view' },
+      { id: 'investigation', label: '安全告警', icon: FileSearch, path: '/detection/investigation', perm: 'alerts.view' },
+      { id: 'hunting', label: '威胁狩猎', icon: Target, path: '/detection/hunting', perm: 'hunting.view' },
+      { id: 'ai', label: 'AI中心', icon: Brain, path: '/detection/ai', perm: 'ai.view' },
     ]
   },
   {
@@ -60,9 +62,9 @@ export const menuItems: MenuItem[] = [
     label: '漏洞管理',
     icon: ShieldAlert,
     children: [
-      { id: 'host', label: '主机漏洞', icon: Server, path: '/vulnerabilities/host' },
-      { id: 'application', label: '应用漏洞', icon: AppWindow, path: '/vulnerabilities/application' },
-      { id: 'assessment', label: '评级配置', icon: Star, path: '/vulnerabilities/assessment' }
+      { id: 'host', label: '主机漏洞', icon: Server, path: '/vulnerabilities/host', perm: 'vulns.view' },
+      { id: 'application', label: '应用漏洞', icon: AppWindow, path: '/vulnerabilities/application', perm: 'vulns.view' },
+      { id: 'assessment', label: '评级配置', icon: Star, path: '/vulnerabilities/assessment', perm: 'vulns.manage' }
     ]
   },
   {
@@ -70,9 +72,9 @@ export const menuItems: MenuItem[] = [
     label: '响应与自动化',
     icon: Zap,
     children: [
-      { id: 'playbooks', label: '剧本编排', icon: Workflow, path: '/response/playbooks' },
-      { id: 'integrations', label: '集成应用', icon: Plug, path: '/response/integrations' },
-      { id: 'rules', label: '规则管理', icon: ScrollText, path: '/response/rules' }
+      { id: 'playbooks', label: '剧本编排', icon: Workflow, path: '/response/playbooks', perm: 'playbooks.view' },
+      { id: 'integrations', label: '集成应用', icon: Plug, path: '/response/integrations', perm: 'playbooks.view' },
+      { id: 'rules', label: '规则管理', icon: ScrollText, path: '/response/rules', perm: 'rules.view' }
     ]
   },
   {
@@ -80,8 +82,8 @@ export const menuItems: MenuItem[] = [
     label: '资产与攻击面',
     icon: Server,
     children: [
-      { id: 'inventory', label: '资产清单', icon: List, path: '/assets/inventory' },
-      { id: 'scans', label: '扫描任务', icon: Scan, path: '/assets/scans' }
+      { id: 'inventory', label: '资产清单', icon: List, path: '/assets/inventory', perm: 'assets.view' },
+      { id: 'scans', label: '扫描任务', icon: Scan, path: '/assets/scans', perm: 'scans.view' }
     ]
   },
   {
@@ -89,9 +91,9 @@ export const menuItems: MenuItem[] = [
     label: '数据管理',
     icon: Database,
     children: [
-      { id: 'ingestion', label: '数据采集', icon: Scroll, path: '/data/ingestion' },
-      { id: 'alert-filters', label: '告警过滤', icon: Filter, path: '/data/alert-filters' },
-      { id: 'templates', label: '资源管理', icon: FileText, path: '/data/resources' }
+      { id: 'ingestion', label: '数据采集', icon: Scroll, path: '/data/ingestion', perm: 'data.view' },
+      { id: 'alert-filters', label: '告警过滤', icon: Filter, path: '/data/alert-filters', perm: 'data.view' },
+      { id: 'templates', label: '资源管理', icon: FileText, path: '/data/resources', perm: 'data.view' }
     ]
   },
   {
@@ -99,14 +101,29 @@ export const menuItems: MenuItem[] = [
     label: '系统管理',
     icon: Settings,
     children: [
-      { id: 'users', label: '用户管理', icon: Users, path: '/system/users' },
-      { id: 'roles', label: '角色权限', icon: UserCog, path: '/system/roles' },
-      { id: 'audit', label: '审计日志', icon: ClipboardList, path: '/system/audit' },
-      { id: 'config', label: '全局配置', icon: Sliders, path: '/system/config' },
-      { id: 'backup', label: '备份与还原', icon: Database, path: '/system/backup' }
+      { id: 'users', label: '用户管理', icon: Users, path: '/system/users', perm: 'users.view' },
+      { id: 'roles', label: '角色权限', icon: UserCog, path: '/system/roles', perm: 'roles.view' },
+      { id: 'audit', label: '审计日志', icon: ClipboardList, path: '/system/audit', perm: 'audit.view' },
+      { id: 'config', label: '全局配置', icon: Sliders, path: '/system/config', perm: 'config.view' },
+      { id: 'backup', label: '备份与还原', icon: Database, path: '/system/backup', perm: 'config.manage' }
     ]
   }
 ];
+
+/** 按权限点过滤菜单：permissions 未加载/缺失时显示全部（兼容旧登录态） */
+export const filterMenuByPermissions = (items: MenuItem[], permissions?: string[]): MenuItem[] => {
+  if (!permissions) return items;
+  const has = (perm?: string) => !perm || permissions.includes(perm);
+  return items
+    .map((item) => {
+      if (item.children) {
+        const children = item.children.filter((c) => has(c.perm));
+        return children.length > 0 ? { ...item, children } : null;
+      }
+      return has(item.perm) ? item : null;
+    })
+    .filter((item): item is MenuItem => item !== null);
+};
 
 /** 角色标识 → 展示名（与用户管理角色体系对齐的常见值，未匹配到时原样展示） */
 const ROLE_LABELS: Record<string, string> = {
@@ -144,6 +161,26 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, onCollapse }) => {
   const roleLabel = ROLE_LABELS[user?.role] || user?.role || '用户';
   const avatarInitial = (displayName || 'U').charAt(0).toUpperCase();
   const [expandedMenus, setExpandedMenus] = useState<string[]>(['detection']);
+  // 按角色权限点过滤菜单（user.permissions 缺失时显示全部，兼容旧登录态）
+  const visibleMenuItems = useMemo(
+    () => filterMenuByPermissions(menuItems, user?.permissions),
+    [user?.permissions]
+  );
+  // 当前路径若无权访问（菜单被过滤），回落到第一个可见页面
+  useEffect(() => {
+    if (!user?.permissions) return;
+    const accessible = visibleMenuItems.some((g) =>
+      g.path
+        ? location.pathname === g.path || location.pathname.startsWith(g.path + '/')
+        : (g.children || []).some(
+            (c) => c.path && (location.pathname === c.path || location.pathname.startsWith(c.path + '/'))
+          )
+    );
+    if (!accessible && visibleMenuItems.length > 0) {
+      const first = visibleMenuItems[0];
+      navigate(first.children?.[0]?.path || first.path || '/');
+    }
+  }, [location.pathname, user?.permissions, visibleMenuItems, navigate]);
 
   // 进入某页面时自动展开其所属分组（不收起用户已展开的其它分组）
   useEffect(() => {
@@ -293,7 +330,7 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, onCollapse }) => {
 
       {/* 导航 */}
       <nav className="scrollbar-thin flex-1 space-y-0.5 overflow-y-auto px-2 py-3">
-        {menuItems.map((item) => renderMenuItem(item))}
+        {visibleMenuItems.map((item) => renderMenuItem(item))}
       </nav>
 
       {/* 当前用户：真实登录身份，点击进入个人中心 */}
