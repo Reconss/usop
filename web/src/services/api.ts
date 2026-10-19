@@ -556,7 +556,8 @@ export const vulnerabilitiesApi = {
 
   // 漏洞评级配置
   getAssessmentConfig: () => request('/vulnerabilities-api/assessment/config'),
-  saveAssessmentConfig: (rules: any[]) => request('/vulnerabilities-api/assessment/config', { method: 'POST', body: { rules } }),
+  saveAssessmentConfig: (payload: { rules: any[]; thresholds?: any[] }) =>
+    request('/vulnerabilities-api/assessment/config', { method: 'POST', body: payload }),
   recalculateAll: () => request('/vulnerabilities-api/assessment/recalculate', { method: 'POST' }),
 
   // Nessus 导入
