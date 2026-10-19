@@ -288,10 +288,10 @@ def request_playbook_approval(playbook_id):
     db.session.add(approval)
     db.session.flush()
 
-    # 审批通知发给审批人（admin / senior_analyst 角色），排除申请人自己；
+    # 审批通知发给审批人（admin / operator 角色，对齐 SYSTEM_ROLES 审批语义），排除申请人自己；
     # 找不到审批人时兜底发申请人，避免申请石沉大海
     from app.models import User
-    approver_q = User.query.filter(User.role.in_(('admin', 'senior_analyst', 'super_admin')))
+    approver_q = User.query.filter(User.role.in_(('admin', 'operator')))
     if approval.requester_id:
         approver_q = approver_q.filter(User.id != approval.requester_id)
     approvers = approver_q.all()

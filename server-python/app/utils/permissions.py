@@ -298,13 +298,7 @@ def register_write_guard(app):
         payload = decode_token(token) if token else None
         if not payload:
             return None  # 未登录场景交给 login_required 返回 401
-        # 角色解析：payload.role（部分签发链路带）→ DB users.role（真相源）→ 回退 analyst
-        # 注意：登录签发的 JWT 仅含 user_id/username，必须回表查真实角色
-        role_key = payload.get('role')
-        if not role_key:
-            from app.models import User
-            user = User.query.get(payload.get('user_id'))
-            role_key = user.role if user else 'analyst'
+        role_key = _resolve_role_from_payload(payload)
         if not has_permission(role_key, perm):
             resp = jsonify({
                 'success': False,
@@ -317,13 +311,29 @@ def register_write_guard(app):
         return None
 
 
+def _resolve_role_from_payload(payload) -> str:
+    """从 JWT payload 解析真实角色：payload.role → DB users.role（真相源）→ analyst 兜底。
+
+    登录签发的 JWT 仅含 user_id/username，必须回表查 users.role；
+    仅携带 role 的历史/测试 token 可直接使用。
+    """
+    if not payload:
+        return 'analyst'
+    role_key = payload.get('role')
+    if role_key:
+        return role_key
+    from app.models import User
+    user = User.query.get(payload.get('user_id'))
+    return user.role if user else 'analyst'
+
+
 def permission_required(perm: str):
     """装饰器形态的权限校验（用于需要显式声明的端点）。须套在 login_required 之内。"""
     def decorator(f):
         @wraps(f)
         def wrapper(*args, **kwargs):
             cu = getattr(request, 'current_user', None) or {}
-            role_key = cu.get('role') or 'analyst'
+            role_key = _resolve_role_from_payload(cu)
             if not has_permission(role_key, perm):
                 resp = jsonify({
                     'success': False,

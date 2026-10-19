@@ -99,20 +99,10 @@ def create_app():
             db.session.commit()
             print("Default admin user created: admin / admin123")
 
-        # 初始化默认角色（幂等）
-        from app.models.extensions import Role as RoleModel
-        default_roles = [
-            {'id': 'admin', 'name': '超级管理员', 'description': '系统最高权限，可审批所有操作', 'permissions': ['*'], 'approval_level': 3, 'can_approve': ['*'], 'max_auto_approve': 0, 'is_system': True},
-            {'id': 'senior_analyst', 'name': '安全主管', 'description': '高级安全分析师，可审批中高风险操作', 'permissions': ['alerts.read', 'alerts.write', 'events.read', 'events.write', 'approve.level2', 'approve.level3'], 'approval_level': 3, 'can_approve': ['block_ip', 'unblock_ip', 'isolate_host', 'quarantine_file', 'terminate_process', 'modify_firewall', 'whitelist_add'], 'max_auto_approve': 0, 'is_system': True},
-            {'id': 'analyst', 'name': '安全分析师', 'description': '日常安全运营，可审批中风险操作', 'permissions': ['alerts.read', 'alerts.write', 'events.read', 'approve.level2'], 'approval_level': 2, 'can_approve': ['block_ip', 'unblock_ip', 'quarantine_file', 'whitelist_add'], 'max_auto_approve': 3, 'is_system': True},
-            {'id': 'operator', 'name': '安全运维', 'description': '安全设备运维，仅可执行低风险操作', 'permissions': ['alerts.read', 'events.read'], 'approval_level': 1, 'can_approve': ['whitelist_add'], 'max_auto_approve': 5, 'is_system': True},
-            {'id': 'auditor', 'name': '审计员', 'description': '只读权限，审计所有操作记录', 'permissions': ['alerts.read', 'events.read', 'audit.read'], 'approval_level': 1, 'can_approve': [], 'max_auto_approve': 0, 'is_system': True},
-        ]
-        for rd in default_roles:
-            if not RoleModel.query.get(rd['id']):
-                role = RoleModel(**rd)
-                db.session.add(role)
-        db.session.commit()
+        # 角色种子由 RBAC 模块统一管理（app/utils/permissions.py::seed_system_roles，
+        # 见文件末尾 register_write_guard 附近的系统角色种子化），此处不再单独播种。
+        # 历史遗留：旧审批制角色（超级管理员/安全主管…，alerts.read 等旧权限点）已被
+        # 2026-10-19 RBAC 重建取代，migrations/cleanup_stale_roles.py 负责清理残留。
         
         # 运行存储表迁移（确保安全告警表存在）
         try:

@@ -55,9 +55,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (res.ok) {
           const data = await res.json();
           if (!cancelled) {
-            // /me 返回的 data 即用户对象且带 permissions（按数据库实际角色解析）
-            const base = data.user || JSON.parse(userData);
-            setUser({ ...base, permissions: data.permissions || base.permissions || [] });
+            // /me 响应为 {success, data:{...user, permissions}}：先解包一层再与 localStorage 合并
+            const payload = data.data || data;
+            const stored = (() => { try { return JSON.parse(userData); } catch { return {}; } })();
+            const base = { ...stored, ...payload };
+            setUser({ ...base, permissions: payload.permissions || stored.permissions || [] });
             setIsAuthenticated(true);
           }
         } else if (res.status === 401 || res.status === 403) {
