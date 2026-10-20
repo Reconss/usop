@@ -66,7 +66,7 @@ const NODE_TYPES: NodeType[] = [
   { id: 'trigger', name: '触发器', icon: Zap, color: '#10B981', bg: '#10B98115', category: '基础', desc: '剧本执行入口',
     fields: [{ name: 'triggerType', label: '触发类型', type: 'select', options: ['告警事件', '定时任务', '手动触发', 'Webhook'], required: true }, { name: 'schedule', label: '执行周期（Cron）', type: 'text', placeholder: '0 8 * * * = 每天 08:00；仅定时任务生效' }, { name: 'inputs', label: '运行时入参', type: 'inputs' }] },
   { id: 'condition', name: '条件判断', icon: GitBranch, color: '#F59E0B', bg: '#F59E0B15', category: '控制', desc: 'IF/ELSE 分支',
-    fields: [{ name: 'field', label: '字段', type: 'text', placeholder: 'severity' }, { name: 'operator', label: '运算符', type: 'select', options: ['等于', '不等于', '包含', '大于', '小于', '属于', '不属于'] }, { name: 'value', label: '值', type: 'text', placeholder: 'critical' }] },
+    fields: [{ name: 'field', label: '字段', type: 'text', placeholder: 'severity 或 summary.threat_level（也支持 {{ }} 引用）' }, { name: 'operator', label: '运算符', type: 'select', options: ['等于', '不等于', '包含', '大于', '小于', '属于', '不属于'] }, { name: 'value', label: '值', type: 'text', placeholder: 'critical' }] },
   { id: 'script', name: '执行脚本', icon: Code, color: '#3B82F6', bg: '#3B82F615', category: '动作', desc: 'Python/Bash 脚本',
     fields: [{ name: 'language', label: '语言', type: 'select', options: ['Python', 'Bash'] }, { name: 'script', label: '脚本内容', type: 'textarea', placeholder: 'Python/Bash 脚本。上下文变量以环境变量注入：USOP_EVENT_<字段>（如 USOP_EVENT_SRC_IP）、USOP_PARAM_<字段>；stdout 会作为节点输出交给下游' }] },
   { id: 'action', name: '通用动作', icon: Settings, color: '#64748B', bg: '#64748B15', category: '动作', desc: '调用平台内置动作（封堵/隔离/工单/情报等，选动作后按参数表单配置）',
@@ -321,6 +321,10 @@ export default function Playbooks() {
   const [showEditor, setShowEditor] = useState(false);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [connectingFrom, setConnectingFrom] = useState<string | null>(null);
+  // 拖拽连线：从输出端口按住拖出预览虚线，松手落在目标节点上完成连接
+  const [dragLine, setDragLine] = useState<{ fromId: string; x: number; y: number } | null>(null);
+  // 画布顶部短暂反馈（连线成功/重复/条件分支提示）
+  const [canvasFlash, setCanvasFlash] = useState<{ text: string; kind: 'success' | 'warn' } | null>(null);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [canvasOffset, setCanvasOffset] = useState({ x: 0, y: 0 });
@@ -993,6 +997,51 @@ export default function Playbooks() {
     return first && typeof first === 'object' ? Object.keys(first) : [];
   };
 
+  /** 试运行实测到的节点输出首项样本（用于展开嵌套字段） */
+  const nodeSample = (nodeId: string): Record<string, any> | null => {
+    const r = (runResult?.node_results || []).find((n: any) => String(n.node_id) === String(nodeId));
+    const first = (r?.items || [])[0];
+    return first && typeof first === 'object' && !Array.isArray(first) ? first : null;
+  };
+
+  /**
+   * 把一个输出样本展开成可引用的点路径（含嵌套层）。
+   * 后端 resolve() 支持 a.b.c 逐级取值，所以嵌套字段是可以直接引用的，
+   * 选择器必须把它们列出来，否则用户只能选到整个对象（如 summary 而非 summary.threat_level）。
+   * - 深度上限 MAX_DEPTH，条目上限 MAX_PATHS，避免大响应体（如微步 data.<ip>）刷屏
+   * - key 含「.」的分支不可寻址（后端按点切段），直接跳过
+   */
+  const MAX_PATH_DEPTH = 3;
+  const MAX_PATHS = 60;
+  const expandPaths = (sample: any): { label: string; path: string; depth: number }[] => {
+    if (!sample || typeof sample !== 'object' || Array.isArray(sample)) return [];
+    const out: { label: string; path: string; depth: number }[] = [];
+    const walk = (obj: any, prefix: string, depth: number) => {
+      for (const [k, v] of Object.entries(obj)) {
+        if (out.length >= MAX_PATHS) return;
+        if (k.includes('.')) continue;
+        const path = prefix ? `${prefix}.${k}` : k;
+        out.push({ label: k, path, depth });
+        // 原始响应体 / 摘要副本不展开：子键多为 IP（含点，不可寻址），列出来只会噪音
+        const leafOnly = k === 'data' || k === 'intel_summary' || k === 'raw_log';
+        if (!leafOnly && depth < MAX_PATH_DEPTH && v && typeof v === 'object' && !Array.isArray(v)) {
+          walk(v, path, depth + 1);
+        }
+      }
+    };
+    walk(sample, '', 0);
+    return out;
+  };
+
+  /** 节点可引用路径：优先试运行样本展开（含嵌套），否则退回顶层键名 */
+  const refPaths = (n: NodeInstance): { label: string; path: string; depth: number }[] => {
+    const sample = nodeSample(n.id);
+    const expanded = expandPaths(sample);
+    if (expanded.length) return expanded;
+    return Array.from(new Set([...realKeys(n.id), ...staticKeys(n)]))
+      .map(k => ({ label: k, path: k, depth: 0 }));
+  };
+
   /** 未试运行时按节点配置静态推断输出字段 */
   const staticKeys = (n: NodeInstance): string[] => {
     if (n.typeId === 'ai') {
@@ -1022,9 +1071,18 @@ export default function Playbooks() {
    *    {{ $('节点名').json.字段 }}           指定上游节点的输出（含触发器）
    *    {{ $items('节点名') }}               指定节点的全部输出项
    */
+  /** 路径 → 可点击变量（父路径作灰色前缀，depth 用于缩进） */
+  const toVars = (paths: { label: string; path: string; depth: number }[], base: string) =>
+    paths.map(p => ({
+      label: p.label,
+      expr: `{{ ${base}${p.path} }}`,
+      prefix: p.path.slice(0, Math.max(0, p.path.length - p.label.length)),
+      depth: p.depth,
+    }));
+
   const refGroups = useMemo(() => {
-    if (!selectedNode) return [] as { title: string; vars: { label: string; expr: string }[] }[];
-    const groups: { title: string; vars: { label: string; expr: string }[] }[] = [];
+    if (!selectedNode) return [] as { title: string; vars: { label: string; expr: string; prefix?: string; depth?: number }[] }[];
+    const groups: { title: string; vars: { label: string; expr: string; prefix?: string; depth?: number }[] }[] = [];
     const ups = nodes.filter(n => n.outputs.includes(selectedNode.id));
 
     // 触发数据：直接上游是触发器时字段已在当前输入里（$json），否则按节点名引用触发器输出
@@ -1032,29 +1090,43 @@ export default function Playbooks() {
     const directTrig = ups.find(u => u.typeId === 'trigger');
     if (trigNode) {
       const exprFor = (f: string) => directTrig ? `{{ $json.${f} }}` : `{{ $('${trigNode.name}').json.${f} }}`;
-      groups.push({ title: '触发数据', vars: TRIGGER_FIELDS.map(f => ({ label: f, expr: exprFor(f) })) });
+      groups.push({ title: '触发数据', vars: TRIGGER_FIELDS.map(f => ({ label: f, expr: exprFor(f), depth: 0 })) });
     }
 
     const cur = (runResult?.node_results || []).find((n: any) => String(n.node_id) === String(selectedNode.id));
-    let curKeys: string[] = (cur && Array.isArray(cur.input_keys) && cur.input_keys.length) ? cur.input_keys : [];
-    if (!curKeys.length && ups.length) {
-      curKeys = realKeys(ups[0].id).length ? realKeys(ups[0].id) : staticKeys(ups[0]);
+    const inputKeys: string[] = (cur && Array.isArray(cur.input_keys) && cur.input_keys.length) ? cur.input_keys : [];
+    let curPaths: { label: string; path: string; depth: number }[] = [];
+    if (ups.length) {
+      const upSample = nodeSample(ups[0].id);
+      if (upSample) curPaths = expandPaths(upSample);
     }
-    if (curKeys.length) {
-      groups.push({ title: '当前输入 $json', vars: curKeys.map(k => ({ label: k, expr: `{{ $json.${k} }}` })) });
+    if (!curPaths.length && inputKeys.length) {
+      curPaths = inputKeys.map(k => ({ label: k, path: k, depth: 0 }));
+    }
+    if (!curPaths.length && ups.length) curPaths = refPaths(ups[0]);
+    if (curPaths.length) {
+      groups.push({ title: '当前输入 $json', vars: toVars(curPaths, '$json.') });
     }
 
     ups.forEach(u => {
-      const keys = Array.from(new Set([...realKeys(u.id), ...staticKeys(u)]));
+      const paths = refPaths(u);
       groups.push({
         title: `上游 · ${u.name}`,
-        vars: keys.length
-          ? keys.map(k => ({ label: k, expr: `{{ $('${u.name}').json.${k} }}` }))
-          : [{ label: '试运行后显示字段', expr: `{{ $('${u.name}').json }}` }],
+        vars: paths.length
+          ? toVars(paths, `$('${u.name}').json.`)
+          : [{ label: '试运行后显示字段', expr: `{{ $('${u.name}').json }}`, depth: 0 }],
       });
     });
     return groups;
   }, [selectedNode, nodes, runResult]);
+
+  /** 变量 chip 的显示：父路径灰色前缀 + 末段正常色，并按层级缩进 */
+  const renderVarLabel = (v: { label: string; prefix?: string; depth?: number }) => (
+    <span className="inline-flex items-baseline whitespace-nowrap" style={{ marginLeft: (v.depth || 0) * 8 }}>
+      {v.prefix ? <span className="text-text-muted/70">{v.prefix}</span> : null}
+      <span>{v.label}</span>
+    </span>
+  );
 
   /** 把引用表达式插入到指定字段的光标位置 */
   const insertRef = (fieldName: string, expr: string) => {
@@ -1130,28 +1202,90 @@ export default function Playbooks() {
   };
 
   // ===== 连线操作 =====
+  const flashCanvas = (text: string, kind: 'success' | 'warn' = 'success') => {
+    setCanvasFlash({ text, kind });
+  };
+
+  // flash 自动消失
+  useEffect(() => {
+    if (!canvasFlash) return;
+    const t = setTimeout(() => setCanvasFlash(null), 2200);
+    return () => clearTimeout(t);
+  }, [canvasFlash]);
+
+  /** 建立连线（带重复检测与提示）；返回是否成功 */
+  const completeConnection = (fromId: string, toId: string): boolean => {
+    if (!editingPb || fromId === toId) return false;
+    const fromNode = editingPb.nodes.find(n => n.id === fromId);
+    if (!fromNode) return false;
+    const outputs = Array.isArray(fromNode.outputs) ? fromNode.outputs : [];
+    if (outputs.includes(toId)) {
+      flashCanvas('该连线已存在', 'warn');
+      return false;
+    }
+    setEditingPb({
+      ...editingPb,
+      nodes: editingPb.nodes.map(n => n.id === fromId ? { ...n, outputs: [...outputs, toId] } : n),
+    });
+    // 条件节点分支语义：引擎只认前两条输出（真分支/假分支），超出部分不生效
+    if (fromNode.typeId === 'condition' && outputs.length >= 2) {
+      flashCanvas('连线已创建，但条件分支仅生效前两条（真/假）', 'warn');
+    } else {
+      flashCanvas('连线已创建', 'success');
+    }
+    setConnectingFrom(null);
+    return true;
+  };
+
   const handleNodeClick = (nodeId: string) => {
     if (connectingFrom) {
-      // 完成连线
-      if (connectingFrom !== nodeId && editingPb) {
-        const fromNode = editingPb.nodes.find(n => n.id === connectingFrom);
-        if (fromNode && !fromNode.outputs.includes(nodeId)) {
-          setEditingPb({
-            ...editingPb,
-            nodes: editingPb.nodes.map(n => n.id === connectingFrom ? { ...n, outputs: [...n.outputs, nodeId] } : n),
-          });
-        }
-      }
-      setConnectingFrom(null);
+      // 完成连线（点击式：先点输出端口，再点目标节点）
+      completeConnection(connectingFrom, nodeId);
     } else {
       setSelectedNodeId(nodeId);
     }
   };
 
-  const startConnecting = (nodeId: string) => {
+  /** 端口按下：阻止冒泡到节点拖拽，进入（拖拽）连线模式 */
+  const startConnecting = (nodeId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
     setConnectingFrom(nodeId);
     setSelectedNodeId(nodeId);
+    setDragLine({ fromId: nodeId, x: e.clientX, y: e.clientY });
   };
+
+  // 拖拽连线：document 级监听 mousemove 更新预览终点，mouseup 落在目标节点上完成连接
+  useEffect(() => {
+    if (!dragLine) return;
+    const onMove = (ev: MouseEvent) => {
+      setDragLine({ fromId: dragLine.fromId, x: ev.clientX, y: ev.clientY });
+    };
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') {
+        setDragLine(null);
+        setConnectingFrom(null);
+      }
+    };
+    const onUp = (ev: MouseEvent) => {
+      const el = document.elementFromPoint(ev.clientX, ev.clientY);
+      const nodeEl = el?.closest('[data-node-id]') as HTMLElement | null;
+      const targetId = nodeEl?.dataset.nodeId;
+      if (targetId && targetId !== dragLine.fromId) {
+        completeConnection(dragLine.fromId, targetId);
+      }
+      // 纯点击（未拖动）时保留 connectingFrom，由后续点击目标节点完成连线
+      setDragLine(null);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [dragLine, editingPb]);
 
   const removeConnection = (fromId: string, toId: string) => {
     if (!editingPb) return;
@@ -1596,25 +1730,39 @@ export default function Playbooks() {
                           <path d="M0,0 L8,4 L0,8 Z" fill="#6366f1" />
                         </marker>
                       </defs>
-                      {nodes.map(node => node.outputs.map(outId => {
-                        const target = nodes.find(n => n.id === outId);
-                        if (!target) return null;
-                        const x1 = node.position.x + NODE_W;
-                        const y1 = node.position.y + NODE_H / 2;
-                        const x2 = target.position.x;
-                        const y2 = target.position.y + NODE_H / 2;
-                        const mx = (x1 + x2) / 2;
-                        return (
-                          <g key={`${node.id}-${outId}`} style={{ cursor: 'pointer', pointerEvents: 'stroke' }}
-                            onClick={(e) => { e.stopPropagation(); removeConnection(node.id, outId); }}>
-                            <path d={`M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`}
-                              stroke="#6366f1" strokeWidth="2" fill="none" markerEnd="url(#arrow)" strokeDasharray="6,3" />
-                            <path d={`M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`}
-                              stroke="transparent" strokeWidth="10" fill="none" />
-                          </g>
-                        );
-                      }))}
-                    </svg>
+                  {nodes.map(node => node.outputs.map(outId => {
+                      const target = nodes.find(n => n.id === outId);
+                      if (!target) return null;
+                      const x1 = node.position.x + NODE_W;
+                      const y1 = node.position.y + NODE_H / 2;
+                      const x2 = target.position.x;
+                      const y2 = target.position.y + NODE_H / 2;
+                      const mx = (x1 + x2) / 2;
+                      return (
+                        <g key={`${node.id}-${outId}`} style={{ cursor: 'pointer', pointerEvents: 'stroke' }}
+                          onClick={(e) => { e.stopPropagation(); removeConnection(node.id, outId); }}>
+                          <path d={`M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`}
+                            stroke="#6366f1" strokeWidth="2" fill="none" markerEnd="url(#arrow)" strokeDasharray="6,3" />
+                          <path d={`M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`}
+                            stroke="transparent" strokeWidth="10" fill="none" />
+                        </g>
+                      );
+                    }))}
+                    {/* 拖拽连线预览虚线（client 坐标换算为画布坐标） */}
+                    {dragLine && canvasRef.current && (() => {
+                      const rect = canvasRef.current.getBoundingClientRect();
+                      const fromNode = nodes.find(n => n.id === dragLine.fromId);
+                      if (!fromNode) return null;
+                      const x1 = fromNode.position.x + NODE_W;
+                      const y1 = fromNode.position.y + NODE_H / 2;
+                      const x2 = dragLine.x - rect.left + canvasRef.current.scrollLeft;
+                      const y2 = dragLine.y - rect.top + canvasRef.current.scrollTop;
+                      return (
+                        <path d={`M${x1},${y1} L${x2},${y2}`} stroke="#6366f1" strokeWidth="2"
+                          strokeDasharray="5,3" fill="none" opacity="0.85" pointerEvents="none" />
+                      );
+                    })()}
+                  </svg>
                     {/* 节点 */}
                     {nodes.map(node => {
                       const nt = NODE_TYPES.find(n => n.id === node.typeId);
@@ -1622,6 +1770,7 @@ export default function Playbooks() {
                       const isConnecting = connectingFrom === node.id;
                       return (
                         <div key={node.id}
+                          data-node-id={node.id}
                           style={{ position: 'absolute', left: node.position.x, top: node.position.y, width: NODE_W, height: NODE_H, zIndex: isSelected ? 10 : 2 }}
                           className={`rounded-lg border-2 transition-all cursor-pointer select-none ${isConnecting ? 'border-dashed border-primary shadow-panel shadow-primary/20' : isSelected ? 'border-primary shadow-panel shadow-primary/10' : 'border-border-color hover:border-primary/40'}`}
                           onClick={e => { e.stopPropagation(); handleNodeClick(node.id); }}
@@ -1633,9 +1782,12 @@ export default function Playbooks() {
                             </div>
                             <p className="text-[10px] text-text-muted mt-0.5 truncate">{node.typeId === 'trigger' ? (node.config.triggerType || nt?.desc) : nt?.desc}</p>
                           </div>
-                          {/* 输出连接点 */}
-                          <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 w-3 h-3 rounded-full bg-primary border-2 border-white cursor-pointer hover:scale-125 transition-transform z-20"
-                            onClick={e => { e.stopPropagation(); startConnecting(node.id); }} />
+                          {/* 输出连接点：支持拖拽连线（按住拖出预览线）与点击连线两种手势 */}
+                          <div
+                            className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 w-3.5 h-3.5 rounded-full bg-primary border-2 border-white cursor-crosshair hover:scale-125 transition-transform z-20"
+                            onMouseDown={e => startConnecting(node.id, e)}
+                            onClick={e => { e.stopPropagation(); setConnectingFrom(node.id); setSelectedNodeId(node.id); }}
+                            title="拖拽到目标节点完成连线" />
                           {/* 输入连接点 */}
                           {node.typeId !== 'trigger' && (
                             <div className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-3 rounded-full bg-card-bg border-2 border-primary cursor-pointer hover:scale-125 transition-transform z-20"
@@ -1651,10 +1803,20 @@ export default function Playbooks() {
                         </div>
                       );
                     })}
-                    {/* 连线模式提示 */}
-                    {connectingFrom && (
+                    {/* 连线模式提示 / 拖拽提示 / 操作反馈 */}
+                    {dragLine && (
+                      <div className="absolute top-3 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-primary/90 text-white text-xs rounded-full z-50 shadow-panel">
+                        松开鼠标完成连线 · Esc 取消
+                      </div>
+                    )}
+                    {!dragLine && connectingFrom && (
                       <div className="absolute top-3 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-primary/90 text-white text-xs rounded-full z-50">
                         点击目标节点完成连线，或点击画布取消
+                      </div>
+                    )}
+                    {canvasFlash && (
+                      <div className={`absolute top-12 left-1/2 -translate-x-1/2 px-3 py-1.5 text-white text-xs rounded-full z-50 shadow-panel ${canvasFlash.kind === 'warn' ? 'bg-warning-solid' : 'bg-success-solid'}`}>
+                        {canvasFlash.text}
                       </div>
                     )}
                   </div>
@@ -1799,7 +1961,7 @@ export default function Playbooks() {
                                             <button type="button" key={v.expr} title={v.expr}
                                               onClick={() => insertIntegrationRef(p.name, v.expr)}
                                               className="px-1.5 py-0.5 text-[10px] rounded bg-card-bg border border-border-color text-text-secondary hover:text-primary hover:border-primary transition-colors">
-                                              {v.label}
+                                              {renderVarLabel(v)}
                                             </button>
                                           ))}
                                         </div>
@@ -1849,7 +2011,7 @@ export default function Playbooks() {
                                             <button type="button" key={v.expr} title={v.expr}
                                               onClick={() => insertIntegrationRef(name, v.expr)}
                                               className="px-1.5 py-0.5 text-[10px] rounded bg-card-bg border border-border-color text-text-secondary hover:text-primary hover:border-primary transition-colors">
-                                              {v.label}
+                                              {renderVarLabel(v)}
                                             </button>
                                           ))}
                                         </div>
@@ -1929,7 +2091,7 @@ export default function Playbooks() {
                                               <button type="button" key={v.expr} title={v.expr}
                                                 onClick={() => insertActionParamRef(p.name, v.expr)}
                                                 className="px-1.5 py-0.5 text-[10px] rounded bg-card-bg border border-border-color text-text-secondary hover:text-primary hover:border-primary transition-colors">
-                                                {v.label}
+                                                {renderVarLabel(v)}
                                               </button>
                                             ))}
                                           </div>
@@ -2007,7 +2169,7 @@ export default function Playbooks() {
                                         <button type="button" key={v.expr} title={v.expr}
                                           onClick={() => insertRef(field.name, v.expr)}
                                           className="px-1.5 py-0.5 text-[10px] rounded bg-card-bg border border-border-color text-text-secondary hover:text-primary hover:border-primary transition-colors">
-                                          {v.label}
+                                          {renderVarLabel(v)}
                                         </button>
                                       ))}
                                     </div>
