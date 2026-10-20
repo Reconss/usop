@@ -10,7 +10,7 @@ import {
   Star, AlertCircle, Settings, PanelLeftClose, PanelLeft,
   RefreshCw, Layers, Lightbulb,
   ShieldCheck, Blocks, BookOpen, Radar, Gauge, Combine,
-  AtSign, Wrench, Upload, FileJson, Flag, Link2, Wifi, CheckCircle, ChevronRight, Database
+  AtSign, Wrench, Upload, FileJson, Flag, Link2, Wifi, CheckCircle, ChevronRight, Database, Square
 } from 'lucide-react';
 import { aiApi, request as apiRequest } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
@@ -59,6 +59,14 @@ const ROLE_LABELS: Record<string, string> = {
   operator: '安全运维', auditor: '审计员', viewer: '只读用户',
 };
 const MEMBER_COLORS = ['from-success to-success','from-warning to-warning','from-danger to-danger','from-accent to-accent','from-info to-info'];
+
+/* 编排意图 → 中文标签（用于在气泡上标注本轮走了哪条能力） */
+const INTENT_LABELS: Record<string,string> = {
+  batch_analysis:'批量研判', event_copilot:'事件协查', investigate:'攻击溯源',
+  skill_execute:'技能执行', threat_intel:'威胁情报', stats:'告警统计',
+  whitelist:'白名单', alert_analysis:'告警分析', triage:'分诊', respond:'响应',
+  nl_query:'数据查询', help:'使用帮助', fallback:'规则助手', general:'通用问答',
+};
 
 const ToastContainer: React.FC<{toasts:ToastItem[];onDismiss:(id:string)=>void}> = ({toasts,onDismiss}) => (
   <div className="fixed top-4 right-4 z-50 space-y-2 max-w-sm">
@@ -132,9 +140,11 @@ const AICenter: React.FC = () => {
   const [activeContact, setActiveContact] = useState<number>(0);
   const [showContacts, setShowContacts] = useState(true);
   const [selectedProvider, setSelectedProvider] = useState('');
-  const [messages, setMessages] = useState<{role:string;content:string;feedback?:'up'|'down'}[]>([]);
+  const [messages, setMessages] = useState<{role:string;content:string;feedback?:'up'|'down';intent?:string;time?:string}[]>([]);
   const [inputMsg, setInputMsg] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
+  const chatAbortRef = useRef<AbortController|null>(null);
+  const chatAccRef = useRef<string>('');
   const [teamChatWith, setTeamChatWith] = useState<number|string|null>(null);
   const [teamChats, setTeamChats] = useState<{[key:string]:{id:string;user:any;content:string;time:string}[]}>({});
   const [teamGroups, setTeamGroups] = useState<{id:string;name:string;members:number[];color:string;avatar:string}[]>([]);
@@ -229,19 +239,47 @@ const AICenter: React.FC = () => {
   const createSession = useCallback(async()=>{try{const r=await aiApi.createSession({title:`新会话 ${new Date().toLocaleTimeString()}`});if(r.success){setSessions(p=>[r.data,...p]);setActiveSessionId(r.data.id);setMessages([]);setShowSessionPanel(false);addToast('success','新会话已创建');}}catch{addToast('error','创建失败');}},[addToast]);
   const deleteSession = useCallback(async(id:string)=>{try{await aiApi.deleteSession(id);localStorage.removeItem('ai_activeSessionId');setSessions(p=>p.filter(s=>s.id!==id));if(activeSessionId===id){setActiveSessionId(null);setMessages([]);}addToast('success','已删除');}catch{addToast('error','删除失败');}},[activeSessionId,addToast]);
 
+  const stopChat = useCallback(()=>{
+    chatAbortRef.current?.abort();
+    chatAbortRef.current=null;
+    const acc=chatAccRef.current;
+    setChatLoading(false);
+    setStreamingContent('');
+    if(acc.trim()){
+      setMessages(p=>[...p,{role:'assistant',content:acc+'\n\n_（已手动停止）_',time:new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}]);
+    }
+    chatAccRef.current='';
+  },[]);
+
   const handleSend = useCallback(async()=>{
     if(!inputMsg.trim()){addToast('info','请输入消息');return;}
+    // 上一轮仍在流式则先中止，避免交错
+    chatAbortRef.current?.abort();
     let sid=activeSessionId;
     if(!sid){try{const r=await aiApi.createSession({title:inputMsg.slice(0,30)});if(r.success){sid=r.data.id;setActiveSessionId(sid);setSessions(p=>[r.data,...p]);}}catch{addToast('error','创建会话失败');return;}}
-    const userMsg={role:'user' as const,content:inputMsg};
+    const now=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+    const userMsg={role:'user' as const,content:inputMsg,time:now};
     setMessages(p=>[...p,userMsg]);setInputMsg('');setChatLoading(true);setStreamingContent('');
-    try{
-      // LangGraph 编排
-        const r=await aiApi.orchestrate({query:inputMsg,session_id:sid||undefined});
-        if(r.success){const reply=r.data?.response||'无响应';let idx=0;const iv=setInterval(()=>{idx+=3;if(idx>=reply.length){clearInterval(iv);setStreamingContent('');setMessages(p=>[...p,{role:'assistant',content:reply}]);setChatLoading(false);}else setStreamingContent(reply.slice(0,idx));},20);}
-        else{setChatLoading(false);addToast('error','编排失败');}
-    }catch(e:any){setChatLoading(false);setMessages(p=>[...p,{role:'assistant',content:`请求失败: ${e.message}`}]);addToast('error',e.message);}
-  },[inputMsg,selectedProvider,activeSessionId,messages,addToast]);
+    chatAccRef.current='';
+    const ctrl=aiApi.orchestrateStream(
+      {query:userMsg.content,session_id:sid||undefined},
+      {
+        onChunk:(c)=>{chatAccRef.current+=c;setStreamingContent(chatAccRef.current);},
+        onDone:(meta)=>{
+          const acc=chatAccRef.current||'（无响应）';
+          setStreamingContent('');
+          setMessages(p=>[...p,{role:'assistant',content:acc,intent:meta?.intent,time:new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}]);
+          setChatLoading(false);
+          chatAbortRef.current=null;chatAccRef.current='';
+        },
+        onError:(e)=>{setChatLoading(false);setStreamingContent('');setMessages(p=>[...p,{role:'assistant',content:`⚠️ ${e}`,time:new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}]);chatAbortRef.current=null;chatAccRef.current='';},
+      }
+    );
+    chatAbortRef.current=ctrl;
+  },[inputMsg,activeSessionId,addToast]);
+
+  // 卸载时中止进行中的流式请求
+  useEffect(()=>()=>{chatAbortRef.current?.abort();},[]);
 
   const handleFeedback = useCallback(async(i:number,t:'up'|'down')=>{setMessages(p=>p.map((m,j)=>j===i?{...m,feedback:t}:m));try{await aiApi.recordFeedback({message_index:i,feedback:t});addToast('success',t==='up'?'感谢反馈':'已记录');}catch{}},[addToast]);
 
@@ -788,6 +826,9 @@ function renderCapabilities() {
                 <div className={'flex flex-col '+(m.role==='user'?'items-end':'items-start')+' max-w-[75%]'}>
                   <div className="flex items-center gap-2 mb-0.5 px-1">
                     <span className="text-[10px] font-medium text-text-muted/60">{m.role==='user'?user?.username||'管理员':'AI 分析助手'}</span>
+                    {m.role==='assistant'&&m.intent&&(
+                      <span className="px-1.5 py-0.5 rounded-md text-[8px] font-medium bg-accent/10 text-accent border border-accent/20">{INTENT_LABELS[m.intent]||m.intent}</span>
+                    )}
                     <span className="text-[8px] text-text-muted/30">{m.time||''}</span>
                   </div>
                   <div className={'px-4 py-2.5 text-sm leading-relaxed '+
@@ -905,13 +946,14 @@ function renderCapabilities() {
                   disabled={chatLoading}
                   className="w-full chat-input px-4 py-2.5 bg-page-bg border border-border-color rounded-card text-sm text-text-primary placeholder:text-text-muted/40 disabled:opacity-50 focus:border-accent/50 focus:ring-1 focus:ring-accent/20 transition-all outline-none" />
               </div>
-              <button onClick={handleSendMessage} 
-                disabled={!inputMsg.trim()||chatLoading}
-                className="px-5 py-2.5 bg-gradient-to-br from-accent to-accent text-white rounded-card text-sm font-medium disabled:opacity-40 hover:from-accent hover:to-accent transition-all active:scale-95 flex items-center gap-1.5 shadow-panel shadow-card">
+              <button onClick={chatLoading?stopChat:handleSendMessage}
+                disabled={chatLoading?false:!inputMsg.trim()}
+                className={"px-5 py-2.5 text-white rounded-card text-sm font-medium transition-all active:scale-95 flex items-center gap-1.5 shadow-panel shadow-card "+(chatLoading?'bg-danger-solid hover:bg-danger-solid-hover':'bg-gradient-to-br from-accent to-accent hover:from-accent hover:to-accent disabled:opacity-40')}
+                title={chatLoading?'停止生成':'发送'}>
                 {chatLoading
-                  ? <Loader2 className="w-4 h-4 animate-spin"/>
+                  ? <Square className="w-4 h-4"/>
                   : <Send className="w-4 h-4"/>
-                }<span className="hidden sm:inline">发送</span>
+                }<span className="hidden sm:inline">{chatLoading?'停止':'发送'}</span>
               </button>
             </div>
           </div>

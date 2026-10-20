@@ -1078,195 +1078,9 @@ def cron_analyze_alerts():
     result = run_batch_judgment(limit=50)
     return jsonify(result)
 
-@ai_api_bp.route('/orchestrate', methods=['POST'])
-@login_required
-def orchestrate():
-    """AI 编排入口 — 意图识别 → 执行动作 / LLM 分析"""
-    data = request.get_json() or {}
-    query = data.get('query', '')
-    session_id = data.get('session_id', '')
-    if not query:
-        return jsonify({'success': False, 'error': '缺少 query'}), 400
-
-    # 保存用户消息到会话
-    if session_id:
-        try:
-            from app.models import AIChatSession as ChatSess
-            sess = ChatSess.query.get(session_id)
-            if sess:
-                msgs = sess.messages or []
-                msgs.append({'role': 'user', 'content': query, 'time': datetime.utcnow().isoformat()})
-                sess.messages = msgs
-                db.session.commit()
-        except: pass
-
-    q = query.lower().strip()
-
-    # 从原始查询中提取事件编号（保持原始大小写）
-    event_code_raw = ''
-    for prefix in ['事件','协查','调查','事件编号','追踪','溯源','inc','evt']:
-        idx = query.find(prefix)
-        if idx >= 0:
-            after = query[idx+len(prefix):].strip().split()[0] if query[idx+len(prefix):].strip() else ''
-            if after and len(after) > 3:
-                event_code_raw = after
-                break
-
-    # ===== 动作型指令：直接执行实际功能 =====
-    # 批量研判告警（与「AI 中心 → 告警监控」同一实现）
-    if any(k in q for k in ['定时分析','批量分析','分析告警','运行分析','安全告警','告警分析','分析最近','分析告警数据','查看告警','查看安全告警']):
-        from app.routes.ai_judgment import run_batch_judgment
-        result = run_batch_judgment(limit=50)
-        if result.get('success'):
-            reply = f"✅ 分析完成！\n- 已分析: {result.get('analyzed',0)} 条\n- 创建事件: {result.get('events_created',0)} 个\n- 标记误报: {result.get('false_positives',0)} 条\n- {result.get('message','')}"
-            if session_id:
-                try:
-                    from app.models import AIChatSession as ChatSess
-                    sess = ChatSess.query.get(session_id)
-                    if sess:
-                        msgs = sess.messages or []
-                        msgs.append({'role': 'assistant', 'content': reply, 'time': datetime.utcnow().isoformat()})
-                        sess.messages = msgs
-                        db.session.commit()
-                except: pass
-            return jsonify({'success': True, 'data': {
-                'response': reply,
-                'session_id': session_id, 'intent': 'batch_analysis', 'orchestrator': 'action'
-            }})
-        return jsonify({'success': False, 'error': result.get('error','分析失败')}), 500
-
-    # 事件协查分析
-    if event_code_raw or any(k in q for k in ['事件分析','协查事件','分析事件']):
-        event_code = event_code_raw
-        from app.ai_analysis.event_copilot import analyze_event
-        result = analyze_event(event_code) if event_code else {"success":False,"error":"请输入事件编号"}
-        if result.get('success'):
-            analysis = result.get('data',{}).get('analysis',{})
-            related = result.get('data',{}).get('related_alerts',[])
-            alert_list = '\n'.join([f"- [{a.get('severity','')}] {a.get('alert_code','')}: {a.get('title','')}" for a in related[:5]]) or '无关联告警'
-            actions = '\n'.join([f"  {i+1}. {a}" for i,a in enumerate(analysis.get('recommended_actions',[]))]) or '无'
-            return jsonify({'success': True, 'data': {
-                'response': f"## 事件分析报告: {event_code or result.get('data',{}).get('event_code','')}\n\n"
-                           f"**评价**: {analysis.get('event_assessment','')}\n"
-                           f"**攻击类型**: {analysis.get('attack_type','')}\n"
-                           f"**严重度**: {analysis.get('severity_assessment','')}\n\n"
-                           f"**关联告警**:\n{alert_list}\n\n"
-                           f"**处置建议**:\n{actions}\n\n"
-                           f"**后续调查**: {analysis.get('investigation_direction','')}",
-                'session_id': session_id, 'intent': 'event_copilot', 'orchestrator': 'action'
-            }})
-        return jsonify({'success': False, 'error': result.get('error','分析失败')}), 500
-
-    # 攻击链溯源
-    if any(k in q for k in ['攻击链','溯源','att&ck','mitre','时间线']):
-        code = event_code_raw or ''
-        if code:
-            from app.ai_analysis.investigation import investigate
-            result = investigate(code)
-            if result.get('success'):
-                d = result.get('data',{})
-                chain = '\n'.join([f"  **{s.get('step','')}.** {s.get('action','')} ({s.get('technique','')})" for s in d.get('attack_chain',[])]) or '无'
-                timeline = '\n'.join([f"  - {t.get('time','')}: {t.get('event','')}" for t in d.get('timeline',[])]) or '无'
-                recs = '\n'.join([f"  {i+1}. {r}" for i,r in enumerate(d.get('recommendations',[]))]) or '无'
-                return jsonify({'success': True, 'data': {
-                    'response': f"## 溯源分析: {code}\n\n"
-                               f"**结论**: {d.get('summary','')}\n\n"
-                               f"**攻击链**:\n{chain}\n\n"
-                               f"**时间线**:\n{timeline}\n\n"
-                               f"**建议**:\n{recs}",
-                    'session_id': session_id, 'intent': 'investigate', 'orchestrator': 'action'
-                }})
-            return jsonify({'success': False, 'error': result.get('error','分析失败')}), 500
-        return jsonify({'success': True, 'data': {
-            'response': '请输入事件编号，例如：追踪事件 INC-20240523 的攻击链',
-            'session_id': session_id, 'intent': 'investigate', 'orchestrator': 'direct'
-        }})
-
-    # ===== 技能执行：封禁IP/隔离主机/查询情报 =====
-    if any(k in q for k in ['封禁','block','拉黑','屏蔽']):
-        import re as _re
-        ip_match = _re.search(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})', query)
-        if ip_match:
-            from app.ai_analysis.approval import create_action
-            ip = ip_match.group(1)
-            pending = create_action("block_ip", {"ip": ip, "reason": "AI自动封禁", "duration": 1440})
-            return jsonify({'success': True, 'data': {
-                'response': f"📋 **封禁IP {ip} 需要审批**\n\n"
-                           f"操作已提交等待审批。\n"
-                           f"审批编号: `{pending['id']}`\n\n"
-                           f"请前往 **AI 配置 → 审批管理** 确认或拒绝此操作。",
-                'session_id': session_id, 'intent': 'skill_execute',
-                'pending_action_id': pending['id'],
-                'orchestrator': 'pending_approval'
-            }})
-        return jsonify({'success': True, 'data': {
-            'response': '请提供要封禁的IP地址，例如：封禁IP 192.168.1.1',
-            'session_id': session_id, 'intent': 'skill_execute', 'orchestrator': 'direct'
-        }})
-
-    if any(k in q for k in ['隔离','isolate']):
-        import re as _re
-        host_match = _re.search(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|[\w-]+)', query)
-        if host_match:
-            host = host_match.group(1)
-            if host in ('封禁','block','拉黑','屏蔽','ip','隔离','主机'): host = ''
-            if host and len(host) > 2:
-                from app.ai_analysis.approval import create_action
-                pending = create_action("isolate_host", {"host_id": host, "reason": "AI自动隔离"})
-                return jsonify({'success': True, 'data': {
-                    'response': f"📋 **隔离主机 {host} 需要审批**\n\n"
-                               f"操作已提交等待审批。\n"
-                               f"审批编号: `{pending['id']}`\n\n"
-                               f"请前往 **AI 配置 → 审批管理** 确认或拒绝此操作。",
-                    'session_id': session_id, 'intent': 'skill_execute',
-                    'pending_action_id': pending['id'],
-                    'orchestrator': 'pending_approval'
-                }})
-
-    if any(k in q for k in ['查询.*情报','情报.*查询','威胁情报','ip.*查询','ip.*分析']) and any(k in q for k in ['.']):
-        import re as _re
-        ip_match = _re.search(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})', query)
-        if ip_match:
-            from app.ai_analysis.skill_registry import get_skill_registry
-            reg = get_skill_registry()
-            result = reg.execute('query_ip_reputation', {'ip': ip_match.group(1)})
-            if result.get('success'):
-                rep = result.get('reputation', {})
-                return jsonify({'success': True, 'data': {
-                    'response': f"## IP 威胁情报: {result.get('ip','')}\n\n"
-                               f"**标签**: {', '.join(rep.get('tags',[]))}\n"
-                               f"**国家**: {rep.get('country','')}\n"
-                               f"**ASN**: {rep.get('asn','')}\n"
-                               f"**置信度**: {rep.get('confidence','')}",
-                    'session_id': session_id, 'intent': 'threat_intel', 'orchestrator': 'action'
-                }})
-
-    # ===== 对话型指令：调用 LLM 生成回复 =====
-    # 简单问候
-    simple = ['你好', 'hi', 'hello', 'help', '帮助', '功能']
-    if any(p in q for p in simple):
-        return jsonify({'success': True, 'data': {
-            'response': '👋 你好！我是安全分析助手。\n\n'
-                       '**我可以执行以下操作：**\n'
-                       '• 输入 **分析告警** → 批量分析数据库中未处理的告警\n'
-                       '• 输入 **分析事件 INC-xxx** → 协查安全事件\n'
-                       '• 输入 **追踪 INC-xxx 的攻击链** → 溯源分析\n'
-                       '• 输入 **查看白名单** → 查看告警白名单规则\n'
-                       '• 输入 **封禁IP 1.2.3.4** → 执行IP封禁\n'
-                       '• 直接描述安全相关问题 → AI 分析回答',
-            'session_id': session_id, 'orchestrator': 'direct'
-        }})
-
-    # 意图识别（仅用于 LLM 回复）
-    intent = 'general'
-    if any(k in q for k in ['告警','alert','高危','异常']): intent = 'alert_analysis'
-    elif any(k in q for k in ['分诊','误报','优先级']): intent = 'triage'
-    elif any(k in q for k in ['情报','ioc','ip','threat']): intent = 'threat_intel'
-    elif any(k in q for k in ['响应','封禁','隔离','block','处置']): intent = 'respond'
-    elif any(k in q for k in ['查询','最近','过去','列出','搜索']): intent = 'nl_query'
-
-    system_prompts = {
-        'alert_analysis': '''你是USOP安全运营平台的专业安全告警分析师。
+# ==================== 编排辅助：对话记忆 / 意图 / 流式 ====================
+_ORCH_SYSTEM_PROMPTS = {
+    'alert_analysis': '''你是USOP安全运营平台的专业安全告警分析师。
 你的职责是根据用户提供的告警信息或数据库中的告警数据进行分析：
 1. 评估每条告警的风险等级（CRITICAL/HIGH/MEDIUM/LOW）
 2. 判断是否为真实攻击还是误报
@@ -1276,7 +1090,7 @@ def orchestrate():
 
 回复格式建议：先给出总体评估，然后逐条分析告警。''',
 
-        'triage': '''你是USOP安全运营平台的告警分诊专家。
+    'triage': '''你是USOP安全运营平台的告警分诊专家。
 你的职责是对告警进行优先级排序和误报分析：
 1. 评估误报概率（high/medium/low）
 2. 基于告警类型、来源IP信誉、历史行为等综合判断
@@ -1285,7 +1099,7 @@ def orchestrate():
 
 注意：如果用户请求「批量分析告警」或「分诊告警」，系统会自动调用数据库分析函数，不需要你处理。''',
 
-        'threat_intel': '''你是USOP安全运营平台的威胁情报分析师。
+    'threat_intel': '''你是USOP安全运营平台的威胁情报分析师。
 你的职责是分析IP地址、域名、URL等威胁指标：
 1. 查询IP/域名的威胁情报信息
 2. 分析关联的攻击事件和历史行为
@@ -1294,7 +1108,7 @@ def orchestrate():
 
 你可以分析的指标类型：IP地址、域名、URL、文件哈希、邮箱地址。''',
 
-        'respond': '''你是USOP安全运营平台的自动化响应专家。
+    'respond': '''你是USOP安全运营平台的自动化响应专家。
 你的职责是根据安全事件的风险等级自动决定处置动作：
 1. CRITICAL级别：建议立即封禁IP、隔离主机
 2. HIGH级别：建议封禁IP、终止进程
@@ -1303,7 +1117,7 @@ def orchestrate():
 
 注意：封禁IP和隔离主机等高风险操作需要创建审批流程等待审批。安全等级较低的操作可以自动执行。''',
 
-        'nl_query': '''你是USOP安全运营平台的数据查询专家。
+    'nl_query': '''你是USOP安全运营平台的数据查询专家。
 你可以帮助用户查询和理解安全数据：
 1. 解释安全事件和告警的含义
 2. 说明安全术语和攻击技术
@@ -1312,7 +1126,7 @@ def orchestrate():
 
 注意：如果你需要查询数据库但无法直接连接，请引导用户使用具体功能。''',
 
-        'general': '''你是USOP安全运营平台的AI安全分析助手。
+    'general': '''你是USOP安全运营平台的AI安全分析助手。
 你可以帮助安全运营团队完成以下工作：
 1. 🚨 告警分析：评估风险、识别误报、给出处置建议
 2. 🔍 事件调查：分析安全事件、追溯攻击链
@@ -1325,55 +1139,365 @@ def orchestrate():
 - 专业、简洁、条理清晰
 - 使用Markdown格式美化回复
 - 给出可操作的结论和建议
-- 不确定的信息请明确说明'''
-    }
+- 不确定的信息请明确说明''',
+}
 
-    # LLM 调用（优先使用系统配置的默认 LLM 提供商）
-    llm_config = None
+
+def _orch_extract_ipv4(text: str) -> str:
+    """从任意文本中提取第一个合法 IPv4。"""
+    if not text:
+        return ''
+    for m in re.finditer(r'(?<![\d.])(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?![\d.])', text):
+        parts = m.group(1).split('.')
+        if len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
+            return m.group(1)
+    return ''
+
+
+def _orch_extract_event_code(query: str) -> str:
+    """从原始查询中提取事件编号（保持原始大小写）。"""
+    if not query:
+        return ''
+    for prefix in ['事件', '协查', '调查', '事件编号', '追踪', '溯源', 'inc', 'evt']:
+        idx = query.find(prefix)
+        if idx >= 0:
+            rest = query[idx + len(prefix):].strip()
+            after = rest.split()[0] if rest else ''
+            if after and len(after) > 3:
+                return after
+    return ''
+
+
+def _orch_append_msg(session_id, role, content):
+    """追加一条消息到会话（JSON 列需 flag_modified 才能可靠持久化）。"""
+    if not session_id or content is None:
+        return
+    try:
+        from app.models import AIChatSession as ChatSess
+        from sqlalchemy.orm.attributes import flag_modified
+        sess = ChatSess.query.get(session_id)
+        if not sess:
+            return
+        msgs = list(sess.messages or [])
+        msgs.append({'role': role, 'content': content, 'time': datetime.utcnow().isoformat()})
+        sess.messages = msgs
+        flag_modified(sess, 'messages')
+        sess.updated_at = datetime.utcnow()
+        db.session.commit()
+    except Exception:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+
+
+def _orch_load_history(session_id, exclude_last=True, limit=12):
+    """读取会话历史（滑窗）作为 LLM 多轮上下文。"""
+    if not session_id:
+        return []
+    try:
+        from app.models import AIChatSession as ChatSess
+        sess = ChatSess.query.get(session_id)
+        if not sess:
+            return []
+        msgs = list(sess.messages or [])
+        # 排除刚追加的当前用户提问，避免与末尾 user 消息重复
+        if exclude_last and msgs and msgs[-1].get('role') == 'user':
+            msgs = msgs[:-1]
+        out = []
+        for m in msgs[-limit:]:
+            role = m.get('role')
+            content = (m.get('content') or '').strip()
+            if role in ('user', 'assistant') and content:
+                out.append({'role': role, 'content': content})
+        return out
+    except Exception:
+        return []
+
+
+def _orch_detect_intent(q: str) -> str:
+    if any(k in q for k in ['告警', 'alert', '高危', '异常']):
+        return 'alert_analysis'
+    if any(k in q for k in ['分诊', '误报', '优先级']):
+        return 'triage'
+    if any(k in q for k in ['情报', 'ioc', 'threat', 'ip']):
+        return 'threat_intel'
+    if any(k in q for k in ['响应', '封禁', '隔离', 'block', '处置']):
+        return 'respond'
+    if any(k in q for k in ['查询', '最近', '过去', '列出', '搜索']):
+        return 'nl_query'
+    return 'general'
+
+
+def _orch_sse(text, session_id, intent, meta=None):
+    """把最终回复以 SSE 分块推送（复用前端 readSSEStream 约定的帧格式）。"""
+    def gen():
+        step = 48
+        for i in range(0, len(text or ''), step):
+            frame = json.dumps({'content': text[i:i + step], 'done': False}, ensure_ascii=False)
+            yield f"data: {frame}\n\n"
+        tail = json.dumps({'content': '', 'done': True, 'session_id': session_id,
+                           'intent': intent, **(meta or {})}, ensure_ascii=False)
+        yield f"data: {tail}\n\n"
+    return Response(stream_with_context(gen()), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+
+def _orch_route(query, q, ip, event_code_raw, history):
+    """意图路由：返回 {success, response, intent, meta, status?, error?}。"""
+    # —— 批量研判（与「AI 中心 → 告警监控」同一实现）——
+    if any(k in q for k in ['定时分析', '批量分析', '分析告警', '运行分析', '安全告警', '告警分析',
+                            '分析最近', '分析告警数据', '查看告警', '查看安全告警']):
+        from app.routes.ai_judgment import run_batch_judgment
+        result = run_batch_judgment(limit=50)
+        if result.get('success'):
+            reply = (f"✅ 批量研判完成！\n- 已分析: {result.get('analyzed', 0)} 条\n"
+                     f"- 创建事件: {result.get('events_created', 0)} 个\n"
+                     f"- 标记误报: {result.get('false_positives', 0)} 条\n- {result.get('message', '')}")
+            return {'success': True, 'response': reply, 'intent': 'batch_analysis', 'meta': {'orchestrator': 'action'}}
+        return {'success': False, 'error': result.get('error', '分析失败'), 'status': 500}
+
+    # —— 白名单查看 ——
+    if '白名单' in query:
+        try:
+            from app.ai_analysis.whitelist import get_rules
+            rules = get_rules()
+        except Exception as e:
+            logger.warning(f'orchestrate 白名单查询失败: {e}')
+            rules = []
+        lines = []
+        for r in rules:
+            conds = r.get('conditions', [])
+            if isinstance(conds, list):
+                cond_str = ' 且 '.join(
+                    f"{c.get('field')} {c.get('op', 'eq')} {c.get('value')}"
+                    for c in conds if isinstance(c, dict)
+                ) or '（无条件）'
+            else:
+                cond_str = str(conds)
+            lines.append(f"- **{r.get('name', '')}**：{cond_str} → {r.get('reason', '')}")
+        reply = (f"## 告警白名单规则（共 {len(rules)} 条）\n\n" + ('\n'.join(lines) or '暂无规则')
+                 + "\n\n> 命中白名单的告警会在采集分流阶段被判定为无效告警，不进入后续研判。")
+        return {'success': True, 'response': reply, 'intent': 'whitelist', 'meta': {'orchestrator': 'action'}}
+
+    # —— 告警统计 / 安全态势（真实 ES 数据）——
+    if any(k in q for k in ['告警统计', '安全态势', '当前态势', '多少告警', '告警汇总', '告警概览',
+                            '态势', '统计数据', '统计一下', '告警数量', '统计报告']):
+        try:
+            from app.utils import es_alerts
+            st = es_alerts.get_stats()
+        except Exception as e:
+            return {'success': False, 'error': f'统计数据获取失败: {e}', 'status': 503}
+        if st.get('error'):
+            return {'success': False, 'error': f"统计数据获取失败: {st['error']}", 'status': 503}
+        sev = st.get('by_severity', {}) or {}
+        status = st.get('by_status', {}) or {}
+        total = st.get('total', 0)
+        high = sev.get('critical', 0) + sev.get('high', 0)
+        sev_lines = '\n'.join(f"  - {k or '未分级'}: {v}" for k, v in sorted(sev.items(), key=lambda x: -x[1])) or '  （无）'
+        st_lines = '\n'.join(f"  - {k or '未知'}: {v}" for k, v in sorted(status.items(), key=lambda x: -x[1])) or '  （无）'
+        reply = (f"## 当前告警态势（有效告警库）\n\n"
+                 f"- **告警总数**：{total}\n- **高危及以上**：{high}\n\n"
+                 f"**按严重度**：\n{sev_lines}\n\n**按状态**：\n{st_lines}\n\n"
+                 f"> 输入「分析告警」可对未闭环告警执行批量研判。")
+        return {'success': True, 'response': reply, 'intent': 'stats', 'meta': {'orchestrator': 'action'}}
+
+    # —— 事件协查分析 ——
+    if event_code_raw or any(k in q for k in ['事件分析', '协查事件', '分析事件']):
+        event_code = event_code_raw
+        from app.ai_analysis.event_copilot import analyze_event
+        result = analyze_event(event_code) if event_code else {"success": False, "error": "请输入事件编号"}
+        if result.get('success'):
+            analysis = result.get('data', {}).get('analysis', {})
+            related = result.get('data', {}).get('related_alerts', [])
+            alert_list = '\n'.join(
+                [f"- [{a.get('severity', '')}] {a.get('alert_code', '')}: {a.get('title', '')}" for a in related[:5]]
+            ) or '无关联告警'
+            actions = '\n'.join([f"  {i + 1}. {a}" for i, a in enumerate(analysis.get('recommended_actions', []))]) or '无'
+            return {'success': True, 'response': (
+                f"## 事件分析报告: {event_code or result.get('data', {}).get('event_code', '')}\n\n"
+                f"**评价**: {analysis.get('event_assessment', '')}\n"
+                f"**攻击类型**: {analysis.get('attack_type', '')}\n"
+                f"**严重度**: {analysis.get('severity_assessment', '')}\n\n"
+                f"**关联告警**:\n{alert_list}\n\n**处置建议**:\n{actions}\n\n"
+                f"**后续调查**: {analysis.get('investigation_direction', '')}"
+            ), 'intent': 'event_copilot', 'meta': {'orchestrator': 'action'}}
+        return {'success': False, 'error': result.get('error', '分析失败'), 'status': 500}
+
+    # —— 攻击链溯源 ——
+    if any(k in q for k in ['攻击链', '溯源', 'att&ck', 'mitre', '时间线']):
+        code = event_code_raw or ''
+        if code:
+            from app.ai_analysis.investigation import investigate
+            result = investigate(code)
+            if result.get('success'):
+                d = result.get('data', {})
+                chain = '\n'.join(
+                    [f"  **{s.get('step', '')}.** {s.get('action', '')} ({s.get('technique', '')})"
+                     for s in d.get('attack_chain', [])]) or '无'
+                timeline = '\n'.join(
+                    [f"  - {t.get('time', '')}: {t.get('event', '')}" for t in d.get('timeline', [])]) or '无'
+                recs = '\n'.join([f"  {i + 1}. {r}" for i, r in enumerate(d.get('recommendations', []))]) or '无'
+                return {'success': True, 'response': (
+                    f"## 溯源分析: {code}\n\n**结论**: {d.get('summary', '')}\n\n"
+                    f"**攻击链**:\n{chain}\n\n**时间线**:\n{timeline}\n\n**建议**:\n{recs}"
+                ), 'intent': 'investigate', 'meta': {'orchestrator': 'action'}}
+            return {'success': False, 'error': result.get('error', '分析失败'), 'status': 500}
+        return {'success': True, 'response': '请输入事件编号，例如：追踪事件 INC-20240523 的攻击链',
+                'intent': 'investigate', 'meta': {'orchestrator': 'direct'}}
+
+    # —— 封禁 IP（需审批）——
+    if any(k in q for k in ['封禁', 'block', '拉黑', '屏蔽']):
+        if ip:
+            from app.ai_analysis.approval import create_action
+            pending = create_action("block_ip", {"ip": ip, "reason": "AI自动封禁", "duration": 1440})
+            return {'success': True, 'response': (
+                f"📋 **封禁IP {ip} 需要审批**\n\n操作已提交等待审批。\n审批编号: `{pending['id']}`\n\n"
+                f"请前往 **AI 配置 → 审批管理** 确认或拒绝此操作。"
+            ), 'intent': 'skill_execute',
+                'meta': {'orchestrator': 'pending_approval', 'pending_action_id': pending['id']}}
+        return {'success': True, 'response': '请提供要封禁的IP地址，例如：封禁IP 192.168.1.1',
+                'intent': 'skill_execute', 'meta': {'orchestrator': 'direct'}}
+
+    # —— 隔离主机（需审批）——
+    if any(k in q for k in ['隔离', 'isolate']):
+        import re as _re
+        host_match = _re.search(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|[\w-]+)', query)
+        if host_match:
+            host = host_match.group(1)
+            if host in ('封禁', 'block', '拉黑', '屏蔽', 'ip', '隔离', '主机'):
+                host = ''
+            if host and len(host) > 2:
+                from app.ai_analysis.approval import create_action
+                pending = create_action("isolate_host", {"host_id": host, "reason": "AI自动隔离"})
+                return {'success': True, 'response': (
+                    f"📋 **隔离主机 {host} 需要审批**\n\n操作已提交等待审批。\n审批编号: `{pending['id']}`\n\n"
+                    f"请前往 **AI 配置 → 审批管理** 确认或拒绝此操作。"
+                ), 'intent': 'skill_execute',
+                    'meta': {'orchestrator': 'pending_approval', 'pending_action_id': pending['id']}}
+
+    # —— 威胁情报（IP + 情报关键词，附带本平台真实关联告警）——
+    if ip and any(k in q for k in ['情报', '威胁', 'reputation', '信誉', '查询ip', 'ip查询',
+                                   '这个ip', '该ip', '此ip', '查一下']):
+        from app.ai_analysis.skill_registry import get_skill_registry
+        reg = get_skill_registry()
+        result = reg.execute('query_ip_reputation', {'ip': ip})
+        if result.get('success'):
+            rep = result.get('reputation', {})
+            src_note = '' if result.get('source') != 'mock' else \
+                '\n\n> ⚠️ 未配置外部情报源（THREAT_INTEL_API），标签/ASN 为内置示例，仅供演示。'
+            related_txt = ''
+            try:
+                from app.utils import es_alerts
+                rel = es_alerts.search_alerts(query_string=f'src_ip:{ip}', page_size=5)
+                items = rel.get('items', []) if isinstance(rel, dict) else []
+                rel_total = rel.get('total', 0) if isinstance(rel, dict) else 0
+                if items:
+                    lines = [f"- [{a.get('severity', '')}] {a.get('alert_code', '')}: {a.get('title', '')}"
+                             for a in items[:5]]
+                    related_txt = f"\n\n**本平台关联告警（共 {rel_total} 条）**:\n" + '\n'.join(lines)
+                else:
+                    related_txt = "\n\n**本平台关联告警**：暂无（该 IP 未在有效告警库中作为源出现）"
+            except Exception:
+                related_txt = ''
+            return {'success': True, 'response': (
+                f"## IP 威胁情报: {ip}\n\n"
+                f"**标签**: {', '.join(rep.get('tags', [])) or '无'}\n"
+                f"**国家/地区**: {rep.get('country', '')}\n"
+                f"**ASN**: {rep.get('asn', '')}\n"
+                f"**组织**: {rep.get('org', '')}\n"
+                f"**置信度**: {rep.get('confidence', '')}{related_txt}{src_note}"
+            ), 'intent': 'threat_intel', 'meta': {'orchestrator': 'action'}}
+        return {'success': False, 'error': result.get('error', '情报查询失败'), 'status': 500}
+
+    # —— 问候 / 帮助 ——
+    cn_greet = ['你好', '您好', '帮助', '功能', '你能做什么', '你会什么', '使用说明', '怎么用', '如何用']
+    en_greet = ['hi', 'hello', 'hey']
+    is_greet = any(g in q for g in cn_greet) or any(re.search(rf'(?<![a-z]){g}(?![a-z])', q) for g in en_greet)
+    if is_greet:
+        return {'success': True, 'response': (
+            '👋 你好！我是 USOP 安全分析助手。\n\n**我可以执行以下操作：**\n'
+            '• 「分析告警」→ 批量研判未闭环告警\n'
+            '• 「告警统计」→ 查看当前告警态势\n'
+            '• 「查询IP 1.2.3.4 的威胁情报」→ IP 情报 + 本平台关联告警\n'
+            '• 「分析事件 EVT-xxx」→ 协查安全事件\n'
+            '• 「追踪 EVT-xxx 的攻击链」→ 溯源分析\n'
+            '• 「封禁IP 1.2.3.4」→ 提交封禁审批\n'
+            '• 「查看白名单」→ 查看误报规则\n'
+            '• 直接描述安全问题 → AI 分析回答'
+        ), 'intent': 'help', 'meta': {'orchestrator': 'direct'}}
+
+    # —— 对话型：LLM 生成（带多轮记忆，失败优雅降级为规则助手）——
+    intent = _orch_detect_intent(q)
+    system_prompt = _ORCH_SYSTEM_PROMPTS.get(intent, _ORCH_SYSTEM_PROMPTS['general'])
+    if intent in ('threat_intel', 'nl_query'):
+        system_prompt += '\n\n如需数据库查询但无法直接连接，请引导用户使用「分析告警」「告警统计」或输入具体事件编号。'
+    llm_messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": query}]
     try:
         api_base, api_key, model = _get_system_llm_config()
-        if api_base:
-            llm_config = {'base_url': api_base, 'api_key': api_key, 'model': model}
-    except: pass
-
-    try:
-        system_prompt = system_prompts.get(intent, system_prompts['general'])
-        if intent in ('threat_intel','nl_query'):
-            system_prompt += '\n\n如果你需要查询数据库但无法直接连接，请引导用户使用具体功能，如「分析告警」或「输入事件编号进行分析」。'
-
-        if llm_config:
-            import requests as http_requests
-            resp = http_requests.post(f'{llm_config.get("base_url", "")}/chat/completions',
-                headers={'Authorization': f'Bearer {llm_config.get("api_key", "")}', 'Content-Type': 'application/json'},
-                json={'model': llm_config.get('model', 'deepseek-chat'), 'messages': [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": query}
-                ], 'temperature': 0.3}, timeout=60)
-            resp.raise_for_status()
-            result = resp.json()
-        else:
-            result = _deepseek_request(messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": query}
-            ], temperature=0.3)
-        reply = result.get("choices", [{}])[0].get("message", {}).get("content", "")
-        # 保存 AI 回复到会话
-        if session_id:
-            try:
-                from app.models import AIChatSession as ChatSess
-                sess = ChatSess.query.get(session_id)
-                if sess:
-                    msgs = sess.messages or []
-                    msgs.append({'role': 'assistant', 'content': reply, 'time': datetime.utcnow().isoformat()})
-                    sess.messages = msgs
-                    db.session.commit()
-            except: pass
-        return jsonify({'success': True, 'data': {
-            'response': reply, 'session_id': session_id,
-            'intent': intent, 'orchestrator': 'llm'
-        }})
+        if not api_base:
+            api_base = _get_api_base()
+            api_key = DEEPSEEK_API_KEY
+            model = DEEPSEEK_MODEL
+        resp = http_requests.post(
+            f'{api_base}/chat/completions',
+            headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+            json={'model': model, 'messages': llm_messages, 'temperature': 0.3, 'max_tokens': 2048},
+            timeout=60,
+        )
+        resp.raise_for_status()
+        reply = resp.json().get('choices', [{}])[0].get('message', {}).get('content', '') or ''
+        if not reply.strip():
+            raise ValueError('模型返回空内容')
+        return {'success': True, 'response': reply, 'intent': intent, 'meta': {'orchestrator': 'llm'}}
     except Exception as e:
-        return jsonify({'success': False, 'error': f'分析失败: {str(e)}'}), 500
+        logger.warning(f'orchestrate LLM 调用失败，降级为规则助手: {e}')
+        return {'success': True, 'response': (
+            '⚠️ 大模型当前不可用，已临时切换为**规则助手**。你可以直接使用以下能力：\n'
+            '• 「分析告警」批量研判未闭环告警\n'
+            '• 「告警统计」查看当前态势\n'
+            '• 「查询IP 1.2.3.4 的威胁情报」\n'
+            '• 「封禁IP 1.2.3.4」提交封禁审批\n'
+            '• 「分析事件 EVT-xxx」协查事件\n'
+            '• 「查看白名单」查看误报规则\n\n'
+            f'（技术细节：{str(e)[:120]}）'
+        ), 'intent': 'fallback', 'meta': {'orchestrator': 'fallback', 'llm_error': str(e)[:200]}}
+
+
+@ai_api_bp.route('/orchestrate', methods=['POST'])
+@login_required
+def orchestrate():
+    """AI 编排入口 — 意图识别 → 执行动作 / LLM 分析（支持多轮记忆与 SSE 流式）。"""
+    data = request.get_json() or {}
+    query = data.get('query', '')
+    session_id = data.get('session_id', '')
+    stream_mode = bool(data.get('stream', False))
+    if not query:
+        return jsonify({'success': False, 'error': '缺少 query'}), 400
+
+    # 落库当前用户消息，并读取其之前的历史作为多轮上下文
+    _orch_append_msg(session_id, 'user', query)
+    history = _orch_load_history(session_id, exclude_last=True)
+
+    q = query.lower().strip()
+    ip = _orch_extract_ipv4(query)
+    event_code_raw = _orch_extract_event_code(query)
+
+    result = _orch_route(query, q, ip, event_code_raw, history)
+    if not result.get('success'):
+        return jsonify({'success': False, 'error': result.get('error', '处理失败')}), result.get('status', 500)
+
+    response = result.get('response', '')
+    intent = result.get('intent', 'general')
+    meta = result.get('meta', {})
+
+    _orch_append_msg(session_id, 'assistant', response)
+
+    if stream_mode:
+        return _orch_sse(response, session_id, intent, meta)
+    return jsonify({'success': True, 'data': {
+        'response': response, 'session_id': session_id, 'intent': intent, **meta
+    }})
 
 
 @ai_api_bp.route('/debug-env', methods=['GET'])

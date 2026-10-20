@@ -781,6 +781,83 @@ export const aiApi = {
   orchestrate: (data: { query: string; session_id?: string }) =>
     request('/ai-api/orchestrate', { method: 'POST', body: data }),
 
+  /**
+   * 编排分析（真实 SSE 流式）。后端按意图路由（动作/LLM），最终回复以
+   * text/event-stream 分块推送；若后端回退为 JSON 也能优雅处理。
+   * 返回 AbortController 用于中止。
+   */
+  orchestrateStream: (
+    data: { query: string; session_id?: string },
+    callbacks: {
+      onChunk: (content: string) => void;
+      onDone: (meta?: { intent?: string; message_id?: string; session_id?: string }) => void;
+      onError: (error: string) => void;
+    },
+  ): AbortController => {
+    const controller = new AbortController();
+    const token = localStorage.getItem('token');
+    const baseUrl = window.location.origin;
+    (async () => {
+      try {
+        const resp = await fetch(`${baseUrl}/api/ai-api/orchestrate`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({ ...data, stream: true }),
+          signal: controller.signal,
+        });
+        const ct = resp.headers.get('content-type') || '';
+        if (!resp.ok) {
+          const text = await resp.text().catch(() => '');
+          callbacks.onError(`请求失败 (${resp.status}): ${text}`);
+          return;
+        }
+        if (!ct.includes('text/event-stream')) {
+          // 非流式 JSON 回退（后端未开流式或动作分支）
+          const j = await resp.json().catch(() => ({}));
+          if (j && j.success !== false && j.data) {
+            callbacks.onChunk(j.data.response || '');
+            callbacks.onDone(j.data);
+          } else {
+            callbacks.onError((j && j.error) || '请求失败');
+          }
+          return;
+        }
+        const reader = resp.body!.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith('data: ')) continue;
+            const payload = trimmed.slice(6);
+            if (payload === '[DONE]') continue;
+            try {
+              const p = JSON.parse(payload);
+              if (p.error) { callbacks.onError(p.error); return; }
+              if (p.done) {
+                callbacks.onDone({ intent: p.intent, message_id: p.message_id, session_id: p.session_id });
+                return;
+              }
+              if (p.content !== undefined) callbacks.onChunk(p.content);
+            } catch { /* 忽略不完整帧 */ }
+          }
+        }
+        callbacks.onDone({});
+      } catch (err: any) {
+        if (err.name !== 'AbortError') callbacks.onError(err.message || '请求失败');
+      }
+    })();
+    return controller;
+  },
+
   /** 编排人工审批 */
   orchestrateApprove: (data: { session_id: string; approved: boolean }) =>
     request('/ai-api/orchestrate/approve', { method: 'POST', body: data }),
