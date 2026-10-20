@@ -7,9 +7,20 @@ USOP · 封禁剧本部署脚本（对接封禁设备模拟器）
 创建/更新两个**联动封禁设备模拟器**的剧本，打通「剧本 → 设备 → 回执 → 分支处置」闭环：
 
   剧本 A  恶意IP防火墙封禁（模拟器联动）
-          trigger → HTTP 下发防火墙封禁 → 条件判定设备回执
-                  → 成功：登记平台封堵名单 + 通知
-                  → 失败：通知人工介入
+          trigger → 微步在线 IP 情报查询 → 情报危害等级判定（critical/high 才继续）
+                  → 高风险：HTTP 下发防火墙封禁 → 条件判定设备回执
+                          → 成功：登记平台封堵名单 + 通知
+                          → 失败：通知人工介入
+                  → 中低风险：不下发封禁，发通知交人工研判
+
+情报说明：微步在线 /ip/query 响应**没有危害等级字段**（只有 judgments /
+intelligences / samples），且结构是 data.<ip>.xxx 嵌套。平台在情报节点出口
+统一归一化（app/utils/threat_intel.py）成扁平变量 threat_level（critical/
+high/medium/low/none）、threat_score、is_malicious、threat_reason，
+剧本条件节点直接判 threat_level 即可。评分规则：未过期情报按类型+置信度计分
+（远控/木马/僵尸网络等高危 60 分档，扫描器/垃圾邮件等中危 30 分档），
+关联恶意样本按扫描时间加权（1 年内 25 分），**过期情报不计分**；
+≥80 critical / ≥60 high / ≥35 medium / >0 low。
 
   剧本 B  失陷主机隔离（模拟器联动）
           trigger → HTTP 下发主机隔离 → 条件判定设备回执
@@ -71,7 +82,12 @@ def _edges(pairs):
 
 
 def firewall_playbook(sim: str, token: str):
-    """剧本 A：恶意 IP 防火墙封禁。"""
+    """剧本 A：恶意 IP 防火墙封禁（先查情报，高风险才封禁）。
+
+    情报前置的意义：防火墙封禁是**不可逆的高影响动作**，云厂商/IDC 出口 IP
+    （如微软云主机）误封会打断业务。因此不直接封，先查微步情报，只有
+    归一化等级为 critical / high 才下发封禁；中低风险只通知人工研判。
+    """
     nodes = [
         _node("n1", "trigger", "告警事件触发", {
             "triggerType": "告警事件",
@@ -81,7 +97,20 @@ def firewall_playbook(sim: str, token: str):
                 {"key": "reason", "label": "封禁原因", "type": "text", "required": False,
                  "placeholder": "留空自动取事件描述"},
             ],
-        }, 40, 160, ["n2"]),
+        }, 40, 160, ["n7"]),
+        # 情报查询：凭证留空 → 复用「集成应用 - 微步在线威胁情报」已配置的 key
+        _node("n7", "enrich", "查询微步在线IP情报", {
+            "provider": "微步在线",
+            "type": "IP情报",
+            "value": "{{ $json.src_ip }}",
+        }, 250, 160, ["n8"]),
+        # 情报没有「危害等级」字段，用归一化后的 threat_level 判定
+        # （引擎在情报节点出口压平：threat_level / threat_score / is_malicious …）
+        _node("n8", "condition", "情报危害等级判定", {
+            "field": "threat_level",
+            "operator": "属于",
+            "value": "critical,high",
+        }, 460, 160, ["n2", "n9"]),
         _node("n2", "http_request", "下发防火墙封禁指令", {
             "url": f"{sim}/api/v1/firewall/block",
             "method": "POST",
@@ -96,7 +125,8 @@ def firewall_playbook(sim: str, token: str):
                 "action": "deny",
                 "direction": "inbound",
                 "duration": "24h",
-                "reason": "{{ $json.reason }}",
+                "reason": "{{ $json.reason }}｜威胁情报 {{ threat_level }}"
+                          "（评分 {{ threat_score }}）{{ threat_reason }}",
                 "operator": "usop-playbook",
                 "ticket_id": "{{ $json.event_code }}",
             }, ensure_ascii=False),
@@ -104,43 +134,63 @@ def firewall_playbook(sim: str, token: str):
             # （模拟器对「IP 已在黑名单」等业务失败也返回 HTTP 200，
             #  仅看状态码会误判为成功）
             "success_path": "success",
-        }, 280, 160, ["n3"]),
+        }, 700, 160, ["n3"]),
         _node("n3", "condition", "防火墙回执判定", {
             "field": "http_request_ok",
             "operator": "等于",
             "value": "true",
-        }, 520, 160, ["n4", "n6"]),
+        }, 940, 160, ["n4", "n6"]),
         _node("n4", "action", "登记平台封堵名单", {
             "action": "block_ip",
+            # 引用方式：$json 只在其**直接下游**有效（HTTP 节点有显式输出项会替换
+            # 上游数据），跨节点引用要用上下文变量 {{ threat_level }} 或
+            # {{ $('查询微步在线IP情报').json.threat_level }}。
             "params": "ip = {{ $json.src_ip }}\n"
-                      "reason = {{ $json.reason }}\n"
+                      "reason = {{ $json.reason }}｜情报 var={{ threat_level }}"
+                      " node=$({{ $('查询微步在线IP情报').json.threat_level }}"
+                      "/{{ $('查询微步在线IP情报').json.threat_score }})\n"
                       "duration = 24h",
-        }, 760, 80, ["n5"]),
+        }, 1160, 60, ["n5"]),
         _node("n5", "notify", "封禁成功通知", {
             "channel": "站内信",
-            "title": "恶意IP已自动封禁",
+            "title": "恶意IP已自动封禁（情报判定 {{ threat_level }}）",
             "content": "防火墙已封禁 {{ $json.src_ip }}：{{ http_request_message }}"
-                       "（规则 {{ http_request_data.rule_id }}，设备 {{ http_request_data.device }}）",
-        }, 1000, 80, []),
+                       "（规则 {{ http_request_data.rule_id }}，设备 {{ http_request_data.device }}）\n"
+                       "情报依据：{{ threat_reason }}（评分 {{ threat_score }}，标签 {{ threat_tags }}）\n"
+                       "情报详情：{{ threat_permalink }}",
+        }, 1380, 60, []),
         _node("n6", "notify", "封禁失败告警", {
             "channel": "站内信",
             "title": "防火墙封禁失败，需人工介入",
             "content": "下发防火墙封禁指令未成功：{{ http_request_message }}"
-                       "（目标 {{ $json.src_ip }}）请登录防火墙控制台人工处置。",
-        }, 760, 260, []),
+                       "（目标 {{ $json.src_ip }}，情报 {{ threat_level }}）"
+                       "请登录防火墙控制台人工处置。",
+        }, 1160, 300, []),
+        # 中低风险 / 情报查询失败 → 不封禁（失焦即安全的默认）
+        _node("n9", "notify", "未达高风险·暂不封禁", {
+            "channel": "站内信",
+            "title": "源IP情报未达高风险，已跳过封禁",
+            "content": "源 IP {{ $json.src_ip }} 情报判定 {{ threat_level }}"
+                       "（评分 {{ threat_score }}，标签 {{ threat_tags }}）：{{ threat_reason }}。\n"
+                       "未达到封禁阈值（critical/high），未下发防火墙封禁，转人工研判。\n"
+                       "情报详情：{{ threat_permalink }}",
+        }, 700, 340, []),
     ]
     return {
         "name": "恶意IP防火墙封禁（模拟器联动）",
-        "description": "对高危攻击源 IP 自动下发防火墙封禁指令，按设备回执分流："
-                       "成功登记平台封堵名单并通知，失败转人工处置。",
+        "description": "先查微步在线 IP 情报并归一化危害等级，仅对 high/critical 的"
+                       "攻击源 IP 下发防火墙封禁指令，再按设备回执分流："
+                       "成功登记平台封堵名单并通知，失败转人工处置；"
+                       "中低风险不下发封禁，只通知人工研判。",
         "category": "封禁处置",
         "trigger_type": "告警事件",
         "status": "published",
         "enabled": True,
-        "version": "1.0",
+        "version": "1.1",
         "nodes": nodes,
-        "edges": _edges([("n1", "n2"), ("n2", "n3"), ("n3", "n4"),
-                         ("n3", "n6"), ("n4", "n5")]),
+        # 顺序即分支语义：条件节点成功走第 1 个邻居、失败走第 2 个
+        "edges": _edges([("n1", "n7"), ("n7", "n8"), ("n8", "n2"), ("n8", "n9"),
+                         ("n2", "n3"), ("n3", "n4"), ("n3", "n6"), ("n4", "n5")]),
     }
 
 

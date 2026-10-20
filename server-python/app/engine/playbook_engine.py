@@ -351,7 +351,21 @@ class PlaybookEngine:
             result = handler.execute(config, context)
             if result.success and result.data:
                 context.variables[f'action_{builtin}_result'] = result.data
-            return result.to_dict()
+                # 情报富化节点：把归一化摘要（危害等级/评分）写成扁平变量。
+                # 微步响应是 data.<ip>.judgments 这种嵌套结构，condition 取不到，
+                # 不压平的话「查完情报再决定是否封禁」这条路走不通。
+                if builtin == 'enrich_ip' and isinstance(result.data, dict):
+                    summary = result.data.get('summary')
+                    if not isinstance(summary, dict) or not summary:
+                        summary = self._inject_intel_summary(result.data.get('data') or {},
+                                                             'auto', context)
+                    self._apply_intel_summary(summary, context)
+            out = result.to_dict()
+            # 并进节点输出项：只写 variables 的话条件能判，但 $json.threat_level
+            # 与配置面板的引用选择器都看不到（情报字段藏在 summary 子对象里）
+            if builtin == 'enrich_ip' and result.success:
+                self._merge_intel_into_result(out, (result.data or {}).get('summary'))
+            return out
 
         if node_type == 'trigger':
             # 触发数据作为输出项交给下游（引用选择器/ {{ $json.xxx }} 都能看到）
@@ -414,6 +428,15 @@ class PlaybookEngine:
                 # 将结果存入上下文
                 if result.success and result.data:
                     context.variables[f'action_{action_name}_result'] = result.data
+                    # 情报富化节点：把归一化摘要（危害等级/评分）写成扁平变量，
+                    # 否则下游 condition 取不到嵌套在 data.<ip> 下的 judgments。
+                    if action_name == 'enrich_ip' and isinstance(result.data, dict):
+                        summary = result.data.get('summary')
+                        if not isinstance(summary, dict) or not summary:
+                            summary = self._inject_intel_summary(
+                                result.data.get('data') or {}, 'auto', context)
+                        else:
+                            self._apply_intel_summary(summary, context)
                 return result.to_dict()
             return {'success': False,
                     'message': f'未找到动作: {action_name}（可用：block_ip / unblock_ip / '
@@ -553,12 +576,20 @@ class PlaybookEngine:
 
         config.success_path: 响应体中的点路径，如 `response.success` / `data.success`；
             取到布尔直接用；字符串按 true/1/ok/success 判定；路径以 `code` 结尾时 0 视为成功。
+        config.intel_profile: 情报源标识（threatbook_ip / virustotal_ip / auto）。
+            第三方情报接口（微步在线、VirusTotal）的响应里**没有危害等级字段**，
+            且是 `data.<ip>.xxx` 这种嵌套结构（IP 里的点还会被误判为路径分隔符），
+            condition 节点无法直接引用。配置后由 app/utils/threat_intel.py 归一化
+            成扁平变量（threat_level / threat_score / is_malicious / threat_reason …）。
         写入上下文变量（供下游 condition / 通知节点用 {{ }} 引用）：
             http_request_ok        最终成败（bool）
             http_request_result    节点完整结果
             http_request_response  响应体（dict 或文本）
             http_request_data      响应体 data 段
             http_request_message   响应体 message 字段
+            threat_level / threat_score / is_malicious / threat_tags / intel_types
+            malware_family / threat_reason / threat_scene / threat_carrier
+            threat_location / threat_permalink / intel_summary   （仅配置 intel_profile 时）
         """
         # 响应体位置：ActionResult.to_dict() 把 data 精简为 {status_code, url}，
         # 完整响应（含 response）只存在于 items[0].json —— 两处都尝试。
@@ -609,9 +640,77 @@ class PlaybookEngine:
             if isinstance(payload, dict):
                 context.variables['http_request_data'] = payload.get('data') or {}
                 context.variables['http_request_message'] = str(payload.get('message') or '')
+            # 威胁情报归一化（可选）：压平成 threat_level / threat_score 等扁平变量
+            profile = str(config.get('intel_profile') or '').strip()
+            if profile and profile.lower() not in ('none', 'off', '否', '无') \
+                    and isinstance(payload, dict):
+                summary = self._inject_intel_summary(payload, profile, context)
+                self._merge_intel_into_result(result, summary)
         except Exception:
             pass
         return result
+
+    @staticmethod
+    def _intel_flat_fields(summary: Dict) -> Dict:
+        """归一化摘要 → 扁平字段字典（变量名 → 值）。
+
+        为什么要压平：情报响应是 data.<ip>.xxx 嵌套，而 condition 只查顶层键、
+        引用选择器只列 item 的顶层字段，不压平就既判不了也选不到。
+        """
+        if not isinstance(summary, dict) or not summary:
+            return {}
+        # 注意：不注入 `severity`（摘要里虽有该别名）—— 它会覆盖事件自身的
+        # severity，导致下游误把「情报等级」当成「事件级别」。判情报一律用 threat_level。
+        mapping = {
+            'threat_level': 'threat_level',
+            'threat_score': 'threat_score',
+            'is_malicious': 'is_malicious',
+            'threat_tags': 'threat_tags',
+            'intel_types': 'intel_types',
+            'malware_family': 'malware_family',
+            'threat_reason': 'threat_reason',
+            'scene': 'threat_scene',
+            'carrier': 'threat_carrier',
+            'permalink': 'threat_permalink',
+        }
+        out = {dst: summary[src] for src, dst in mapping.items() if src in summary}
+        country, city = summary.get('country') or '', summary.get('city') or ''
+        out['threat_location'] = f'{country}{city}'
+        out['intel_summary'] = summary
+        return out
+
+    def _apply_intel_summary(self, summary: Dict, context) -> None:
+        """把归一化摘要写成上下文扁平变量（condition 只能读顶层键）。"""
+        context.variables.update(self._intel_flat_fields(summary))
+
+    def _merge_intel_into_result(self, result: Dict, summary: Dict) -> None:
+        """把归一化字段并进节点**输出 items**，让下游 $json 与引用选择器可见。
+
+        variables 注入只解决「条件能不能判」，items 注入才解决「下游能不能引用」：
+        - 节点有显式 items（HTTP 节点）→ 写进 items[0].json
+        - 否则（情报节点）→ 写进 result.data，由 _compose_output 合并进 items
+        """
+        if not isinstance(summary, dict) or not summary:
+            return
+        flat = self._intel_flat_fields(summary)
+        items = result.get('items') or []
+        if items and isinstance(items[0], dict):
+            j = items[0].get('json')
+            if isinstance(j, dict):
+                j.update(flat)
+                return
+        if isinstance(result.get('data'), dict):
+            result['data'].update(flat)
+
+    def _inject_intel_summary(self, payload: Dict, profile: str, context) -> Dict:
+        """HTTP 节点出口：识别情报响应并归一化注入。返回摘要（空 dict=未识别）。"""
+        from app.utils.threat_intel import normalize_intel
+        ip = context.get('src_ip') or context.get('ip') or ''
+        summary = normalize_intel(profile, payload, str(ip or ''))
+        if not summary:
+            return {}
+        self._apply_intel_summary(summary, context)
+        return summary
 
     def _execute_delay(self, config: Dict, context: ActionContext) -> Dict:
         """延迟等待节点：解析 30s / 5m / 2h 形式的时长后休眠。
@@ -966,15 +1065,123 @@ class PlaybookEngine:
                 'message': f'过滤 {field} {operator} {expected}：保留 {len(out)} 项',
                 'data': {'kept': len(out)}, 'items': out}
 
+    @staticmethod
+    def _walk_path(root: Any, path: str) -> Any:
+        """按 `a.b.0.c` 路径取值；取不到返回 None。
+
+        注意：键名本身含点（如情报响应里以 IP 为键的 `data.13.75.68.24.xxx`）
+        无法用路径表达 —— 那种场景请走 intel_profile 归一化，别写点路径。
+        """
+        cur = root
+        for part in str(path or '').split('.'):
+            if not part:
+                continue
+            # 支持 arr[0] 形式
+            idx = None
+            if part.endswith(']') and '[' in part:
+                name, _, i = part[:-1].partition('[')
+                part, idx = name, i
+            if isinstance(cur, dict):
+                cur = cur.get(part)
+            elif isinstance(cur, (list, tuple)) and part.isdigit():
+                cur = cur[int(part)] if int(part) < len(cur) else None
+            else:
+                return None
+            if idx is not None and idx.isdigit() and isinstance(cur, (list, tuple)):
+                cur = cur[int(idx)] if int(idx) < len(cur) else None
+            if cur is None:
+                return None
+        return cur
+
+    #: 深度查找的最大层数（防止在超大响应体上跑很久）
+    DEEP_FIND_MAX_DEPTH = 6
+    #: 深度查找时每层最多扫描的数组元素数
+    DEEP_FIND_LIST_SCAN = 20
+
+    @classmethod
+    def _deep_find(cls, root: Any, key: str, max_depth: int = None) -> Any:
+        """在嵌套 dict / list 里按**键名**广度优先查找，取不到返回 None。
+
+        场景：条件字段只写了键名（如 `threat_level`），而它埋在上游输出的子对象里
+        （`summary.threat_level`）。写全路径当然可以，但配置时经常只记得键名 ——
+        这条路径让「只写键名」也能取到，等价于在上游结果 JSON 里迭代查询。
+
+        安全边界（避免误命中/性能问题）：
+        - 广度优先 → 浅层键优先命中，不会被深层同名键抢走
+        - 深度上限 DEEP_FIND_MAX_DEPTH，数组每层最多扫 DEEP_FIND_LIST_SCAN 项
+        - 只在常规途径（variables / 当前输入 / 快照 / 点路径）全部未命中时才调用
+        """
+        if not key or not isinstance(root, (dict, list)):
+            return None
+        limit = cls.DEEP_FIND_MAX_DEPTH if max_depth is None else max_depth
+        queue = [(root, 0)]
+        head = 0
+        while head < len(queue):
+            cur, depth = queue[head]
+            head += 1
+            if depth > limit:
+                continue
+            if isinstance(cur, dict):
+                val = cur.get(key)
+                if val is not None and val != '':
+                    return val
+                for v in cur.values():
+                    if isinstance(v, (dict, list)):
+                        queue.append((v, depth + 1))
+            elif isinstance(cur, list):
+                for v in cur[:cls.DEEP_FIND_LIST_SCAN]:
+                    if isinstance(v, (dict, list)):
+                        queue.append((v, depth + 1))
+        return None
+
     def _evaluate_condition(self, config: Dict, context: ActionContext) -> Dict:
-        """评估条件节点"""
-        field = config.get('field', '')
+        """评估条件节点。
+
+        「字段」支持三种写法（引用选择器插入什么就能用什么）：
+          1. `severity`                 顶层字段名
+          2. `summary.threat_level`     点路径（嵌套字段）
+          3. `{{ $json.summary.x }}`    引用表达式 —— 直接渲染成实际值参与比较
+        """
+        field = str(config.get('field') or '').strip()
         raw_op = config.get('operator', 'equals')
         operator = self.OPERATOR_ALIASES.get(raw_op, raw_op)
         value = config.get('value', '')
 
-        # 获取字段值
-        actual_value = context.get(field)
+        # 写法 3：字段位写的是 {{ }} 引用 —— 渲染后即为比较值（引用选择器插入的就是这种）
+        matched_by = ''
+        if '{{' in field:
+            actual_value = context.resolve(field)
+            matched_by = 'expression'
+        else:
+            # 写法 1/2：context.get 只查顶层键，取不到时按「上下文变量 → 当前输入项
+            # → 快照」三级回退，让嵌套路径（summary.threat_level）也能取到，
+            # 与引用选择器里列出的字段保持一致。
+            bases = []
+            actual_value = context.get(field)
+            matched_by = 'variable' if actual_value not in (None, '') else ''
+            if actual_value is None or actual_value == '':
+                try:
+                    bases = [context.variables, context.current_json(), context.snapshot_json()]
+                except Exception:
+                    bases = [context.variables]
+                for base in bases:
+                    if not isinstance(base, dict):
+                        continue
+                    got = self._walk_path(base, field) if ('.' in field or '[' in field) \
+                        else base.get(field)
+                    if got is not None and got != '':
+                        actual_value = got
+                        matched_by = 'path' if ('.' in field or '[' in field) else 'item'
+                        break
+            # 最后一级：只写了键名时，在上游结果 JSON 里广度优先迭代查找
+            if (actual_value is None or actual_value == '') \
+                    and not ('.' in field or '[' in field):
+                for base in bases:
+                    got = self._deep_find(base, field)
+                    if got is not None and got != '':
+                        actual_value = got
+                        matched_by = 'deep'
+                        break
 
         op_func = self.CONDITION_OPERATORS.get(operator)
         if not op_func:
@@ -983,10 +1190,14 @@ class PlaybookEngine:
         try:
             result = op_func(actual_value, value)
             branch = 'true_branch' if result else 'false_branch'
+            msg = f'条件 "{field}" {operator} "{value}": {"满足" if result else "不满足"}'
+            if matched_by == 'deep':
+                msg += '（键名在嵌套结构中深度匹配到）'
             return {
                 'success': result,
-                'message': f'条件 "{field}" {operator} "{value}": {"满足" if result else "不满足"}',
-                'data': {'branch': branch, 'field': field, 'value': actual_value}
+                'message': msg,
+                'data': {'branch': branch, 'field': field, 'value': actual_value,
+                         'matched_by': matched_by or 'none'}
             }
         except Exception as e:
             return {'success': False, 'message': f'条件评估异常: {str(e)}', 'data': {}}

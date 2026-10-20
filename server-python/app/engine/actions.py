@@ -1114,8 +1114,20 @@ class EnrichIPAction(ActionHandler):
             import urllib.request
             with urllib.request.urlopen(url, timeout=12) as resp:
                 data = json.loads(resp.read().decode('utf-8'))
-            return ActionResult(True, f'微步情报查询完成: {value}',
-                                {'provider': '微步在线', 'type': intel_type, 'value': value, 'data': data})
+            # 微步响应没有「危害等级」字段：归一化为 threat_level / threat_score，
+            # 否则下游 condition 无法判定（响应是嵌套的 data.<ip>.xxx）
+            summary = {}
+            try:
+                from app.utils.threat_intel import normalize_threatbook_ip
+                summary = normalize_threatbook_ip(data, value) or {}
+            except Exception:
+                summary = {}
+            level = summary.get('threat_level') or 'unknown'
+            score = summary.get('threat_score', 0)
+            return ActionResult(True,
+                                f'微步情报查询完成: {value}（危害等级 {level}，评分 {score}）',
+                                {'provider': '微步在线', 'type': intel_type, 'value': value,
+                                 'data': data, 'summary': summary})
         except Exception as e:
             return ActionResult(False, f'微步查询失败: {str(e)[:120]}')
 
@@ -2677,7 +2689,10 @@ ACTION_PARAM_SCHEMAS: Dict[str, list] = {
         {'name': 'value', 'label': '查询值', 'type': 'text', 'required': True,
          'placeholder': '{{ $json.src_ip }}'},
         {'name': 'provider', 'label': '情报源', 'type': 'select',
-         'options': ['微步在线', 'VirusTotal'], 'default': '微步在线'},
+         'options': ['微步在线', 'VirusTotal'], 'default': '微步在线',
+         'desc': '响应本身没有危害等级字段；节点会自动归一化，'
+                 '下游条件/通知可直接用 {{ threat_level }}（critical/high/medium/low/none）、'
+                 '{{ threat_score }}、{{ is_malicious }}、{{ threat_tags }}、{{ threat_reason }}'},
         {'name': 'type', 'label': '情报类型', 'type': 'select',
          'options': ['IP情报', '域名情报', 'URL情报', '文件哈希'], 'default': 'IP情报'},
         {'name': 'api_key', 'label': 'API Key', 'type': 'text',
@@ -2748,6 +2763,14 @@ ACTION_PARAM_SCHEMAS: Dict[str, list] = {
         {'name': 'body', 'label': '请求体', 'type': 'textarea',
          'placeholder': 'JSON，如 {"ip": "{{ $json.src_ip }}"}'},
         {'name': 'timeout', 'label': '超时（秒）', 'type': 'number', 'default': 15},
+        {'name': 'success_path', 'label': '业务成败字段', 'type': 'text',
+         'placeholder': 'response.success',
+         'desc': '设备常以 200 + 响应体错误码表示失败，填响应体里的点路径作为真正的成败依据'},
+        {'name': 'intel_profile', 'label': '情报源归一化', 'type': 'select',
+         'options': ['无', 'auto', 'threatbook_ip', 'virustotal_ip'], 'default': '无',
+         'desc': '微步/VirusTotal 响应没有危害等级字段；选 auto 或具体源后，'
+                 '自动算成 threat_level（critical/high/medium/low/none）与 threat_score，'
+                 '下游条件节点可直接判 threat_level'},
     ],
     'send_email': [
         {'name': 'to', 'label': '收件人', 'type': 'text', 'required': True,
