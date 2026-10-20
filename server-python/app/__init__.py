@@ -58,7 +58,8 @@ def create_app():
             Vulnerability, AssetVulnerability, VulnerabilityAttachment, ScanProfile, ScanAgent, HuntingResult,
             AIInsight, AIChatSession, AIChatMessage, AIAgent, Role, AssetPort,
             ScanResult, DetectionRuleExtended, PlaybookExecution,
-            AlertFieldDefinition
+            AlertFieldDefinition,
+            IpBlockHistory,
         )
         # 导入路由文件中定义的模型（需在 create_all 之前注册）
         from app.routes.storage_tables import StorageTable

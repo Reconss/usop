@@ -20,6 +20,7 @@ from app.models.extensions import (
     ScanResult,
     DetectionRuleExtended,
     PlaybookExecution,
+    IpBlockHistory,
     IntegrationApp,
     as_json_list,
     as_json_dict,

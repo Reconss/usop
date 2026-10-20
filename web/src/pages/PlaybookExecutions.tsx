@@ -1,10 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Button, StatCard, StatusBadge, EmptyState, LoadingState, SectionCard, Modal } from '../components/ui';
-import { useConfirmDialog, ConfirmDialog } from '../components/Dialogs';
 import { playbooksApi } from '../services/api';
 import {
   Workflow, Play, XCircle, Loader2, History, Ban, Server, Mail,
-  FileText, Globe, ShieldAlert, RefreshCw, Eye, Search, Shield
+  FileText, Globe, RefreshCw, Eye, Search, Shield
 } from 'lucide-react';
 
 /* ==========================================================================
@@ -33,11 +32,6 @@ interface NodeResult {
   success: boolean; message?: string; data?: any;
   item_count?: number; timestamp?: string;
 }
-interface BlockedIp {
-  ip: string; reason?: string; source?: string;
-  timestamp?: string; duration?: string; expires_at?: string; method?: string;
-}
-
 const TRIGGER_LABEL: Record<string, { text: string; tone: 'primary' | 'info' | 'accent' | 'warning' }> = {
   event: { text: '事件触发', tone: 'info' },
   alert: { text: '告警触发', tone: 'info' },
@@ -95,14 +89,6 @@ const PlaybookExecutions: React.FC = () => {
   const [detailNodes, setDetailNodes] = useState<NodeResult[]>([]);
   const [detailLoading, setDetailLoading] = useState(false);
 
-  // 封堵名单
-  const [blockedIps, setBlockedIps] = useState<BlockedIp[]>([]);
-  const [unblocking, setUnblocking] = useState('');
-  const [unblockMsg, setUnblockMsg] = useState('');
-
-  // 应用内确认弹窗（替代浏览器原生 confirm）
-  const { ask, confirmProps } = useConfirmDialog('解封确认');
-
   const load = useCallback(async (p = page) => {
     setLoading(true);
     setError('');
@@ -132,15 +118,8 @@ const PlaybookExecutions: React.FC = () => {
     playbooksApi.getPlaybooks({ page_size: 200 }).then((res: any) => {
       setPlaybooks((res?.data?.items || res?.data || []).map((p: any) => ({ id: p.id, name: p.name })));
     }).catch(() => { /* 筛选下拉加载失败不阻塞列表 */ });
-    loadBlockedIps();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  const loadBlockedIps = () => {
-    playbooksApi.getBlockedIps().then((res: any) => {
-      setBlockedIps(res?.data || []);
-    }).catch(() => { /* 封堵名单加载失败不阻塞列表 */ });
-  };
 
   const openDetail = async (exec: ExecutionItem) => {
     setDetail(exec);
@@ -153,26 +132,6 @@ const PlaybookExecutions: React.FC = () => {
       // 详情加载失败时展示列表已有的摘要
     } finally {
       setDetailLoading(false);
-    }
-  };
-
-  const handleUnblock = async (ip: string) => {
-    const ok = await ask({
-      message: `确认解封 IP ${ip}？解封后将同步清除对应的封禁规则。`,
-      danger: true,
-      confirmText: '解封',
-    });
-    if (!ok) return;
-    setUnblocking(ip);
-    setUnblockMsg('');
-    try {
-      const res = await playbooksApi.unblockIp(ip);
-      setUnblockMsg(res?.message || `已解封 ${ip}`);
-      loadBlockedIps();
-    } catch (e: any) {
-      setUnblockMsg(e?.message || '解封失败');
-    } finally {
-      setUnblocking('');
     }
   };
 
@@ -310,39 +269,6 @@ const PlaybookExecutions: React.FC = () => {
         )}
       </SectionCard>
 
-      {/* 当前封堵名单 */}
-      <SectionCard
-        title="当前封堵名单" description="剧本 block_ip 动作封禁的 IP（含时长与到期自动解封）；手动解封会同步清除规则"
-        icon={Ban}
-        actions={<Button variant="ghost" size="sm" icon={RefreshCw} onClick={loadBlockedIps}>刷新</Button>}>
-        {unblockMsg && (
-          <div className="mb-3 px-3 py-2 rounded-lg bg-primary/10 border border-primary/30 text-xs text-primary">{unblockMsg}</div>
-        )}
-        {blockedIps.length === 0 ? (
-          <EmptyState icon={ShieldAlert} title="当前没有封堵中的 IP" description="剧本封禁 IP 后会在这里显示，到期自动解除" />
-        ) : (
-          <div className="space-y-2">
-            {blockedIps.map(b => (
-              <div key={b.ip} className="flex items-center gap-3 flex-wrap px-3 py-2.5 bg-page-bg rounded-lg border border-border-color">
-                <Ban className="w-4 h-4 text-danger flex-shrink-0" />
-                <span className="font-mono text-sm text-danger">{b.ip}</span>
-                <StatusBadge tone="danger">封禁中</StatusBadge>
-                {b.duration && <span className="text-xs text-text-muted">时长 {b.duration}</span>}
-                {b.expires_at && <span className="text-xs text-text-muted">到期 {fmtTime(b.expires_at)}</span>}
-                <span className="text-xs text-text-muted truncate max-w-[240px]" title={b.reason}>原因：{b.reason || '-'}</span>
-                <span className="text-xs text-text-muted">封堵方式：{b.method === 'iptables' ? 'iptables' : b.method === 'device_api' ? '设备 API' : '平台名单'}</span>
-                <span className="text-xs text-text-muted">时间：{fmtTime(b.timestamp)}</span>
-                <Button variant="danger" size="sm" className="ml-auto"
-                  onClick={() => handleUnblock(b.ip)}
-                  disabled={unblocking === b.ip}>
-                  {unblocking === b.ip ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : '解封'}
-                </Button>
-              </div>
-            ))}
-          </div>
-        )}
-      </SectionCard>
-
       {/* 执行详情弹窗 */}
       <Modal open={!!detail} onClose={() => setDetail(null)} width={760}
         title={`执行详情${detail?.playbook_name ? ` · ${detail.playbook_name}` : ''}`}
@@ -417,9 +343,6 @@ const PlaybookExecutions: React.FC = () => {
           </div>
         )}
       </Modal>
-
-      {/* 解封确认弹窗（应用内，替代浏览器原生 confirm） */}
-      <ConfirmDialog {...confirmProps} />
     </>
   );
 };

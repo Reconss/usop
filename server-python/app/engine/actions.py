@@ -399,9 +399,13 @@ class IPBlockManager:
         alive = {}
         for ip, entry in blocks.items():
             exp = entry.get('expires_at') if isinstance(entry, dict) else None
+            exp_dt = None
             if exp:
                 try:
-                    if datetime.fromisoformat(exp) <= now:
+                    exp_dt = datetime.fromisoformat(exp)
+                    if exp_dt <= now:
+                        # 到期自动解封：同步关闭封堵历史（记录解封时间与封禁时长）
+                        cls._close_history(ip, exp_dt, '到期自动解封', 'expired')
                         continue
                 except (ValueError, TypeError):
                     pass
@@ -424,6 +428,56 @@ class IPBlockManager:
             db.session.commit()
         except Exception:
             db.session.rollback()
+
+    # ---- 封堵历史（ip_block_history 表；与 blocked_ips 快照互补） ----
+
+    @classmethod
+    def _record_block(cls, ip: str, reason: str, source: str, method: str,
+                      duration: str = '', expires_at: datetime = None) -> None:
+        """写入一条封堵历史。失败不影响封堵本身（审计为辅，封堵为主）。"""
+        try:
+            from app.database import db
+            from app.models import IpBlockHistory
+            db.session.add(IpBlockHistory(
+                ip=ip, reason=reason, source=source, method=method,
+                duration=duration or None, expires_at=expires_at, status='active'))
+            db.session.commit()
+        except Exception:
+            try:
+                from app.database import db
+                db.session.rollback()
+            except Exception:
+                pass
+
+    @classmethod
+    def _close_history(cls, ip: str, unblocked_at: datetime, reason: str,
+                       status: str = 'unblocked', operator: str = None) -> None:
+        """回填该 IP 最近一条未关闭历史的解封时间与封禁时长。"""
+        if not unblocked_at:
+            return
+        try:
+            from app.database import db
+            from app.models import IpBlockHistory
+            row = (IpBlockHistory.query
+                   .filter_by(ip=ip, status='active')
+                   .order_by(IpBlockHistory.blocked_at.desc())
+                   .first())
+            if not row:
+                return
+            row.unblocked_at = unblocked_at
+            row.unblock_reason = reason
+            if row.blocked_at:
+                row.block_seconds = max(0, int((unblocked_at - row.blocked_at).total_seconds()))
+            row.status = status
+            if operator:
+                row.operator = operator
+            db.session.commit()
+        except Exception:
+            try:
+                from app.database import db
+                db.session.rollback()
+            except Exception:
+                pass
 
     @classmethod
     def block_ip(cls, ip: str, reason: str = "", source: str = "playbook",
@@ -470,12 +524,22 @@ class IPBlockManager:
         # 记录到文件（持久化审计）
         cls._log_block_action('block', ip, reason, source)
 
+        # 写入封堵历史（封禁时间/时长/解封时间的唯一权威记录）
+        exp_dt = None
+        if block_entry.get('expires_at'):
+            try:
+                exp_dt = datetime.fromisoformat(block_entry['expires_at'])
+            except (ValueError, TypeError):
+                exp_dt = None
+        cls._record_block(ip, reason, source, block_entry.get('method'),
+                          duration, exp_dt)
+
         return ActionResult(True, f'IP {ip} 封堵成功 [{block_entry["method"]}]'
                             + (f'（{duration} 后自动解除）' if seconds > 0 else ''),
                             block_entry)
 
     @classmethod
-    def unblock_ip(cls, ip: str, reason: str = "") -> ActionResult:
+    def unblock_ip(cls, ip: str, reason: str = "", operator: str = None) -> ActionResult:
         """解封 IP"""
         blocks = cls._purge_expired(cls._load_blocks())
         if ip not in blocks:
@@ -489,6 +553,10 @@ class IPBlockManager:
             cls._unblock_via_iptables(ip)
 
         cls._log_block_action('unblock', ip, reason, block_entry.get('source', ''))
+
+        # 回填封堵历史：解封时间 + 实际封禁时长
+        cls._close_history(ip, datetime.utcnow(), reason or '手动解封',
+                           'unblocked', operator)
 
         return ActionResult(True, f'IP {ip} 解封成功', block_entry)
 

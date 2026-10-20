@@ -18,6 +18,7 @@ import {
   Workflow,
   ScrollText,
   Plug,
+  Ban,
   FileText,
   List,
   Scan,
@@ -74,6 +75,7 @@ export const menuItems: MenuItem[] = [
     children: [
       { id: 'playbooks', label: '剧本编排', icon: Workflow, path: '/response/playbooks', perm: 'playbooks.view' },
       { id: 'integrations', label: '集成应用', icon: Plug, path: '/response/integrations', perm: 'playbooks.view' },
+      { id: 'blocked-ips', label: '封堵清单', icon: Ban, path: '/response/blocked-ips', perm: 'playbooks.view' },
       { id: 'rules', label: '规则管理', icon: ScrollText, path: '/response/rules', perm: 'rules.view' }
     ]
   },

@@ -453,6 +453,15 @@ export const playbooksApi = {
   getBlockedIps: () => request('/playbooks-api/playbooks/blocked-ips'),
   unblockIp: (ip: string) =>
     request(`/playbooks-api/playbooks/blocked-ips/${encodeURIComponent(ip)}`, { method: 'DELETE' }),
+  // 封堵清单（全量历史：封禁时间/解封时间/封禁时长，支持 IP 模糊与状态筛选）
+  getBlockHistory: (params?: { page?: number; page_size?: number; ip?: string; status?: string }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.page) searchParams.append('page', String(params.page));
+    if (params?.page_size) searchParams.append('page_size', String(params.page_size));
+    if (params?.ip) searchParams.append('ip', params.ip);
+    if (params?.status) searchParams.append('status', params.status);
+    return request(`/playbooks-api/playbooks/blocked-ips/history?${searchParams.toString()}`);
+  },
   executePlaybook: (id: number, data?: any) =>
     request(`/playbooks-api/playbooks/${id}/execute`, { method: 'POST', body: data || {} }),
 

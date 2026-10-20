@@ -664,9 +664,56 @@ class PlaybookExecution(db.Model):
         }
 
 
+class IpBlockHistory(db.Model):
+    """IP 封堵历史（一行 = 一次封禁事件，解封时回填解封时间与封禁时长）
+
+    与 SystemConfig 的 `blocked_ips`（当前封堵快照）互补：
+    快照回答「现在封着谁」，本表回答「封过谁、封了多久、何时解封」。
+    status: active=封禁中 / unblocked=已解封 / expired=到期自动解封
+    """
+    __tablename__ = 'ip_block_history'
+
+    id = db.Column(db.Integer, primary_key=True)
+    ip = db.Column(db.String(64), nullable=False, index=True)
+    reason = db.Column(db.Text)
+    source = db.Column(db.String(50))          # playbook / quarantine / manual
+    method = db.Column(db.String(50))          # api / iptables / device_api / 平台名单
+    duration = db.Column(db.String(20))        # 预设时长（24h/30m/7d，空=长期）
+    blocked_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    expires_at = db.Column(db.DateTime)        # 预设到期时间（可选）
+    unblocked_at = db.Column(db.DateTime)
+    unblock_reason = db.Column(db.String(200))
+    block_seconds = db.Column(db.Integer)      # 实际封禁时长（秒），解封/到期时回填
+    status = db.Column(db.String(20), default='active', index=True)  # active/unblocked/expired
+    operator = db.Column(db.String(100))       # 解封操作人（手动解封时记录）
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def to_dict(self, now: datetime = None):
+        now = now or datetime.utcnow()
+        seconds = self.block_seconds
+        if seconds is None and self.blocked_at:
+            # 仍封禁中：实时计算已封时长
+            seconds = max(0, int((now - self.blocked_at).total_seconds()))
+        return {
+            'id': self.id,
+            'ip': self.ip,
+            'reason': self.reason,
+            'source': self.source,
+            'method': self.method,
+            'duration': self.duration,
+            'blocked_at': self.blocked_at.isoformat() if self.blocked_at else None,
+            'expires_at': self.expires_at.isoformat() if self.expires_at else None,
+            'unblocked_at': self.unblocked_at.isoformat() if self.unblocked_at else None,
+            'unblock_reason': self.unblock_reason,
+            'block_seconds': seconds,
+            'status': self.status,
+            'operator': self.operator,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
 class Playbook(db.Model):
     """剧本：可视化编排的安全事件处置流程。
-
     数据契约：前端自建画布用 `nodes[].outputs[]`（下游节点 ID 数组）表达连线，
     持久化到后端时统一转换为 `edges[]`（`{id, source, target}`）图结构。
     列表接口默认不下发图数据（体积），详情接口下完整图。

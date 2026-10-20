@@ -338,12 +338,66 @@ def list_blocked_ips():
     })
 
 
+@playbooks_api_bp.route('/playbooks/blocked-ips/history', methods=['GET'])
+@login_required
+def list_blocked_ip_history():
+    """封堵清单（分页）：IP / 封禁时间 / 解封时间 / 封禁时长 全量历史。
+
+    query: page, page_size, ip（模糊）, status（active/unblocked/expired，空=全部）
+    """
+    from app.models import IpBlockHistory
+    from datetime import timedelta, timezone
+
+    page = max(1, request.args.get('page', 1, type=int))
+    page_size = min(100, max(5, request.args.get('page_size', 20, type=int)))
+    ip_kw = (request.args.get('ip') or '').strip()
+    status = (request.args.get('status') or '').strip()
+
+    q = IpBlockHistory.query
+    if ip_kw:
+        q = q.filter(IpBlockHistory.ip.ilike(f'%{ip_kw}%'))
+    if status:
+        q = q.filter(IpBlockHistory.status == status)
+
+    total = q.count()
+    pages = max(1, (total + page_size - 1) // page_size)
+    page = min(page, pages)
+    rows = (q.order_by(IpBlockHistory.blocked_at.desc(), IpBlockHistory.id.desc())
+             .offset((page - 1) * page_size).limit(page_size).all())
+    now = datetime.utcnow()
+
+    # 统计（「今日」按东八区自然日，与用户本地口径一致）
+    today_start = (datetime.now(timezone(timedelta(hours=8)))
+                   .replace(hour=0, minute=0, second=0, microsecond=0)
+                   .astimezone(timezone.utc).replace(tzinfo=None))
+    stats = {
+        'active': IpBlockHistory.query.filter_by(status='active').count(),
+        'today_blocks': IpBlockHistory.query.filter(IpBlockHistory.blocked_at >= today_start).count(),
+        'today_unblocks': IpBlockHistory.query.filter(
+            IpBlockHistory.unblocked_at.isnot(None),
+            IpBlockHistory.unblocked_at >= today_start).count(),
+        'total': IpBlockHistory.query.count(),
+    }
+
+    return jsonify({
+        'success': True,
+        'data': {
+            'items': [r.to_dict(now) for r in rows],
+            'total': total,
+            'page': page,
+            'pages': pages,
+            'stats': stats,
+        }
+    })
+
+
 @playbooks_api_bp.route('/playbooks/blocked-ips/<ip>', methods=['DELETE'])
 @login_required
 def unblock_ip(ip):
     """解封 IP"""
     from app.engine.actions import IPBlockManager
-    result = IPBlockManager.unblock_ip(ip, '手动解封')
+    operator = (getattr(request, 'current_user', None) or {}).get('username')
+    result = IPBlockManager.unblock_ip(ip, '手动解封', operator=operator)
     return jsonify({
         'success': result.success,
         'message': result.message,

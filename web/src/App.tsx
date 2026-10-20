@@ -13,6 +13,7 @@ const AssetInventory = lazy(() => import('./pages/AssetInventory'));
 const ScanConsole = lazy(() => import('./pages/ScanConsole'));
 const DetectionRules = lazy(() => import('./pages/DetectionRules'));
 const Playbooks = lazy(() => import('./pages/Playbooks'));
+const BlockedIps = lazy(() => import('./pages/BlockedIps'));
 const Integrations = lazy(() => import('./pages/Integrations'));
 const UserManagement = lazy(() => import('./pages/UserManagement'));
 const AuditLogs = lazy(() => import('./pages/AuditLogs'));
@@ -75,6 +76,7 @@ function AppContent() {
               <Route path="/assets/scans" element={<ScanConsole />} />
               <Route path="/response/rules" element={<DetectionRules />} />
               <Route path="/response/playbooks" element={<Playbooks />} />
+              <Route path="/response/blocked-ips" element={<BlockedIps />} />
               <Route path="/response/integrations" element={<Integrations />} />
               <Route path="/system/users" element={<UserManagement />} />
               <Route path="/system/audit" element={<AuditLogs />} />
