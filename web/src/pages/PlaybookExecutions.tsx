@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Button, StatCard, StatusBadge, EmptyState, LoadingState, SectionCard, Modal } from '../components/ui';
+import { useConfirmDialog, ConfirmDialog } from '../components/Dialogs';
 import { playbooksApi } from '../services/api';
 import {
   Workflow, Play, XCircle, Loader2, History, Ban, Server, Mail,
@@ -99,6 +100,9 @@ const PlaybookExecutions: React.FC = () => {
   const [unblocking, setUnblocking] = useState('');
   const [unblockMsg, setUnblockMsg] = useState('');
 
+  // 应用内确认弹窗（替代浏览器原生 confirm）
+  const { ask, confirmProps } = useConfirmDialog('解封确认');
+
   const load = useCallback(async (p = page) => {
     setLoading(true);
     setError('');
@@ -153,7 +157,12 @@ const PlaybookExecutions: React.FC = () => {
   };
 
   const handleUnblock = async (ip: string) => {
-    if (!window.confirm(`确认解封 IP ${ip}？`)) return;
+    const ok = await ask({
+      message: `确认解封 IP ${ip}？解封后将同步清除对应的封禁规则。`,
+      danger: true,
+      confirmText: '解封',
+    });
+    if (!ok) return;
     setUnblocking(ip);
     setUnblockMsg('');
     try {
@@ -408,6 +417,9 @@ const PlaybookExecutions: React.FC = () => {
           </div>
         )}
       </Modal>
+
+      {/* 解封确认弹窗（应用内，替代浏览器原生 confirm） */}
+      <ConfirmDialog {...confirmProps} />
     </>
   );
 };
