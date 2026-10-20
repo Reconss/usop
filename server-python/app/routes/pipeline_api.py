@@ -4,7 +4,10 @@ import json
 import logging
 import os
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta
+
+import fcntl
 
 from flask import Blueprint, jsonify, request
 
@@ -283,26 +286,62 @@ def preview_correlation_sql():
     return jsonify({'success': True, 'data': {'sql': sql, 'rule_count': len(rules)}})
 
 
-@pipeline_bp.route('/correlation/deploy', methods=['POST'])
-@login_required
-def deploy_correlation_job():
-    """按已启用规则生成并提交 Flink 关联分析作业（先取消旧作业）。"""
+_DEPLOY_LOCK_FILE = '/tmp/usop_corr_deploy.lock'
+
+
+class _DeployBusy(Exception):
+    """部署互斥锁被占用（并发部署/自动重提）。
+
+    不用 RuntimeError：FlinkError 是其子类，会被误吞成「并发」而掩盖真实故障。
+    """
+
+
+@contextmanager
+def _deploy_lock():
+    """跨进程部署互斥锁。
+
+    gunicorn 多 worker + 看门狗（scheduler 线程）都可能触发部署，
+    无锁时会并发提交出两个同名作业并行消费 Kafka → 关联事件重复入库。
+    """
+    fd = os.open(_DEPLOY_LOCK_FILE, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (IOError, OSError):
+            raise _DeployBusy('另一部署/重提正在进行中，请稍后再试')
+        try:
+            yield
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except (IOError, OSError):
+                pass
+    finally:
+        os.close(fd)
+
+
+def _deploy_correlation_job_internal(source: str = 'manual') -> dict:
+    """按已启用规则生成并提交 Flink 关联分析作业（先取消旧作业）。
+
+    供 HTTP 手动部署与调度器看门狗自动重提共用。
+    返回 {'ok': bool, 'error': str|None, 'http': int, 'data': dict}
+    """
     from app.flink_sql import correlation as corr
     from app.flink_sql import gateway as gw
 
     rules = _corr_rules()
     if not rules:
-        return jsonify({'success': False, 'error': '没有已启用的关联分析规则'}), 400
+        return {'ok': False, 'error': '没有已启用的关联分析规则', 'http': 400}
     topic = rules[0].get('source_topic') or 'valid-alerts'
     try:
         statements, inserts = corr.build_statements(rules, topic=topic)
         sql_text = corr.build_sql_text(rules, topic=topic)
     except ValueError as e:
-        return jsonify({'success': False, 'error': str(e)}), 400
+        return {'ok': False, 'error': str(e), 'http': 400}
 
     if not gw.gateway_available():
-        return jsonify({'success': False, 'error':
-                        f'Flink SQL Gateway 不可达（{gw.GATEWAY_URL}），请确认 flink-sql-gateway 容器已启动'}), 503
+        return {'ok': False, 'error':
+                f'Flink SQL Gateway 不可达（{gw.GATEWAY_URL}），请确认 flink-sql-gateway 容器已启动', 'http': 503}
 
     # 落盘 SQL 便于审计/手工重放
     sql_path = _sql_dump_path()
@@ -312,16 +351,24 @@ def deploy_correlation_job():
     except OSError as e:
         logger.warning('SQL 落盘失败：%s', e)
 
-    cancelled = gw.cancel_correlation_jobs()
-    gw.close_deploy_session()
+    # 关键区（取消旧作业 + 提交新作业）加跨进程互斥：防止手动部署与看门狗
+    # 自动重提并发提交出两个同名作业并行消费 Kafka（重复事件入库）
     try:
-        res = gw.submit_script(statements, job_name=gw.CORRELATION_JOB_NAME)
+        with _deploy_lock():
+            cancelled = gw.cancel_correlation_jobs()
+            gw.close_deploy_session()
+            try:
+                res = gw.submit_script(statements, job_name=gw.CORRELATION_JOB_NAME)
+            except gw.FlinkError as e:
+                return {'ok': False, 'error': f'作业提交失败：{e}', 'http': 500}
+    except _DeployBusy as e:
+        return {'ok': False, 'error': str(e), 'http': 409, 'skipped': True}
     except gw.FlinkError as e:
-        return jsonify({'success': False, 'error': f'作业提交失败：{e}'}), 500
+        return {'ok': False, 'error': f'Flink 交互失败：{e}', 'http': 500}
 
-    logger.info('关联分析作业已提交 job_id=%s rules=%d cancelled=%s',
-                res.get('job_id'), len(rules), cancelled)
-    return jsonify({'success': True, 'data': {
+    logger.info('关联分析作业已提交 job_id=%s rules=%d cancelled=%s source=%s',
+                res.get('job_id'), len(rules), cancelled, source)
+    return {'ok': True, 'http': 200, 'data': {
         'job_id': res.get('job_id'),
         'session': res.get('session'),
         'rule_count': len(rules),
@@ -329,7 +376,23 @@ def deploy_correlation_job():
         'cancelled_jobs': cancelled,
         'sql_path': sql_path,
         'sql': sql_text,
-    }})
+    }}
+
+
+@pipeline_bp.route('/correlation/deploy', methods=['POST'])
+@login_required
+def deploy_correlation_job():
+    """按已启用规则生成并提交 Flink 关联分析作业（先取消旧作业）。"""
+    # 手动部署视为「用户意图恢复运行」：清除手动停止标志，看门狗随后会持续守护
+    try:
+        from app.scheduler import wd_clear_user_stopped
+        wd_clear_user_stopped()
+    except Exception as e:
+        logger.warning('清除手动停止标志失败：%s', e)
+    out = _deploy_correlation_job_internal(source='manual')
+    if not out['ok']:
+        return jsonify({'success': False, 'error': out['error']}), out['http']
+    return jsonify({'success': True, 'data': out['data']})
 
 
 @pipeline_bp.route('/correlation/stop', methods=['POST'])
@@ -338,7 +401,25 @@ def stop_correlation_job():
     from app.flink_sql import gateway as gw
     cancelled = gw.cancel_correlation_jobs()
     gw.close_deploy_session()
+    # 标记「用户手动停止」：看门狗在用户主动恢复（重新部署）前不自动重提，
+    # 否则停止按钮会被守护立刻抵销，失去维护暂停的意义
+    try:
+        from app.scheduler import wd_mark_user_stopped
+        wd_mark_user_stopped()
+    except Exception as e:
+        logger.warning('标记手动停止失败：%s', e)
     return jsonify({'success': True, 'data': {'cancelled_jobs': cancelled}})
+
+
+@pipeline_bp.route('/correlation/watchdog', methods=['POST'])
+@login_required
+def toggle_correlation_watchdog():
+    """开启/关闭关联作业自动守护（持久化在 PG，跨进程生效）。"""
+    from app.scheduler import wd_set_enabled
+    data = request.get_json(silent=True) or {}
+    enabled = bool(data.get('enabled'))
+    wd_set_enabled(enabled)
+    return jsonify({'success': True, 'data': {'enabled': enabled}})
 
 
 @pipeline_bp.route('/correlation/status', methods=['GET'])
@@ -362,6 +443,11 @@ def correlation_status():
         'enabled_rule_count': CorrelationRule.query.filter(CorrelationRule.enabled.is_(True)).count(),
         'sql_path': _sql_dump_path(),
     }
+    try:
+        from app.scheduler import wd_get_status
+        out['watchdog'] = wd_get_status()
+    except Exception as e:
+        logger.warning('读取看门狗状态失败：%s', e)
     try:
         out['gateway_available'] = gw.gateway_available()
     except Exception:

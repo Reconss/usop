@@ -8,7 +8,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   Activity, AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, Code2,
-  Pencil, Plus, RefreshCw, Rocket, Square, Trash2, Workflow, X, Zap,
+  Pencil, Plus, RefreshCw, Rocket, ShieldCheck, Square, Trash2, Workflow, X, Zap,
 } from 'lucide-react';
 import { pipelineApi } from '../../services/api';
 import {
@@ -77,6 +77,14 @@ function windowText(sec: number) {
   if (sec % 3600 === 0) return `${sec / 3600} 小时`;
   if (sec % 60 === 0) return `${sec / 60} 分钟`;
   return `${sec} 秒`;
+}
+
+/** 后端 utcnow().isoformat()（无时区后缀）→ 本地时间文本 */
+function fmtTime(iso: string) {
+  if (!iso) return '';
+  const d = new Date(iso.endsWith('Z') ? iso : `${iso}Z`);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString('zh-CN', { hour12: false });
 }
 
 const emptyConfig = () => ({
@@ -293,6 +301,14 @@ export default function CorrelationRulesPanel({ onToast }: Props) {
     finally { setBusy(''); }
   };
 
+  const toggleWatchdog = async (next: boolean) => {
+    try {
+      const res: any = await pipelineApi.setCorrelationWatchdog(next);
+      if (res.success) { onToast(next ? '自动守护已开启' : '自动守护已关闭'); await fetchAll(); }
+      else onToast(res.error || '设置失败', 'error');
+    } catch (e: any) { onToast(e?.message || '设置失败', 'error'); }
+  };
+
   const setCfg = (patch: Record<string, any>) =>
     setForm((f: any) => ({ ...f, config: { ...f.config, ...patch } }));
 
@@ -353,6 +369,7 @@ export default function CorrelationRulesPanel({ onToast }: Props) {
           loading={busy === 'deploy'}
           disabled={enabledCount === 0}
           onClick={deploy}
+          title="按当前启用规则重新生成 Flink SQL 并提交作业（先取消旧作业）。规则新增/修改/删除后，必须重新部署才会生效"
         >
           部署 / 重新部署作业
         </Button>
@@ -361,6 +378,7 @@ export default function CorrelationRulesPanel({ onToast }: Props) {
           icon={Square}
           loading={busy === 'stop'}
           onClick={stop}
+          title="取消正在运行的关联作业（维护暂停用）。停止期间不产生关联事件；重新点「部署」即可恢复，自动守护也会随之恢复"
         >
           停止作业
         </Button>
@@ -373,6 +391,49 @@ export default function CorrelationRulesPanel({ onToast }: Props) {
             {showForm ? '取消' : '新建规则'}
           </Button>
         </div>
+      </div>
+
+      {/* 作业中断告警 / 手动停止提示：有启用规则但作业不在跑时必须显式提醒 */}
+      {enabledCount > 0 && !jobRunning && (
+        status?.watchdog?.user_stopped ? (
+          <div className="callout callout-warning flex items-start gap-2">
+            <Square size={14} className="mt-0.5 shrink-0" />
+            <span className="flex-1">
+              关联分析作业已<strong>手动停止</strong>，实时分析暂停中。自动守护已挂起，不会自动重提作业。
+            </span>
+            <Button variant="primary" size="sm" icon={Rocket} loading={busy === 'deploy'} onClick={deploy}>
+              恢复运行
+            </Button>
+          </div>
+        ) : (
+          <div className="callout callout-danger flex items-start gap-2">
+            <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+            <span className="flex-1">
+              <strong>实时关联分析已中断</strong>：有 {enabledCount} 条启用规则，但 Flink 作业未运行
+              （TaskManager 故障 / 集群重启都会导致），新的关联事件不会产生。看门狗通常会在 30 秒内自动恢复，若未恢复请手动重新部署。
+            </span>
+            <Button variant="primary" size="sm" icon={Rocket} loading={busy === 'deploy'} onClick={deploy}>
+              立即重新部署
+            </Button>
+          </div>
+        )
+      )}
+
+      {/* 自动守护状态与开关 */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-text-muted">
+        <span className="flex items-center gap-1.5">
+          <ShieldCheck size={13} className={status?.watchdog?.enabled ? 'text-success' : 'text-text-muted/50'} />
+          自动守护
+          <Switch size="sm" checked={!!status?.watchdog?.enabled} onChange={toggleWatchdog} label="自动守护" />
+          <span>{status?.watchdog?.enabled ? '已开启（作业中断约 30 秒内自动重提）' : '已关闭（作业中断需手动恢复）'}</span>
+        </span>
+        {status?.watchdog?.user_stopped && <span className="text-warning">已手动停止，守护挂起</span>}
+        {(status?.watchdog?.auto_deploy_count ?? 0) > 0 && (
+          <span>累计自动恢复 {status.watchdog.auto_deploy_count} 次{status.watchdog.last_auto_deploy ? ` · 最近 ${fmtTime(status.watchdog.last_auto_deploy)}` : ''}</span>
+        )}
+        {(status?.watchdog?.consecutive_failures ?? 0) > 0 && (
+          <span className="text-danger">连续重提失败 {status.watchdog.consecutive_failures} 次：{status.watchdog.last_error}</span>
+        )}
       </div>
 
       {!status?.gateway_available && (

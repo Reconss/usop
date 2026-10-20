@@ -1143,6 +1143,8 @@ export const pipelineApi = {
   previewCorrelationSql: (data?: any) => request('/pipeline/correlation-rules/preview', { method: 'POST', body: data || {} }),
   deployCorrelationJob: () => request('/pipeline/correlation/deploy', { method: 'POST', body: {} }),
   stopCorrelationJob: () => request('/pipeline/correlation/stop', { method: 'POST', body: {} }),
+  setCorrelationWatchdog: (enabled: boolean) =>
+    request('/pipeline/correlation/watchdog', { method: 'POST', body: { enabled } }),
   correlationStatus: () => request('/pipeline/correlation/status'),
   filterRules: () => request('/pipeline/filter-rules'),
   createFilterRule: (data: any) => request('/pipeline/filter-rules', { method: 'POST', body: data }),

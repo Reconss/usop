@@ -7,6 +7,8 @@ APScheduler 定时任务管理 — AI 告警批量研判（AI 中心「告警监
 - 任务常驻不暂停：运行开关持久化在 PG SystemConfig（ai_pipeline_state），每周期校验；
   debug 重载/多进程下持锁进程未必是处理 HTTP 请求的进程，故开关必须跨进程可改
 - 累计统计同样持久化在 PG，容器重建不丢
+- 关联分析作业看门狗（correlation_watchdog）：Flink 作业无自动重提机制，
+  每 30s 巡检，无存活作业且有启用规则时自动重新部署（见下文看门狗小节）
 - 使用文件锁防止多 worker 重复执行
 """
 import os
@@ -16,7 +18,7 @@ import json
 import logging
 import atexit
 import fcntl
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -223,6 +225,191 @@ def stop_pipeline():
     return True, '已停止'
 
 
+# =============================================
+# 关联分析作业看门狗（correlation watchdog）
+# =============================================
+# 背景：Flink 关联作业经 SQL Gateway 提交，无重启策略、无自动重提。
+# TaskManager 心跳超时（长 GC/宿主资源争抢）会导致作业直接 FAILED 且无人恢复，
+# 「实时关联分析」静默中断数小时无人感知（2026-10-20 实际发生过）。
+# 看门狗每 30s 检查一次：有启用规则但没有存活作业时自动重新部署；
+# 冷却/指数退避防止死亡循环刷屏；用户手动「停止作业」后尊重意图不再自动重提，
+# 直到用户再次手动部署（或前端一键恢复）。
+CORR_JOB_ID = 'correlation_watchdog'
+CORR_INTERVAL_SECONDS = 30
+_WD_STATE_KEY = 'correlation_watchdog_state'
+_WD_LIVE_STATES = ('RUNNING', 'RESTARTING', 'CREATED', 'INITIALIZING', 'RECONCILING')
+_WD_BASE_BACKOFF = 60          # 首次失败后 60s 再试
+_WD_MAX_BACKOFF = 600          # 退避上限 10 分钟
+_WD_SUCCESS_COOLDOWN = 60      # 自动重提成功后的最小间隔（防止作业秒死时高频重提）
+
+
+def _read_wd_state() -> dict:
+    """读取看门狗状态（开关/手动停止标志/统计）。"""
+    try:
+        from app.models import SystemConfig
+        cfg = SystemConfig.query.filter_by(key=_WD_STATE_KEY).first()
+        if cfg and cfg.value:
+            return json.loads(cfg.value) or {}
+    except Exception as e:
+        logger.warning(f"[看门狗] 读取状态失败: {e}")
+    return {}
+
+
+def _write_wd_state(patch: dict):
+    """合并更新看门狗状态（PG 持久化，跨进程生效）。"""
+    try:
+        from app.database import db
+        from app.models import SystemConfig
+        state = _read_wd_state()
+        state.update(patch or {})
+        cfg = SystemConfig.query.filter_by(key=_WD_STATE_KEY).first()
+        if not cfg:
+            cfg = SystemConfig(key=_WD_STATE_KEY, value='{}', category='ai_config')
+            db.session.add(cfg)
+        cfg.value = json.dumps(state, ensure_ascii=False)
+        db.session.commit()
+    except Exception as e:
+        logger.warning(f"[看门狗] 写入状态失败: {e}")
+
+
+def wd_get_status() -> dict:
+    """看门狗状态（供 /pipeline/correlation/status 与前端展示）。"""
+    state = _read_wd_state()
+    return {
+        'enabled': bool(state.get('enabled', True)),
+        'user_stopped': bool(state.get('user_stopped')),
+        'interval': CORR_INTERVAL_SECONDS,
+        'last_check': state.get('last_check'),
+        'last_auto_deploy': state.get('last_auto_deploy'),
+        'auto_deploy_count': state.get('auto_deploy_count', 0),
+        'consecutive_failures': state.get('consecutive_failures', 0),
+        'last_error': state.get('last_error'),
+    }
+
+
+def wd_set_enabled(enabled: bool):
+    """开启/关闭自动守护（HTTP 端点调用，立即持久化）。"""
+    _write_wd_state({'enabled': bool(enabled), 'last_error': None})
+    logger.info(f"[看门狗] 自动守护已{'开启' if enabled else '关闭'}")
+
+
+def wd_mark_user_stopped():
+    """用户手动停止作业：暂停自动重提，直到再次手动部署。"""
+    _write_wd_state({'user_stopped': True})
+    logger.info("[看门狗] 已记录用户手动停止，自动重提暂停（重新部署后恢复）")
+
+
+def wd_clear_user_stopped():
+    """用户手动部署：恢复自动守护。"""
+    state = _read_wd_state()
+    if state.get('user_stopped'):
+        _write_wd_state({'user_stopped': False, 'consecutive_failures': 0,
+                         'next_attempt_after': None, 'last_error': None})
+
+
+def _run_correlation_watchdog():
+    """每 30s：有启用规则但无存活关联作业时自动重新部署（看门狗）。"""
+    global _app_instance
+    if _app_instance is None:
+        return
+    try:
+        with _app_instance.app_context():
+            from app.flink_sql import gateway as gw
+
+            state = _read_wd_state()
+            now = datetime.utcnow()
+            patch = {'last_check': now.isoformat()}
+
+            # 1) 守护开关（PG 持久化，跨进程一致）
+            if not state.get('enabled', True):
+                _write_wd_state(patch)
+                return
+
+            # 2) 没有启用规则 → 无可守护对象
+            from app.alert_pipeline.pipeline import CorrelationRule
+            if CorrelationRule.query.filter(CorrelationRule.enabled.is_(True)).count() == 0:
+                _write_wd_state(patch)
+                return
+
+            # 3) 用户手动停止 → 尊重意图，不自动重提
+            if state.get('user_stopped'):
+                _write_wd_state(patch)
+                return
+
+            # 4) 已有存活作业 → 正常运行，重置失败计数
+            try:
+                live = [j for j in gw.list_jobs()
+                        if j.get('name') == gw.CORRELATION_JOB_NAME
+                        and j.get('state') in _WD_LIVE_STATES]
+            except Exception as e:
+                patch['last_error'] = f'作业列表查询失败: {e}'
+                _write_wd_state(patch)
+                return
+            if live:
+                if state.get('consecutive_failures'):
+                    patch['consecutive_failures'] = 0
+                    patch['next_attempt_after'] = None
+                    patch['last_error'] = None
+                _write_wd_state(patch)
+                return
+
+            # 5) 作业已停止且非用户主动 → 冷却判定后自动重提
+            next_after = state.get('next_attempt_after')
+            if next_after:
+                try:
+                    if datetime.fromisoformat(next_after) > now:
+                        _write_wd_state(patch)   # 冷却中，仅更新检查时间
+                        return
+                except ValueError:
+                    pass
+
+            logger.warning("[看门狗] 关联分析作业无存活实例（有启用规则），自动重新部署")
+            # 网关瞬时不可用（如正在处理手动部署的提交）不计入连续失败，下轮自然重试
+            try:
+                if not gw.gateway_available():
+                    patch['last_error'] = 'Flink SQL Gateway 瞬时不可达，下轮重试'
+                    _write_wd_state(patch)
+                    return
+            except Exception as e:
+                patch['last_error'] = f'网关探测异常: {e}'
+                _write_wd_state(patch)
+                return
+            from app.routes.pipeline_api import _deploy_correlation_job_internal
+            out = _deploy_correlation_job_internal(source='watchdog')
+
+            patch['last_check'] = datetime.utcnow().isoformat()
+            if out.get('ok'):
+                patch.update({
+                    'last_auto_deploy': patch['last_check'],
+                    'auto_deploy_count': int(state.get('auto_deploy_count', 0)) + 1,
+                    'consecutive_failures': 0,
+                    'next_attempt_after': (
+                        datetime.utcnow() + timedelta(seconds=_WD_SUCCESS_COOLDOWN)
+                    ).isoformat(),
+                    'last_error': None,
+                })
+                logger.info("[看门狗] 自动重提成功 job_id=%s（累计自动恢复 %d 次）",
+                            out['data'].get('job_id'), patch['auto_deploy_count'])
+            elif out.get('skipped'):
+                # 并发部署中（用户刚点了手动部署/另一路径正在提交）：跳过本轮，不计失败
+                logger.info("[看门狗] 检测到并发部署，跳过本轮自动重提")
+            else:
+                failures = int(state.get('consecutive_failures', 0)) + 1
+                backoff = min(_WD_BASE_BACKOFF * (2 ** (failures - 1)), _WD_MAX_BACKOFF)
+                patch.update({
+                    'consecutive_failures': failures,
+                    'last_error': out.get('error'),
+                    'next_attempt_after': (
+                        datetime.utcnow() + timedelta(seconds=backoff)
+                    ).isoformat(),
+                })
+                logger.error("[看门狗] 自动重提失败（第 %d 次，%.0fs 后重试）: %s",
+                             failures, backoff, out.get('error'))
+            _write_wd_state(patch)
+    except Exception as e:
+        logger.error(f"[看门狗] 巡检异常: {e}")
+
+
 def _run_analysis():
     """执行 AI 批量研判（供 APScheduler 调用）"""
     global _app_instance
@@ -348,9 +535,19 @@ def start_scheduler(app=None):
             replace_existing=True,
         )
 
+        # 每 30 秒巡检一次关联分析作业（无存活实例且有启用规则时自动重提）
+        _scheduler.add_job(
+            func=_run_correlation_watchdog,
+            trigger=IntervalTrigger(seconds=CORR_INTERVAL_SECONDS),
+            id=CORR_JOB_ID,
+            name='关联作业看门狗',
+            replace_existing=True,
+        )
+
         _scheduler.start()
         logger.info(f"[调度器] APScheduler 已启动，AI 告警批量研判每 {JOB_INTERVAL_SECONDS} 秒执行一次，"
-                    f"剧本定时任务每 {PB_JOB_INTERVAL_SECONDS} 秒轮询一次")
+                    f"剧本定时任务每 {PB_JOB_INTERVAL_SECONDS} 秒轮询一次，"
+                    f"关联作业看门狗每 {CORR_INTERVAL_SECONDS} 秒巡检一次")
 
         # 任务常驻不暂停：运行开关以 PG 状态为准，每个周期校验（debug 重载/多进程下
         # 持锁进程未必是处理 HTTP 请求的进程，暂停/恢复无法跨进程生效）
