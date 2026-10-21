@@ -11,6 +11,7 @@ import {
   Pencil, Plus, RefreshCw, Rocket, ShieldCheck, Square, Trash2, Workflow, X, Zap,
 } from 'lucide-react';
 import { pipelineApi } from '../../services/api';
+import { useConfirmDialog, ConfirmDialog } from '../Dialogs';
 import {
   Button,
   EmptyState,
@@ -152,6 +153,8 @@ interface Props {
 }
 
 export default function CorrelationRulesPanel({ onToast }: Props) {
+  // 删除确认弹窗（应用内，替代浏览器原生 confirm）
+  const { ask, confirmProps } = useConfirmDialog('删除确认');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState('');
   const [rules, setRules] = useState<CorrelationRule[]>([]);
@@ -262,6 +265,13 @@ export default function CorrelationRulesPanel({ onToast }: Props) {
   };
 
   const remove = async (id: number) => {
+    const rule = rules.find((r) => r.id === id);
+    const ok = await ask({
+      message: `确认删除关联规则「${rule?.name || '#' + id}」？删除后需重新部署作业才会在 Flink 中移除对应逻辑，历史已产出的事件不受影响。`,
+      danger: true,
+      confirmText: '删除',
+    });
+    if (!ok) return;
     setBusy(`del-${id}`);
     try {
       await pipelineApi.deleteCorrelationRule(id);
@@ -905,6 +915,9 @@ export default function CorrelationRulesPanel({ onToast }: Props) {
           {sqlPreview}
         </pre>
       </Modal>
+
+      {/* 删除确认弹窗（应用内，替代浏览器原生 confirm，防误触删除） */}
+      <ConfirmDialog {...confirmProps} />
     </div>
   );
 }

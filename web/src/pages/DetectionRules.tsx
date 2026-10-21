@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Plus, Edit2, Trash2, Play, Code, Database, AlertTriangle, CheckCircle,
   Workflow, Loader2, RefreshCw, FlaskConical,
@@ -179,9 +179,13 @@ export default function DetectionRules() {
 
   useEffect(() => { fetchData(); }, []);
 
+  // toast 定时器用 ref 持有：新 toast 重置计时，避免连续操作时旧定时器
+  // 把新提示提前清掉（表现为"保存成功了但看不到反馈"）
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
     setToast({ message, type });
-    setTimeout(() => setToast(null), 3000);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 3000);
   };
 
   const filteredRules = rules.filter((rule) => {
