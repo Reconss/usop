@@ -147,7 +147,7 @@ def main():
         check('删除后列表回到 13 条', len(after) == 13, f'{len(after)}')
 
         check('全程无 JS 报错', len(errors) == 0, '; '.join(errors[:2]))
-        page.screenshot(path=str(ROOT / 'docs/images/correlation-delete-confirm.png'))
+        page.screenshot(path=os.path.join(ROOT, 'docs/images/correlation-delete-confirm.png'))
         b.close()
 
     print(f'\n{len(PASS)} passed, {len(FAIL)} failed')
