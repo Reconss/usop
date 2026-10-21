@@ -2,7 +2,7 @@
  * TimeRangeSelector — 时间范围选择器
  *
  * 功能：
- *  - 快捷预设：15m / 1h / 4h / 24h / 7d / 30d
+ *  - 快捷预设：5m / 15m / 1h / 4h / 24h / 7d / 30d
  *  - 自定义时间范围（起止时间输入）
  *  - 实时滚动开关（自动刷新）
  */
@@ -59,7 +59,7 @@ const PRESETS: PresetOption[] = [
     }),
   },
   {
-    key: '90d', label: '最近 24 小时', shortLabel: '24h',
+    key: '24h', label: '最近 24 小时', shortLabel: '24h',
     getRange: () => ({
       start: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
       end: new Date().toISOString(),

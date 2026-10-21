@@ -3,7 +3,9 @@
 设计参考常规漏洞管理系统（Tenable/Qualys/RBVM 体系）：
 - 漏洞定义（知识库）与资产漏洞实例（处置跟踪）双表
 - 生命周期：发现/录入 → 评估定级 → 分派修复 → 复测验证 → 关闭，每步写时间线
-- 双轨评级：原始 CVSS + 业务因子重评（资产重要性/可利用性/暴露程度/修复难度/威胁情报）
+- 评级：原始 CVSS + 业务因子重评，重评与自动定级共用同一套评级配置
+  （vuln_assessment_rules，见 vulnerability_assessment_api），人工仅逐维度
+  覆盖因子或整分覆盖，不再另设硬编码权重模型
 """
 import json
 import logging
@@ -38,13 +40,6 @@ STATUS_LABEL = {
     'closed': '已关闭', 'ignored': '已忽略', 'risk_accepted': '风险接受',
 }
 
-# 重评因子默认权重（与评级配置页一致）
-_ASSESS_WEIGHTS = {
-    'asset_importance': 0.3,   # 资产重要性
-    'exploitability': 0.4,     # 可利用性
-    'fix_difficulty': 0.3,     # 修复难度（分值越高越难修，风险越高）
-}
-
 
 def _current_user():
     return getattr(request, 'current_user', {}) or {}
@@ -67,19 +62,6 @@ def _severity_from_score(score: float) -> str:
 def _gen_vuln_code(vuln_type: str, av_id: int) -> str:
     prefix = 'VH' if vuln_type == 'host' else 'VA'
     return f"{prefix}-{datetime.utcnow().strftime('%Y%m%d')}-{av_id:04d}"
-
-
-def _assess_score(factors: dict) -> tuple:
-    """按因子加权计算重评分（0-10）与等级。"""
-    total = 0.0
-    for key, weight in _ASSESS_WEIGHTS.items():
-        try:
-            val = float(factors.get(key, 5))
-        except (TypeError, ValueError):
-            val = 5.0
-        total += min(10, max(1, val)) * weight
-    score = round(min(10, max(0, total)), 2)
-    return score, _severity_from_score(score)
 
 
 def _get_or_create_vuln_definition(data: dict, vuln_type: str) -> Vulnerability:
@@ -374,30 +356,84 @@ def change_status(av_id):
 
 # ==================== 重新评级 ====================
 
+# 旧版三数字入参 → 评级配置维度 id 的映射（兼容 2026-10-21 双轨合并前的调用方）
+_LEGACY_FACTOR_RULE_MAP = {
+    'asset_importance': 'asset-importance',
+    'exploitability': 'exploitability',
+    'fix_difficulty': 'remediation',
+}
+
+
+def _map_legacy_factors(config: dict, legacy: dict) -> dict:
+    """旧版三数字入参（0-10 分值）就近映射为评级配置中的维度因子 id。"""
+    rules = {r.get('id'): r for r in (config.get('rules') or [])}
+    out = {}
+    for legacy_key, rule_id in _LEGACY_FACTOR_RULE_MAP.items():
+        val = legacy.get(legacy_key)
+        if val is None:
+            continue
+        try:
+            val = float(val)
+        except (TypeError, ValueError):
+            continue
+        rule = rules.get(rule_id)
+        if not rule:
+            continue
+        best, best_gap = None, None
+        for f in rule.get('factors', []):
+            try:
+                gap = abs(float(f.get('score', 5)) - val)
+            except (TypeError, ValueError):
+                continue
+            if best_gap is None or gap < best_gap:
+                best, best_gap = f.get('id'), gap
+        if best:
+            out[rule_id] = best
+    return out
+
+
 @vulnerabilities_api_bp.route('/vulnerabilities/<int:av_id>/reassess', methods=['PUT'])
 @login_required
 def reassess(av_id):
-    """重新评级：业务因子加权计算 + 可人工覆盖；保留原始评级双轨与历史。"""
+    """重新评级：按评级配置（vuln_assessment_rules）加权计算 + 可人工覆盖。
+
+    与自动定级（/assessment/recalculate）共用同一套评级配置、权重与阈值：
+    - factors: {rule_id: factor_id} 人工逐维度指定因子，未指定维度按漏洞
+      真实属性自动挑选
+    - 兼容旧版三数字入参（asset_importance/exploitability/fix_difficulty），
+      按分值就近映射到对应维度因子
+    - manual_score: 人工覆盖最终分数（0-10），等级仍按配置阈值推导（统一口径）
+    - reason 必填（前端强制），写入时间线供审计
+    """
+    from app.routes.vulnerability_assessment_api import (
+        _get_rating_config, _calculate_assessed_score,
+        _severity_from_thresholds, _THRESHOLDS,
+    )
     av = AssetVulnerability.query.get(av_id)
     if not av:
         return jsonify({'success': False, 'error': '漏洞不存在'}), 404
 
     data = request.get_json() or {}
-    factors = {
-        'asset_importance': data.get('asset_importance', 5),
-        'exploitability': data.get('exploitability', 5),
-        'fix_difficulty': data.get('fix_difficulty', 5),
-    }
-    score, severity = _assess_score(factors)
+    config = _get_rating_config()
+    thresholds = config.get('thresholds') or _THRESHOLDS
 
-    # 人工覆盖分数（可选）
+    factors = data.get('factors')
+    if not isinstance(factors, dict) or not factors:
+        # 旧版三数字入参（或未指定因子=纯自动重算单条）
+        factors = _map_legacy_factors(config, data)
+
+    score, severity, choices = _calculate_assessed_score(av, config, factors)
+
+    # 人工覆盖分数（可选）：分数直接采用，等级仍按配置阈值推导
+    score_override = False
     manual_score = data.get('manual_score')
-    if manual_score is not None:
+    if manual_score is not None and manual_score != '':
         try:
             score = round(min(10.0, max(0.0, float(manual_score))), 2)
-            severity = data.get('manual_severity') or _severity_from_score(score)
         except (TypeError, ValueError):
             return jsonify({'success': False, 'error': 'manual_score 必须是数字'}), 400
+        severity = _severity_from_thresholds(score, thresholds)
+        score_override = True
 
     user = _username()
     history = []
@@ -412,7 +448,10 @@ def reassess(av_id):
     old_sev = av.assessed_severity or av.severity
     av.assessed_score = score
     av.assessed_severity = severity
-    av.assess_factors = factors
+    av.assess_factors = {
+        'manual': True, 'choices': choices,
+        'score': score, 'severity': severity, 'score_override': score_override,
+    }
     av.assess_reason = (data.get('reason') or '').strip() or None
     av.assess_history = history
     av.append_timeline('reassess', user,

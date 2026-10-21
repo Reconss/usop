@@ -543,7 +543,7 @@ export const vulnerabilitiesApi = {
     request(`/vulnerabilities-api/vulnerabilities/${id}/status`, { method: 'PUT', body: data }),
   batchVulnStatus: (data: { ids: number[]; status: string; comment?: string }) =>
     request('/vulnerabilities-api/vulnerabilities/batch-status', { method: 'PUT', body: data }),
-  reassessVuln: (id: number, data: { asset_importance: number; exploitability: number; fix_difficulty: number; reason?: string; manual_score?: number }) =>
+  reassessVuln: (id: number, data: { factors?: Record<string, string>; reason?: string; manual_score?: number }) =>
     request(`/vulnerabilities-api/vulnerabilities/${id}/reassess`, { method: 'PUT', body: data }),
   getVulnStats: () => request('/vulnerabilities-api/vulnerabilities/stats'),
 
