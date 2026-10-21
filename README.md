@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/alerts-list-demo.png" width="860">
+  <img src="docs/images/dashboard-overview.png" width="860">
 </p>
 
 <p align="center">
@@ -31,6 +31,58 @@ USOP（Unified Security Operations Platform）是一套前后端分离的一体�
 - **自动化响应剧本**：可视化编排 + 审批流 + 执行记录，把 response playbook 变成可复用、可审计的运营资产。
 - **可扩展接入**：Kafka 接入 + ParseProfile 字段映射，支持 9 种解析方式，新设备 / 新日志源即接即用。
 
+## 平台架构
+
+```mermaid
+flowchart LR
+    subgraph agents["采集端"]
+        beat["Filebeat / Winlogbeat<br/>Logstash / Syslog"]
+        device["安全设备<br/>WAF · IDS · HIDS · EDR"]
+    end
+
+    subgraph ingest["接入层"]
+        kafka[("Kafka<br/>设备 Topic")]
+        pipeline["解析管道<br/>标准化 · 过滤 · 去重"]
+    end
+
+    subgraph detect["检测层"]
+        es[("Elasticsearch<br/>告警唯一真相源")]
+        flink["Flink 关联分析<br/>13 条内置规则 · 常驻作业"]
+        engine["检测规则引擎"]
+    end
+
+    subgraph app["应用层（usop_all 容器：nginx + Flask 二合一）"]
+        ui["React 前端<br/>TypeScript + ECharts"]
+        api["Flask API<br/>30 个蓝图 · JWT · RBAC"]
+        ai["AI 研判<br/>批量研判 · 智能调查"]
+        playbook["剧本引擎<br/>编排 · 审批 · 执行"]
+    end
+
+    subgraph data["存储层"]
+        pg[("PostgreSQL<br/>事件 · 资产 · 漏洞")]
+        redis[("Redis<br/>去重窗口")]
+    end
+
+    device --> kafka
+    beat --> kafka
+    kafka --> pipeline --> es
+    es --> flink --> pg
+    es --> engine --> pg
+    ui -->|"REST / JWT"| api
+    ai --> api
+    playbook --> api
+    api --> es & pg & redis
+```
+
+**数据主链路**：`日志源 → Kafka → 解析管道（标准化/过滤/去重）→ ES（valid/invalid-alerts）→ Flink 关联 → PG events`。
+
+架构要点：
+
+- **告警唯一真相源 = ES**：所有告警存取统一走 `es_alerts.py` 入口，PG 不存告警，避免双写不一致。
+- **检测与响应双引擎**：Flink 常驻作业跑 13 条关联规则（高频 / 横向 / 暴破 / 序列等）自动生成事件；检测规则手动执行命中即建事件。
+- **响应闭环**：告警关联事件 → AI 研判 / 人工研判 → 剧本编排执行（封禁 IP / 通知 / 工单）→ 封堵清单与执行记录全程留痕。
+- **单容器交付**：应用镜像 nginx + Flask 二合一，基础设施（Kafka/ES/Flink/PG/Redis）独立编排，支持全容器与原生+外部组件两种部署形态。
+
 ## Features
 
 | 能力 | 说明 |
@@ -41,6 +93,78 @@ USOP（Unified Security Operations Platform）是一套前后端分离的一体�
 | 资产与漏洞管理 | 资产盘点 / 攻击面 / 扫描；主机 · 应用漏洞全生命周期、重评、附件 |
 | 数据采集与解析 | Kafka 接入、ParseProfile 映射、9 种解析方式 |
 | 权限与系统 | RBAC（4 系统角色 + 集中式写守卫）、AD 域认证、审计、全局配置 |
+
+## 平台截图
+
+<table>
+  <tr>
+    <td width="50%">
+      <img src="docs/images/dashboard-overview.png"><br>
+      <b>仪表盘</b> — 态势总览：告警/事件/资产指标、24h 事件趋势、Top5 攻击源 IP 与风险资产
+    </td>
+    <td width="50%">
+      <img src="docs/images/alerts-investigation.png"><br>
+      <b>安全告警</b> — 告警检索、详情研判、聚合分析、AI 批量研判（ES 唯一真相源）
+    </td>
+  </tr>
+  <tr>
+    <td>
+      <img src="docs/images/events-workbench.png"><br>
+      <b>事件工作台</b> — 五节点状态机流转，告警↔事件状态联动，处置总结留痕
+    </td>
+    <td>
+      <img src="docs/images/threat-hunting.png"><br>
+      <b>威胁狩猎</b> — 交互式查询构建与狩猎任务
+    </td>
+  </tr>
+  <tr>
+    <td>
+      <img src="docs/images/ai-center.png"><br>
+      <b>AI 中心</b> — 模型管理、告警监控流水线、智能调查
+    </td>
+    <td>
+      <img src="docs/images/detection-rules.png"><br>
+      <b>规则管理</b> — 检测规则手动执行 + 13 条 Flink 关联分析规则（单常驻作业）
+    </td>
+  </tr>
+  <tr>
+    <td>
+      <img src="docs/images/playbook-canvas.png"><br>
+      <b>剧本编排</b> — 可视化画布、审批流、模拟运行、执行记录
+    </td>
+    <td>
+      <img src="docs/images/blocked-ips.png"><br>
+      <b>封堵清单</b> — 封禁/解封时间与时长、到期自动关闭、操作留痕
+    </td>
+  </tr>
+  <tr>
+    <td>
+      <img src="docs/images/assets-inventory.png"><br>
+      <b>资产清单</b> — 资产指纹与业务属性、开放端口、攻击面拓扑
+    </td>
+    <td>
+      <img src="docs/images/data-ingestion.png"><br>
+      <b>数据采集</b> — Kafka Topic 纳管、解析管道（标准化/过滤/去重/存储）
+    </td>
+  </tr>
+  <tr>
+    <td>
+      <img src="docs/images/vuln-host-list.png"><br>
+      <b>漏洞管理</b> — 主机/应用漏洞全生命周期、重评、附件与时间线
+    </td>
+    <td>
+      <img src="docs/images/vuln-rating-config.png"><br>
+      <b>评级配置</b> — 漏洞重评六因子权重与阈值在线调整，手动/自动统一模型
+    </td>
+  </tr>
+  <tr>
+    <td>
+      <img src="docs/images/rbac-roles.png"><br>
+      <b>RBAC 权限</b> — 4 系统角色 × 29 权限点、菜单过滤、集中式写守卫
+    </td>
+    <td></td>
+  </tr>
+</table>
 
 ## 模块与路由
 
@@ -271,7 +395,7 @@ output {
 - **双表模型**：`vulnerabilities`（漏洞定义/知识库：CVE/CNVD/CNNVD/CWE、CVSS v3/v2 评分与向量、漏洞类别、修复建议、参考链接）+ `asset_vulnerabilities`（资产漏洞实例：编号 VH-/VA-、位置（IP/端口/协议/URL/组件版本）、处置跟踪、重评信息、时间线）。字段迁移见 `migrations/add_vuln_fields.py`（幂等，含 `vuln_class` 列）。
 - **录入**：页面「录入漏洞」弹窗（`POST /vulnerabilities`）——按名称/CVE 自动复用或创建漏洞定义；资产按 IP 自动匹配，不存在则自动创建；`source=manual`。Nessus 导入（`/nessus/import`）走同一实例表。
 - **状态机**（`VULN_STATUS_FLOW`，服务端强校验）：`open → in_progress → fixed → closed`；旁路 `ignored` / `risk_accepted`；`fixed` 可退回 `in_progress`（复测不通过）；`closed/ignored/risk_accepted` 可重开。每次流转写时间线并记录说明；关闭记录复测人/时间/结果。批量流转走 `/batch-status`（逐条校验，失败返回原因）。
-- **重新评级（双轨制）**：原始 CVSS 评级保留不动；重评 = 业务因子加权（资产重要性 0.3 + 可利用性 0.4 + 修复难度 0.3，10 分制）→ ≥9 危急 / ≥7 高危 / ≥4 中危 / 其余低危；支持人工覆盖分数；必须填重评理由；历史重评留在 `assess_history`。评级配置页（`vulnerability_assessment_api.py`）的六因子权重体系独立存在。
+- **重新评级（配置驱动，手动/自动统一模型）**：原始 CVSS 评级保留不动；重评按「评级配置」的六因子权重加权定级（权重/阈值在线可调），支持单维度人工覆盖与整体分数覆盖，未覆盖维度按漏洞真实属性自动挑选因子；必须填重评理由，各维度因子明细存 `assess_factors.choices`，历史重评留在 `assess_history`。
 - **防重复**：列表按「重评等级 ?? 原始等级」排序（危急→低危），服务端分页 + search（编号/CVE/名称/IP）+ severity/status 过滤；`/stats` 按类型返回等级/状态分布。
 - **处置跟踪**：责任人/处置方案/计划完成时间/备注（`PUT /vulnerabilities/<id>`），详情弹窗展示处置跟踪块 + 重评历史 + 完整时间线。
 - **附件（截图/报告）**：漏洞详情弹窗可上传多个附件（`POST /vulnerabilities/<id>/attachments`，multipart 字段 `file`）——图片（png/jpg/jpeg/gif/webp/bmp）自动归类为「截图」并生成缩略图与大图预览，其余（pdf/word/excel/csv/txt/md/log/json/zip）归为「报告」，限 20MB。落盘目录 `server-python/app/uploads/vuln_attachments/`（容器内 `/app/app/uploads/...`，bind mount 持久化），下载/预览走 `GET .../attachments/<att_id>`（带 JWT，前端 fetch+blob）。上传/删除写入处置时间线；删除漏洞时级联清理附件文件与记录（`vulnerability_attachments` 表）。
