@@ -1,5 +1,5 @@
 -- USOP 关联分析 Flink 作业（由「响应与自动化 → 规则管理 → 关联分析规则」自动生成）
--- 规则数：6
+-- 规则数：13
 -- 窗口时间属性：处理时间 PROCTIME（不依赖 first_seen 字段解析）
 -- 目标：Kafka valid-alerts → 窗口聚合 → PG events 表（JDBC sink）
 
@@ -22,6 +22,7 @@ CREATE TABLE corr_src (
   `username`       STRING,
   `operation`      STRING,
   `confidence`     DOUBLE,
+  `first_seen`     STRING,  -- ISO-8601 事件时间：sequence 时序判定用（PROCTIME 时间属性不能参与普通聚合）
   `proc_time`      AS PROCTIME()
 ) WITH (
   'connector' = 'kafka',
@@ -67,14 +68,14 @@ SELECT
   '同源 IP 高频告警',
   CONCAT('关联分析「同源 IP 高频告警」：', '源 IP', ' = ',
          COALESCE(CAST(`grp` AS STRING), '-'), ' 在 20 秒窗口内触发 ',
-         CAST(`hit_cnt` AS STRING), ' 次（阈值 ', CAST(3.0 AS STRING), '）；样本告警 ',
+         CAST(`hit_cnt` AS STRING), ' 次（阈值 ', CAST(2.0 AS STRING), '）；样本告警 ',
          COALESCE(`sample_code`, '-'), ' / ', COALESCE(`sample_title`, '-')),
   'high',
   'correlation',
   'flink-correlation', 'new', CAST(`grp` AS STRING),
   CONCAT('rule_id=', CAST(2 AS STRING), '; type=frequency; group=', 'src_ip',
          '; window_start=', CAST(`w_start` AS STRING), '; window_end=', CAST(`w_end` AS STRING),
-         '; count=', CAST(`hit_cnt` AS STRING), '; threshold=', CAST(3.0 AS STRING)),
+         '; count=', CAST(`hit_cnt` AS STRING), '; threshold=', CAST(2.0 AS STRING)),
   CAST(NULL AS STRING),
   `w_end`, `w_end`, `w_end`
 FROM (
@@ -90,7 +91,7 @@ FROM (
   WHERE `src_ip` IS NOT NULL
   GROUP BY TUMBLE(`proc_time`, INTERVAL '20' SECOND(2)), `src_ip`
 )
-WHERE `hit_cnt` >= 3.0;
+WHERE `hit_cnt` >= 2.0;
 
 INSERT INTO corr_events
 SELECT
@@ -123,37 +124,6 @@ WHERE `hit_cnt` >= 3.0;
 
 INSERT INTO corr_events
 SELECT
-  CONCAT('CE', CAST(4 AS STRING), '-', DATE_FORMAT(`w_start`, 'yyMMddHHmm'), '-', SUBSTR(MD5(CAST(`grp` AS STRING)), 1, 4)),
-  '源端口聚合异常',
-  CONCAT('关联分析「源端口聚合异常」：', '源 IP', ' = ',
-         COALESCE(CAST(`grp` AS STRING), '-'), ' 在 60 秒窗口内 ', '目的端口',
-         ' 的 ', 'SUM', ' 为 ', CAST(ROUND(`agg_val`, 3) AS STRING),
-         '（阈值 ', CAST(100.0 AS STRING), '）'),
-  'medium',
-  'correlation',
-  'flink-correlation', 'new', CAST(`grp` AS STRING),
-  CONCAT('rule_id=', CAST(4 AS STRING), '; type=aggregation; group=', 'src_ip',
-         '; agg_func=', 'sum', '; agg_field=', 'dst_port',
-         '; window_start=', CAST(`w_start` AS STRING), '; window_end=', CAST(`w_end` AS STRING),
-         '; value=', CAST(ROUND(`agg_val`, 4) AS STRING), '; threshold=', CAST(100.0 AS STRING),
-         '; compare=', '>='),
-  CAST(NULL AS STRING),
-  `w_end`, `w_end`, `w_end`
-FROM (
-  SELECT
-    TUMBLE_START(`proc_time`, INTERVAL '1' MINUTE) AS `w_start`,
-    TUMBLE_END(`proc_time`, INTERVAL '1' MINUTE)   AS `w_end`,
-    `src_ip` AS `grp`,
-    SUM(CAST(`dst_port` AS DOUBLE)) AS `agg_val`,
-    MIN(`src_ip`)     AS `sample_src_ip`
-  FROM corr_src
-  WHERE `src_ip` IS NOT NULL AND `dst_port` IS NOT NULL
-  GROUP BY TUMBLE(`proc_time`, INTERVAL '1' MINUTE), `src_ip`
-)
-WHERE `agg_val` >= 100.0;
-
-INSERT INTO corr_events
-SELECT
   CONCAT('CE', CAST(5 AS STRING), '-', DATE_FORMAT(`w_start`, 'yyMMddHHmm'), '-', SUBSTR(MD5(CAST(`grp` AS STRING)), 1, 4)),
   '先扫后打时序',
   CONCAT('时序关联「先扫后打时序」：', '源 IP', ' = ',
@@ -177,15 +147,18 @@ FROM (
     SUM(CASE WHEN `category` LIKE '%scan%' THEN 1 ELSE 0 END) AS `a_cnt`,
     SUM(CASE WHEN `category` LIKE '%attempted%' THEN 1 ELSE 0 END) AS `b_cnt`,
     MIN(`src_ip`)     AS `sample_src_ip`,
-    MIN(CASE WHEN `category` LIKE '%scan%' THEN `proc_time` END) AS `a_at`,
-    MIN(CASE WHEN `category` LIKE '%attempted%' THEN `proc_time` END) AS `b_at`
+    MIN(CASE WHEN `category` LIKE '%scan%' THEN `first_seen` END) AS `a_at`,
+    MIN(CASE WHEN `category` LIKE '%attempted%' THEN `first_seen` END) AS `b_at`
   FROM corr_src
   WHERE `src_ip` IS NOT NULL
   GROUP BY TUMBLE(`proc_time`, INTERVAL '2' MINUTE), `src_ip`
 )
--- A 不晚于 B 即算命中：PROCTIME 是毫秒精度，同毫秒到达的消息按并列处理，
--- 用严格 < 会把「同一批上报里的先扫后打」全部漏掉
-WHERE `a_cnt` >= 1 AND `b_cnt` >= 1 AND `a_at` <= `b_at`;
+-- A 不晚于 B 即算命中：first_seen 为 ISO-8601 字符串，字典序=时间序；
+-- 两边任一为 NULL（无 first_seen）时不命中；同刻到达按并列处理（<=），
+-- 用严格 < 会把「同一批上报里的先扫后打」全部漏掉。
+-- ⚠️ 不能用 proc_time 做 MIN：PROCTIME 是时间属性，CASE 里引用会恒为 NULL。
+WHERE `a_cnt` >= 1 AND `b_cnt` >= 1 AND `a_at` IS NOT NULL
+  AND `b_at` IS NOT NULL AND `a_at` <= `b_at`;
 
 INSERT INTO corr_events
 SELECT
@@ -248,4 +221,253 @@ FROM (
   GROUP BY TUMBLE(`proc_time`, INTERVAL '5' MINUTE), `src_ip`
 )
 WHERE `hit_cnt` >= 10.0;
+
+INSERT INTO corr_events
+SELECT
+  CONCAT('CE', CAST(9 AS STRING), '-', DATE_FORMAT(`w_start`, 'yyMMddHHmm'), '-', SUBSTR(MD5(CAST(`grp` AS STRING)), 1, 4)),
+  '端口扫描探测事件',
+  CONCAT('关联分析「端口扫描探测」：', '源 IP', ' = ',
+         COALESCE(CAST(`grp` AS STRING), '-'), ' 在 60 秒窗口内命中 ',
+         CAST(`hit_cnt` AS STRING), ' 个不同的 ', '目的端口', '（阈值 ', CAST(10.0 AS STRING), '）'),
+  'high',
+  'correlation',
+  'flink-correlation', 'new', CAST(`grp` AS STRING),
+  CONCAT('rule_id=', CAST(9 AS STRING), '; type=distinct; group=', 'src_ip',
+         '; distinct_field=', 'dst_port', '; window_start=', CAST(`w_start` AS STRING),
+         '; window_end=', CAST(`w_end` AS STRING), '; distinct_count=', CAST(`hit_cnt` AS STRING),
+         '; threshold=', CAST(10.0 AS STRING)),
+  CAST(NULL AS STRING),
+  `w_end`, `w_end`, `w_end`
+FROM (
+  SELECT
+    TUMBLE_START(`proc_time`, INTERVAL '1' MINUTE) AS `w_start`,
+    TUMBLE_END(`proc_time`, INTERVAL '1' MINUTE)   AS `w_end`,
+    `src_ip` AS `grp`,
+    COUNT(DISTINCT `dst_port`) AS `hit_cnt`,
+    MIN(`src_ip`)     AS `sample_src_ip`
+  FROM corr_src
+  WHERE `src_ip` IS NOT NULL AND `dst_port` IS NOT NULL
+  GROUP BY TUMBLE(`proc_time`, INTERVAL '1' MINUTE), `src_ip`
+)
+WHERE `hit_cnt` >= 10.0;
+
+INSERT INTO corr_events
+SELECT
+  CONCAT('CE', CAST(10 AS STRING), '-', DATE_FORMAT(`w_start`, 'yyMMddHHmm'), '-', SUBSTR(MD5(CAST(`grp` AS STRING)), 1, 4)),
+  '多目标横向攻击事件',
+  CONCAT('关联分析「多目标横向攻击检测」：', '源 IP', ' = ',
+         COALESCE(CAST(`grp` AS STRING), '-'), ' 在 300 秒窗口内命中 ',
+         CAST(`hit_cnt` AS STRING), ' 个不同的 ', '目的 IP', '（阈值 ', CAST(5.0 AS STRING), '）'),
+  'high',
+  'correlation',
+  'flink-correlation', 'new', CAST(`grp` AS STRING),
+  CONCAT('rule_id=', CAST(10 AS STRING), '; type=distinct; group=', 'src_ip',
+         '; distinct_field=', 'dst_ip', '; window_start=', CAST(`w_start` AS STRING),
+         '; window_end=', CAST(`w_end` AS STRING), '; distinct_count=', CAST(`hit_cnt` AS STRING),
+         '; threshold=', CAST(5.0 AS STRING)),
+  CAST(NULL AS STRING),
+  `w_end`, `w_end`, `w_end`
+FROM (
+  SELECT
+    TUMBLE_START(`proc_time`, INTERVAL '5' MINUTE) AS `w_start`,
+    TUMBLE_END(`proc_time`, INTERVAL '5' MINUTE)   AS `w_end`,
+    `src_ip` AS `grp`,
+    COUNT(DISTINCT `dst_ip`) AS `hit_cnt`,
+    MIN(`src_ip`)     AS `sample_src_ip`
+  FROM corr_src
+  WHERE `src_ip` IS NOT NULL AND `dst_ip` IS NOT NULL
+  GROUP BY TUMBLE(`proc_time`, INTERVAL '5' MINUTE), `src_ip`
+)
+WHERE `hit_cnt` >= 5.0;
+
+INSERT INTO corr_events
+SELECT
+  CONCAT('CE', CAST(11 AS STRING), '-', DATE_FORMAT(`w_start`, 'yyMMddHHmm'), '-', SUBSTR(MD5(CAST(`grp` AS STRING)), 1, 4)),
+  '多源协同攻击事件',
+  CONCAT('关联分析「多源协同攻击检测」：', '目的 IP', ' = ',
+         COALESCE(CAST(`grp` AS STRING), '-'), ' 在 300 秒窗口内命中 ',
+         CAST(`hit_cnt` AS STRING), ' 个不同的 ', '源 IP', '（阈值 ', CAST(5.0 AS STRING), '）'),
+  'high',
+  'correlation',
+  'flink-correlation', 'new', CAST(`sample_src_ip` AS STRING),
+  CONCAT('rule_id=', CAST(11 AS STRING), '; type=distinct; group=', 'dst_ip',
+         '; distinct_field=', 'src_ip', '; window_start=', CAST(`w_start` AS STRING),
+         '; window_end=', CAST(`w_end` AS STRING), '; distinct_count=', CAST(`hit_cnt` AS STRING),
+         '; threshold=', CAST(5.0 AS STRING)),
+  CAST(NULL AS STRING),
+  `w_end`, `w_end`, `w_end`
+FROM (
+  SELECT
+    TUMBLE_START(`proc_time`, INTERVAL '5' MINUTE) AS `w_start`,
+    TUMBLE_END(`proc_time`, INTERVAL '5' MINUTE)   AS `w_end`,
+    `dst_ip` AS `grp`,
+    COUNT(DISTINCT `src_ip`) AS `hit_cnt`,
+    MIN(`src_ip`)     AS `sample_src_ip`
+  FROM corr_src
+  WHERE `dst_ip` IS NOT NULL AND `src_ip` IS NOT NULL
+  GROUP BY TUMBLE(`proc_time`, INTERVAL '5' MINUTE), `dst_ip`
+)
+WHERE `hit_cnt` >= 5.0;
+
+INSERT INTO corr_events
+SELECT
+  CONCAT('CE', CAST(12 AS STRING), '-', DATE_FORMAT(`w_start`, 'yyMMddHHmm'), '-', SUBSTR(MD5(CAST(`grp` AS STRING)), 1, 4)),
+  '暴力破解事件',
+  CONCAT('关联分析「暴力破解高频告警」：', '源 IP', ' = ',
+         COALESCE(CAST(`grp` AS STRING), '-'), ' 在 300 秒窗口内触发 ',
+         CAST(`hit_cnt` AS STRING), ' 次（阈值 ', CAST(10.0 AS STRING), '）；样本告警 ',
+         COALESCE(`sample_code`, '-'), ' / ', COALESCE(`sample_title`, '-')),
+  'high',
+  'correlation',
+  'flink-correlation', 'new', CAST(`grp` AS STRING),
+  CONCAT('rule_id=', CAST(12 AS STRING), '; type=frequency; group=', 'src_ip',
+         '; window_start=', CAST(`w_start` AS STRING), '; window_end=', CAST(`w_end` AS STRING),
+         '; count=', CAST(`hit_cnt` AS STRING), '; threshold=', CAST(10.0 AS STRING)),
+  CAST(NULL AS STRING),
+  `w_end`, `w_end`, `w_end`
+FROM (
+  SELECT
+    TUMBLE_START(`proc_time`, INTERVAL '5' MINUTE) AS `w_start`,
+    TUMBLE_END(`proc_time`, INTERVAL '5' MINUTE)   AS `w_end`,
+    `src_ip` AS `grp`,
+    COUNT(*)             AS `hit_cnt`,
+    MIN(`src_ip`)     AS `sample_src_ip`,
+    MIN(`alert_code`)    AS `sample_code`,
+    MIN(`title`)         AS `sample_title`
+  FROM corr_src
+  WHERE `src_ip` IS NOT NULL AND `title` LIKE '%login%'
+  GROUP BY TUMBLE(`proc_time`, INTERVAL '5' MINUTE), `src_ip`
+)
+WHERE `hit_cnt` >= 10.0;
+
+INSERT INTO corr_events
+SELECT
+  CONCAT('CE', CAST(13 AS STRING), '-', DATE_FORMAT(`w_start`, 'yyMMddHHmm'), '-', SUBSTR(MD5(CAST(`grp` AS STRING)), 1, 4)),
+  '单主机告警风暴事件',
+  CONCAT('关联分析「单主机告警风暴」：', '主机名', ' = ',
+         COALESCE(CAST(`grp` AS STRING), '-'), ' 在 60 秒窗口内触发 ',
+         CAST(`hit_cnt` AS STRING), ' 次（阈值 ', CAST(8.0 AS STRING), '）；样本告警 ',
+         COALESCE(`sample_code`, '-'), ' / ', COALESCE(`sample_title`, '-')),
+  'medium',
+  'correlation',
+  'flink-correlation', 'new', CAST(`sample_src_ip` AS STRING),
+  CONCAT('rule_id=', CAST(13 AS STRING), '; type=frequency; group=', 'hostname',
+         '; window_start=', CAST(`w_start` AS STRING), '; window_end=', CAST(`w_end` AS STRING),
+         '; count=', CAST(`hit_cnt` AS STRING), '; threshold=', CAST(8.0 AS STRING)),
+  CAST(NULL AS STRING),
+  `w_end`, `w_end`, `w_end`
+FROM (
+  SELECT
+    TUMBLE_START(`proc_time`, INTERVAL '1' MINUTE) AS `w_start`,
+    TUMBLE_END(`proc_time`, INTERVAL '1' MINUTE)   AS `w_end`,
+    `hostname` AS `grp`,
+    COUNT(*)             AS `hit_cnt`,
+    MIN(`src_ip`)     AS `sample_src_ip`,
+    MIN(`alert_code`)    AS `sample_code`,
+    MIN(`title`)         AS `sample_title`
+  FROM corr_src
+  WHERE `hostname` IS NOT NULL
+  GROUP BY TUMBLE(`proc_time`, INTERVAL '1' MINUTE), `hostname`
+)
+WHERE `hit_cnt` >= 8.0;
+
+INSERT INTO corr_events
+SELECT
+  CONCAT('CE', CAST(14 AS STRING), '-', DATE_FORMAT(`w_start`, 'yyMMddHHmm'), '-', SUBSTR(MD5(CAST(`grp` AS STRING)), 1, 4)),
+  '重点服务持续受击事件',
+  CONCAT('关联分析「重点服务端口受击」：', '目的端口', ' = ',
+         COALESCE(CAST(`grp` AS STRING), '-'), ' 在 600 秒窗口内触发 ',
+         CAST(`hit_cnt` AS STRING), ' 次（阈值 ', CAST(15.0 AS STRING), '）；样本告警 ',
+         COALESCE(`sample_code`, '-'), ' / ', COALESCE(`sample_title`, '-')),
+  'medium',
+  'correlation',
+  'flink-correlation', 'new', CAST(`sample_src_ip` AS STRING),
+  CONCAT('rule_id=', CAST(14 AS STRING), '; type=frequency; group=', 'dst_port',
+         '; window_start=', CAST(`w_start` AS STRING), '; window_end=', CAST(`w_end` AS STRING),
+         '; count=', CAST(`hit_cnt` AS STRING), '; threshold=', CAST(15.0 AS STRING)),
+  CAST(NULL AS STRING),
+  `w_end`, `w_end`, `w_end`
+FROM (
+  SELECT
+    TUMBLE_START(`proc_time`, INTERVAL '10' MINUTE) AS `w_start`,
+    TUMBLE_END(`proc_time`, INTERVAL '10' MINUTE)   AS `w_end`,
+    `dst_port` AS `grp`,
+    COUNT(*)             AS `hit_cnt`,
+    MIN(`src_ip`)     AS `sample_src_ip`,
+    MIN(`alert_code`)    AS `sample_code`,
+    MIN(`title`)         AS `sample_title`
+  FROM corr_src
+  WHERE `dst_port` IS NOT NULL
+  GROUP BY TUMBLE(`proc_time`, INTERVAL '10' MINUTE), `dst_port`
+)
+WHERE `hit_cnt` >= 15.0;
+
+INSERT INTO corr_events
+SELECT
+  CONCAT('CE', CAST(15 AS STRING), '-', DATE_FORMAT(`w_start`, 'yyMMddHHmm'), '-', SUBSTR(MD5(CAST(`grp` AS STRING)), 1, 4)),
+  '高置信源IP威胁事件',
+  CONCAT('关联分析「高置信源IP持续威胁」：', '源 IP', ' = ',
+         COALESCE(CAST(`grp` AS STRING), '-'), ' 在 300 秒窗口内 ', '置信度',
+         ' 的 ', 'AVG', ' 为 ', CAST(ROUND(`agg_val`, 3) AS STRING),
+         '（阈值 ', CAST(80.0 AS STRING), '）'),
+  'high',
+  'correlation',
+  'flink-correlation', 'new', CAST(`grp` AS STRING),
+  CONCAT('rule_id=', CAST(15 AS STRING), '; type=aggregation; group=', 'src_ip',
+         '; agg_func=', 'avg', '; agg_field=', 'confidence',
+         '; window_start=', CAST(`w_start` AS STRING), '; window_end=', CAST(`w_end` AS STRING),
+         '; value=', CAST(ROUND(`agg_val`, 4) AS STRING), '; threshold=', CAST(80.0 AS STRING),
+         '; compare=', '>='),
+  CAST(NULL AS STRING),
+  `w_end`, `w_end`, `w_end`
+FROM (
+  SELECT
+    TUMBLE_START(`proc_time`, INTERVAL '5' MINUTE) AS `w_start`,
+    TUMBLE_END(`proc_time`, INTERVAL '5' MINUTE)   AS `w_end`,
+    `src_ip` AS `grp`,
+    AVG(CAST(`confidence` AS DOUBLE)) AS `agg_val`,
+    MIN(`src_ip`)     AS `sample_src_ip`
+  FROM corr_src
+  WHERE `src_ip` IS NOT NULL AND `confidence` IS NOT NULL
+  GROUP BY TUMBLE(`proc_time`, INTERVAL '5' MINUTE), `src_ip`
+)
+WHERE `agg_val` >= 80.0;
+
+INSERT INTO corr_events
+SELECT
+  CONCAT('CE', CAST(16 AS STRING), '-', DATE_FORMAT(`w_start`, 'yyMMddHHmm'), '-', SUBSTR(MD5(CAST(`grp` AS STRING)), 1, 4)),
+  '扫描后注入攻击链事件',
+  CONCAT('时序关联「扫描后注入攻击链」：', '源 IP', ' = ',
+         COALESCE(CAST(`grp` AS STRING), '-'), ' 在 300 秒窗口内同时出现 ',
+         '告警标题 包含 SCAN', '（', CAST(`a_cnt` AS STRING), ' 次）与 ',
+         '告警标题 包含 Injection', '（', CAST(`b_cnt` AS STRING), ' 次）'),
+  'critical',
+  'correlation',
+  'flink-correlation', 'new', CAST(`grp` AS STRING),
+  CONCAT('rule_id=', CAST(16 AS STRING), '; type=sequence; group=', 'src_ip',
+         '; stage_a=', '告警标题 包含 SCAN', '; stage_b=', '告警标题 包含 Injection',
+         '; window_start=', CAST(`w_start` AS STRING), '; window_end=', CAST(`w_end` AS STRING),
+         '; a_count=', CAST(`a_cnt` AS STRING), '; b_count=', CAST(`b_cnt` AS STRING)),
+  CAST(NULL AS STRING),
+  `w_end`, `w_end`, `w_end`
+FROM (
+  SELECT
+    TUMBLE_START(`proc_time`, INTERVAL '5' MINUTE) AS `w_start`,
+    TUMBLE_END(`proc_time`, INTERVAL '5' MINUTE)   AS `w_end`,
+    `src_ip` AS `grp`,
+    SUM(CASE WHEN `title` LIKE '%SCAN%' THEN 1 ELSE 0 END) AS `a_cnt`,
+    SUM(CASE WHEN `title` LIKE '%Injection%' THEN 1 ELSE 0 END) AS `b_cnt`,
+    MIN(`src_ip`)     AS `sample_src_ip`,
+    MIN(CASE WHEN `title` LIKE '%SCAN%' THEN `first_seen` END) AS `a_at`,
+    MIN(CASE WHEN `title` LIKE '%Injection%' THEN `first_seen` END) AS `b_at`
+  FROM corr_src
+  WHERE `src_ip` IS NOT NULL
+  GROUP BY TUMBLE(`proc_time`, INTERVAL '5' MINUTE), `src_ip`
+)
+-- A 不晚于 B 即算命中：first_seen 为 ISO-8601 字符串，字典序=时间序；
+-- 两边任一为 NULL（无 first_seen）时不命中；同刻到达按并列处理（<=），
+-- 用严格 < 会把「同一批上报里的先扫后打」全部漏掉。
+-- ⚠️ 不能用 proc_time 做 MIN：PROCTIME 是时间属性，CASE 里引用会恒为 NULL。
+WHERE `a_cnt` >= 1 AND `b_cnt` >= 1 AND `a_at` IS NOT NULL
+  AND `b_at` IS NOT NULL AND `a_at` <= `b_at`;
 END;

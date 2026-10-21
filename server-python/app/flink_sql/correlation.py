@@ -163,6 +163,7 @@ def source_ddl(topic='valid-alerts'):
   `username`       STRING,
   `operation`      STRING,
   `confidence`     DOUBLE,
+  `first_seen`     STRING,  -- ISO-8601 事件时间：sequence 时序判定用（PROCTIME 时间属性不能参与普通聚合）
   `proc_time`      AS PROCTIME()
 ) WITH (
   'connector' = 'kafka',
@@ -496,15 +497,18 @@ FROM (
     SUM(CASE WHEN {cond_a} THEN 1 ELSE 0 END) AS `a_cnt`,
     SUM(CASE WHEN {cond_b} THEN 1 ELSE 0 END) AS `b_cnt`,
 {_sample_src_ip_line()}
-    MIN(CASE WHEN {cond_a} THEN `proc_time` END) AS `a_at`,
-    MIN(CASE WHEN {cond_b} THEN `proc_time` END) AS `b_at`
+    MIN(CASE WHEN {cond_a} THEN `first_seen` END) AS `a_at`,
+    MIN(CASE WHEN {cond_b} THEN `first_seen` END) AS `b_at`
   FROM {_SRC_TABLE}
   {where}
   GROUP BY TUMBLE(`proc_time`, {wind}), {quote_ident(gfield)}
 )
--- A 不晚于 B 即算命中：PROCTIME 是毫秒精度，同毫秒到达的消息按并列处理，
--- 用严格 < 会把「同一批上报里的先扫后打」全部漏掉
-WHERE `a_cnt` >= 1 AND `b_cnt` >= 1 AND `a_at` <= `b_at`"""
+-- A 不晚于 B 即算命中：first_seen 为 ISO-8601 字符串，字典序=时间序；
+-- 两边任一为 NULL（无 first_seen）时不命中；同刻到达按并列处理（<=），
+-- 用严格 < 会把「同一批上报里的先扫后打」全部漏掉。
+-- ⚠️ 不能用 proc_time 做 MIN：PROCTIME 是时间属性，CASE 里引用会恒为 NULL。
+WHERE `a_cnt` >= 1 AND `b_cnt` >= 1 AND `a_at` IS NOT NULL
+  AND `b_at` IS NOT NULL AND `a_at` <= `b_at`"""
 
 
 _BUILDERS = {
