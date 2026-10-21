@@ -157,6 +157,11 @@ export const dashboardApi = {
   getAlertsTrend: (days?: number) => request(`/dashboard-api/event-trend?days=${days || 7}`),
   getEventDistribution: () => request('/dashboard-api/event-types'),
   getTopAlerts: (limit?: number) => request(`/dashboard-api/recent-alerts?limit=${limit || 10}`),
+  // Top N 攻击源 IP（ES 按 src_ip 聚合，默认最近 24h）
+  getAttackSources: (hours?: number, limit?: number) =>
+    request(`/dashboard-api/attack-sources?hours=${hours || 24}&limit=${limit || 5}`),
+  // 高风险资产（risk_score >= 70，与「高危资产」指标卡同口径）
+  getRiskAssets: (limit?: number) => request(`/dashboard-api/risk-assets?limit=${limit || 5}`),
 };
 
 // Alerts API (使用 Elasticsearch 存储)

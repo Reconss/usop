@@ -4,7 +4,8 @@ import { useChartTokens } from '../styles/chartTheme';
 
 interface AttackSource {
   ip: string;
-  country: string;
+  /** 国家/地区代码（无 GeoIP 数据源时留空，展示地球图标而非编造国旗） */
+  country?: string;
   count: number;
 }
 
@@ -34,7 +35,11 @@ export default function AttackSourceChart({ data }: AttackSourceChartProps) {
         <div key={source.ip} className="flex items-center gap-3">
           <span className="num w-5 shrink-0 text-[11px] text-text-muted">{index + 1}</span>
           <span className="flex h-6 w-6 shrink-0 items-center justify-center text-[15px]">
-            {countryFlags[source.country] || <Globe className="h-3.5 w-3.5 text-text-muted" />}
+            {source.country && countryFlags[source.country] ? (
+              <span>{countryFlags[source.country]}</span>
+            ) : (
+              <Globe className="h-3.5 w-3.5 text-text-muted" />
+            )}
           </span>
           <div className="min-w-0 flex-1">
             <div className="mb-1 flex items-center justify-between gap-3">

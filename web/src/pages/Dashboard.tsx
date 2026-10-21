@@ -10,7 +10,7 @@ import {
   type LucideIcon
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { dashboardApi, assetsApi, systemStatusApi } from '../services/api';
+import { dashboardApi, systemStatusApi } from '../services/api';
 import EventTrendChart from '../components/EventTrendChart';
 import EventTypeChart from '../components/EventTypeChart';
 import AttackSourceChart from '../components/AttackSourceChart';
@@ -48,7 +48,7 @@ const defaultTrendData = {
 const defaultDistribution: { name: string; value: number; color?: string }[] = [];
 
 const defaultAttackSources = [
-  { ip: '-', country: '-', count: 0 }
+  { ip: '-', count: 0 }
 ];
 
 const defaultRiskAssets = [
@@ -72,12 +72,12 @@ const Dashboard: React.FC = () => {
   const fetchData = async () => {
     try {
       // 并行获取多个API数据
-      const [metricsRes, trendRes, distributionRes, alertsRes, assetsRes, storageRes] = await Promise.allSettled([
+      const [metricsRes, trendRes, distributionRes, attackSrcRes, riskAssetRes, storageRes] = await Promise.allSettled([
         dashboardApi.getMetrics(),
         dashboardApi.getAlertsTrend(7),
         dashboardApi.getEventDistribution(),
-        dashboardApi.getTopAlerts(5),
-        assetsApi.getAssets({ page_size: 100 }),
+        dashboardApi.getAttackSources(24, 5),
+        dashboardApi.getRiskAssets(5),
         systemStatusApi.getStorageStatus()
       ]);
 
@@ -96,38 +96,27 @@ const Dashboard: React.FC = () => {
         setDistribution(distributionRes.value.data);
       }
 
-      // 处理攻击源数据（从告警中提取）
-      if (alertsRes.status === 'fulfilled' && alertsRes.value.success) {
-        const sources: Record<string, { ip: string; country: string; count: number }> = {};
-        alertsRes.value.data.items?.forEach((alert: any) => {
-          if (alert.source_ip) {
-            if (!sources[alert.source_ip]) {
-              sources[alert.source_ip] = { ip: alert.source_ip, country: 'CN', count: 0 };
-            }
-            sources[alert.source_ip].count++;
-          }
-        });
-        const topSources = Object.values(sources)
-          .sort((a, b) => b.count - a.count)
-          .slice(0, 5);
-        if (topSources.length > 0) setAttackSources(topSources);
+      // 处理攻击源数据（服务端 ES 按 src_ip 聚合，24h 窗口按告警条数倒序；
+      // 无 GeoIP 数据源，不展示国家/地区，也不编造）
+      if (attackSrcRes.status === 'fulfilled' && attackSrcRes.value.success) {
+        const sources = (attackSrcRes.value.data || []).map((s: any) => ({
+          ip: s.ip,
+          country: '',
+          count: s.count || 0,
+        }));
+        if (sources.length > 0) setAttackSources(sources);
       }
 
-      // 处理风险资产数据
-      if (assetsRes.status === 'fulfilled' && assetsRes.value.success) {
-        const assets = assetsRes.value.data.items || [];
-        const riskyAssets = assets
-          .filter((a: any) => a.risk_score && a.risk_score > 70)
-          .sort((a: any, b: any) => b.risk_score - a.risk_score)
-          .slice(0, 5)
-          .map((a: any) => ({
-            id: String(a.id),
-            name: a.name || a.hostname || '-',
-            type: a.asset_type || a.type || 'unknown',
-            riskScore: a.risk_score || 0,
-            lastSeen: a.last_seen || a.updated_at || '-'
-          }));
-        if (riskyAssets.length > 0) setRiskAssets(riskyAssets);
+      // 处理风险资产数据（服务端 risk_score >= 70，与「高危资产」指标卡同口径）
+      if (riskAssetRes.status === 'fulfilled' && riskAssetRes.value.success) {
+        const risky = (riskAssetRes.value.data || []).map((a: any) => ({
+          id: String(a.id),
+          name: a.name || '-',
+          type: a.type || 'unknown',
+          riskScore: a.riskScore || 0,
+          lastSeen: a.lastSeen || '-',
+        }));
+        if (risky.length > 0) setRiskAssets(risky);
       }
 
       // 处理存储状态
@@ -271,7 +260,7 @@ const Dashboard: React.FC = () => {
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
         <SectionCard
           title="Top 5 攻击源 IP"
-          description="按告警条数排序"
+          description="最近 24 小时 · 按告警条数排序"
           actions={
             <Button variant="ghost" size="sm" iconRight={ArrowRight} onClick={() => navigate('/detection/investigation')}>
               查看告警
@@ -283,7 +272,7 @@ const Dashboard: React.FC = () => {
 
         <SectionCard
           title="Top 5 风险资产"
-          description="风险分高于 70 的资产"
+          description="风险分 ≥ 70 的资产"
           actions={
             <Button variant="ghost" size="sm" iconRight={ArrowRight} onClick={() => navigate('/assets/inventory')}>
               资产清单

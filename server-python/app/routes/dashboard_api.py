@@ -81,9 +81,9 @@ def get_metrics():
         Event.status.in_(['new', 'investigating'])
     ).count()
 
-    # 高危资产数
+    # 高危资产数（与前端「Top 5 风险资产」列表同口径：risk_score >= 70）
     high_risk_assets = Asset.query.filter(
-        Asset.risk_score >= 80
+        Asset.risk_score >= 70
     ).count()
 
     # 资产总数
@@ -167,37 +167,57 @@ def get_event_types():
 @dashboard_api_bp.route('/attack-sources', methods=['GET'])
 @login_required
 def get_attack_sources():
-    """获取 Top 攻击源（ES terms 聚合 on src_ip）"""
-    ip_stats = _es_terms('src_ip', size=10)
-    
-    attack_sources = []
-    for ip, cnt in ip_stats:
-        ip = str(ip)
-        first_octet = int(ip.split('.')[0]) if ip and '.' in ip else 0
-        country = '海外' if 1 <= first_octet <= 223 else '内网'
-        
-        attack_sources.append({
-            'ip': ip,
-            'country': country,
-            'count': cnt
-        })
-    
-    if not attack_sources:
-        attack_sources = [{'ip': '192.168.1.100', 'country': '内网', 'count': 0}]
-    
-    return jsonify({'success': True, 'data': attack_sources})
+    """Top N 攻击源 IP：ES alerts-valid 按 src_ip 聚合（默认最近 24 小时）。
+
+    前端「Top 5 攻击源 IP」模块专用。原实现走 _es_terms（对 ip 类型字段
+    聚合失败）→ 恒空 → 回落硬编码假数据 192.168.1.100；且按首段十进制
+    猜「海外/内网」也是假地理信息。改为 ES terms 聚合 + 24h 时间窗，
+    不编造国家/地区字段（无 GeoIP 数据源时不返回）。
+    """
+    hours = request.args.get('hours', 24, type=int)
+    limit = request.args.get('limit', 5, type=int)
+    start = _iso(datetime.utcnow() - timedelta(hours=hours))
+    body = {
+        'size': 0,
+        'query': {'range': {'first_seen': {'gte': start}}},
+        'aggs': {'by_src': {
+            'terms': {'field': 'src_ip', 'size': max(1, limit), 'min_doc_count': 1},
+            'aggs': {
+                'last_seen': {'max': {'field': 'first_seen'}},
+                'top_sev': {'terms': {'field': 'severity', 'size': 1}},
+            },
+        }},
+    }
+    try:
+        resp = es_alerts.client().search(index=es_alerts.INDEX_VALID, body=body)
+    except Exception:
+        return jsonify({'success': True, 'data': []})
+    buckets = ((resp.get('aggregations') or {}).get('by_src') or {}).get('buckets') or []
+    data = [{
+        'ip': b['key'],
+        'count': b['doc_count'],
+        'last_seen': (b.get('last_seen') or {}).get('value_as_string'),
+        'top_severity': next(
+            (x['key'] for x in (b.get('top_sev') or {}).get('buckets', [])), None),
+    } for b in buckets]
+    return jsonify({'success': True, 'data': data})
 
 @dashboard_api_bp.route('/risk-assets', methods=['GET'])
 @login_required
 def get_risk_assets():
-    """获取高风险资产"""
+    """高风险资产 Top N（risk_score >= 70，与指标卡「高危资产」同口径）。
+
+    原实现阈值 risk_score > 0（把 30/40 分资产也当高风险）且空数据时
+    回落「无风险资产数据」假条目。现在：>= 70 真实阈值，无数据返回空数组。
+    """
+    limit = request.args.get('limit', 5, type=int)
     assets = Asset.query.filter(
         Asset.risk_score.isnot(None),
-        Asset.risk_score > 0
+        Asset.risk_score >= 70
     ).order_by(
         Asset.risk_score.desc()
-    ).limit(10).all()
-    
+    ).limit(max(1, limit)).all()
+
     data = []
     for asset in assets:
         data.append({
@@ -207,11 +227,9 @@ def get_risk_assets():
             'riskScore': asset.risk_score or 0,
             'lastSeen': asset.updated_at.isoformat() if asset.updated_at else None
         })
-    
-    if not data:
-        data = [{'id': '1', 'name': '无风险资产数据', 'type': 'unknown', 'riskScore': 0, 'lastSeen': None}]
-    
+
     return jsonify({'success': True, 'data': data})
+
 
 @dashboard_api_bp.route('/recent-alerts', methods=['GET'])
 @login_required
