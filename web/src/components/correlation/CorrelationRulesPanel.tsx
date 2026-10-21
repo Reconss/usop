@@ -5,7 +5,7 @@
  *   Kafka(valid-alerts) → 窗口关联分析 → 事件写入 PG events 表
  * 支持四类常规分析手段：频次阈值 / 去重计数 / 聚合统计 / 时序关联。
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Activity, AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, Code2,
   Pencil, Plus, RefreshCw, Rocket, ShieldCheck, Square, Trash2, Workflow, X, Zap,
@@ -162,6 +162,7 @@ export default function CorrelationRulesPanel({ onToast }: Props) {
   const [status, setStatus] = useState<any>(null);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const formRef = useRef<HTMLDivElement>(null);
   const [sqlPreview, setSqlPreview] = useState<string>('');
   const [showEvents, setShowEvents] = useState(false);
   const [form, setForm] = useState<any>({
@@ -193,6 +194,15 @@ export default function CorrelationRulesPanel({ onToast }: Props) {
     const t = setInterval(fetchAll, 20000);
     return () => clearInterval(t);
   }, [fetchAll]);
+
+  // 表单打开时滚动到表单位置。规则表较长（13+ 行）时用户常停在表格中下部点
+  // 「编辑」，而表单渲染在面板顶部：不滚动的话屏幕上没有任何变化，用户会
+  // 以为编辑按钮没反应（「无法编辑」的真实体感）。
+  useEffect(() => {
+    if (showForm) {
+      formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [showForm]);
 
   const openCreate = () => {
     setEditingId(null);
@@ -260,7 +270,9 @@ export default function CorrelationRulesPanel({ onToast }: Props) {
   };
 
   const toggle = async (r: CorrelationRule) => {
-    await pipelineApi.updateCorrelationRule(r.id, { enabled: !r.enabled });
+    const next = !r.enabled;
+    await pipelineApi.updateCorrelationRule(r.id, { enabled: next });
+    onToast(next ? `已启用规则「${r.name}」（需重新部署作业生效）` : `已停用规则「${r.name}」（需重新部署作业生效）`);
     await fetchAll();
   };
 
@@ -457,15 +469,16 @@ export default function CorrelationRulesPanel({ onToast }: Props) {
 
       {/* 表单 */}
       {showForm && (
-        <SectionCard
-          icon={editingId != null ? Pencil : Plus}
-          title={editingId != null ? '编辑关联分析规则' : '新建关联分析规则'}
-          description="保存后需点击「部署 / 重新部署作业」才会在 Flink 中生效"
-          actions={
-            <Button variant="ghost" size="sm" icon={X} onClick={() => setShowForm(false)}>
-              收起
-            </Button>
-          }
+        <div ref={formRef} className="scroll-mt-2">
+          <SectionCard
+            icon={editingId != null ? Pencil : Plus}
+            title={editingId != null ? '编辑关联分析规则' : '新建关联分析规则'}
+            description="保存后需点击「部署 / 重新部署作业」才会在 Flink 中生效"
+            actions={
+              <Button variant="ghost" size="sm" icon={X} onClick={() => setShowForm(false)}>
+                收起
+              </Button>
+            }
           footer={
             <>
               <Button
@@ -745,6 +758,7 @@ export default function CorrelationRulesPanel({ onToast }: Props) {
             </div>
           </div>
         </SectionCard>
+        </div>
       )}
 
       {/* 规则表 */}

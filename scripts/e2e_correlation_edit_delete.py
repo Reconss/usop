@@ -65,6 +65,24 @@ def main():
         rows = page.locator('tbody tr').count()
         check('关联规则列表共 13 条', rows == 13, f'rows={rows}')
 
+        # ---- 1b. 底部行编辑回归：表单必须滚入视口 ----
+        # 用户真实痛点：表格较长（13 行）时停在表格中下部点「编辑」，而表单渲染在
+        # 面板顶部。修复前页面完全不滚动 → 屏幕上没有任何变化 → 体感「无法编辑」。
+        page.locator('tbody tr').last.scroll_into_view_if_needed()
+        page.wait_for_timeout(400)
+        page.locator('tbody tr').last.locator('button[title="编辑"]').click()
+        page.wait_for_timeout(1200)   # 等 smooth 滚动完成
+        form_card = page.locator('section.app-card', has_text='编辑关联分析规则').first
+        check('底部行点编辑后表单卡片可见', form_card.count() > 0 and form_card.is_visible())
+        save_btn = page.locator("button:has-text('保存修改')").first
+        box = save_btn.bounding_box()
+        in_view = bool(box and 0 <= box['y'] <= page.viewport_size['height'])
+        check('保存按钮已滚入视口（不再屏幕外）', in_view, f'box_y={box["y"]:.0f}' if box else 'no box')
+        backfill = form_card.locator('input.app-input').first.input_value()
+        check('编辑表单回填该行规则名', backfill == '扫描后注入攻击链', f'name={backfill!r}')
+        page.locator("button:has-text('收起')").first.click()
+        page.wait_for_timeout(500)
+
         # ---- 2/3. 逐条编辑卡片 + 原样保存（按 PATCH 请求判定，toast 会被 2s 自动清除、时序不稳）----
         patch_count = [0]
 
