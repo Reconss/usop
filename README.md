@@ -207,15 +207,52 @@ flowchart LR
 
 ## 安装、初始化与启动
 
-### 0. 环境要求
+> **部署速查（主机 / 连接 / 凭证）** —— 日常运维、对接与排障最常查的信息先放这里，完整步骤见下方。
+
+### 主机与端口
+
+| 组件 | 访问地址（本机写 `localhost`，远程部署替换为服务器 IP） | 说明 |
+| --- | --- | --- |
+| 平台前端 | `http://localhost:3266` | 浏览器访问入口 |
+| 后端 API | `http://localhost:5001` | REST / JWT |
+| PostgreSQL | 宿主机 `localhost:5433` / 容器网络 `postgres:5432` | 业务库 `usop_security` |
+| Elasticsearch | `http://localhost:9200` | 告警唯一真相源（默认无鉴权） |
+| Kafka | 宿主机 `localhost:9092` / 容器网络 `kafka:29092` | 日志接入 |
+| Redis | `localhost:6379` | 去重缓存 |
+| Flink UI | `http://localhost:8081` | 关联分析作业管理 |
+
+### 组件连接串
+
+非容器模式（`deploy/.env.native`）或对接外部组件时使用：
+
+| 组件 | 连接串 |
+| --- | --- |
+| PostgreSQL | `postgresql://usop:usop_password@localhost:5433/usop_security` |
+| Elasticsearch | `http://localhost:9200` |
+| Kafka | `localhost:9092`（应用侧）/ `kafka:29092`（Flink 容器侧） |
+| Redis | `redis://localhost:6379/0` |
+
+> 容器内组件间一律用**服务名 + 容器端口**（如 `postgres:5432`、`kafka:29092`）；宿主机 / 外部进程访问用**映射端口**（如 `:5433`、`:9092`）。
+
+### 默认账号与凭证
+
+| 账号 | 密码 | 角色 | 说明 |
+| --- | --- | --- | --- |
+| `admin` | `admin123` | 超级管理员 | 首次启动自动创建，**请登录后立即修改** |
+| 系统角色 | — | `admin` / `operator` / `analyst` / `auditor` | RBAC 四系统角色 × 29 权限点 |
+
+- 数据库账号：`usop` / `usop_password`（库 `usop_security`，仅后端内部使用，请勿用其登录平台）。
+- 支持 **AD 域账号登录**：在「系统管理 → 全局配置 → AD 域认证」配置 LDAP 域控后，可用域账号登录。
+
+---
+
+### 1. 环境要求
 
 - **Docker Engine + Compose v2**：全容器部署必装（推荐生产 / 新手）
 - **Node.js ≥ 16**：仅本地构建前端时需要
 - **Python 3.11**：仅非容器模式（应用原生运行）需要
 
----
-
-### 1. 拉起服务
+### 2. 拉起服务
 
 **方式一 · 全容器（推荐）**：所有组件（含应用）跑在 Docker。
 
@@ -240,11 +277,11 @@ flowchart LR
 
 ---
 
-### 2. 初始化（首次部署必做）
+### 3. 初始化（首次部署必做）
 
 服务启动后**一部分初始化自动完成**，但数据库索引与检测 / 响应素材需手动补齐。
 
-**2.1 自动初始化（应用首次启动即完成，无需干预）**
+**3.1 自动初始化（应用首次启动即完成，无需干预）**
 
 | 初始化项 | 说明 |
 | --- | --- |
@@ -254,7 +291,7 @@ flowchart LR
 | 标准字段 / 提示词 | 标准告警字段、AI 研判提示词种子 |
 | Kafka Topic | `run.py` 启动时自动创建业务 Topic |
 
-**2.2 手动初始化（让检测与响应能力完整）**
+**3.2 手动初始化（让检测与响应能力完整）**
 
 ```bash
 # (a) ES 索引 / ILM / 模板 —— 告警唯一真相源，必做
@@ -281,7 +318,7 @@ docker exec -w /app -e PYTHONPATH=/app usop_all python3 /tmp/setup_block_playboo
 
 ---
 
-### 3. 前端发版（全容器模式）
+### 4. 前端发版（全容器模式）
 
 容器内 `/app/static` 部署前端构建产物；**顺序务必为「构建 → 清空 → 拷贝」，仅清空不拷贝会导致 nginx 返回 403**：
 
@@ -290,19 +327,6 @@ cd web && npm run build                       # 产物到 web/dist
 docker exec usop_all sh -c 'rm -rf /app/static/*'
 docker cp web/dist/. usop_all:/app/static/
 ```
-
----
-
-### 4. 默认登录与访问
-
-| 项目 | 值 |
-| --- | --- |
-| 前端地址 | `http://localhost:3266` |
-| 后端地址 | `http://localhost:5001` |
-| 默认账号 | `admin` / `admin123`（首次启动自动创建） |
-| 端口全集 | 前端 3266 · 后端 5001 · Flink UI 8081 · ES 9200 · Kafka 9092 |
-
-支持 **AD 域账号登录**：在「系统管理 → 全局配置 → AD 域认证」配置 LDAP 域控后即可用域账号登录。
 
 ## 目录结构
 
