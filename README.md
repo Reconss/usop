@@ -1,19 +1,19 @@
-<p align="center">
-  <img src="docs/images/dashboard-overview.png" width="860">
+<p align="center">  
+  <img src="docs/images/dashboard-overview.png" width="860">  
 </p>
 
-<p align="center">
-  <b>USOP</b> · 统一安全运营平台（Unified Security Operations Platform）
+<p align="center">  
+  <b>USOP</b> · 统一安全运营平台（Unified Security Operations Platform）  
 </p>
 
-<p align="center">
-  一套前后端分离的一体化安全运营平台，覆盖从日志接入、解析标准化、检测关联、AI 研判到事件处置闭环的完整安全运营链路。
+<p align="center">  
+  一套前后端分离的一体化安全运营平台，覆盖从日志接入、解析标准化、检测关联、AI 研判到事件处置闭环的完整安全运营链路。  
 </p>
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Stack-React%20%7C%20Flask%20%7C%20Kafka%20%7C%20Flink%20%7C%20ES-blue">
-  <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-0db7a3">
-  <img src="https://img.shields.io/badge/Status-本地部署-brightgreen">
+<p align="center">  
+  <img src="https://img.shields.io/badge/Stack-React%20%7C%20Flask%20%7C%20Kafka%20%7C%20Flink%20%7C%20ES-blue">  
+  <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-0db7a3">  
+  <img src="https://img.shields.io/badge/Status-本地部署-brightgreen">  
 </p>
 
 ---
@@ -87,86 +87,99 @@ flowchart LR
 
 平台按业务域划分为五大模块群。各页面的**真实运行截图、路由与能力说明**见下方「平台截图」章节；完整路由清单见「页面路由速查」。
 
-| 业务域 | 核心页面 | 关键能力 |
-| --- | --- | --- |
-| 态势感知与检测 | 仪表盘 · 安全告警 · 威胁狩猎 | 态势总览（指标/趋势/Top5）、告警检索与 AI 研判、交互式狩猎查询 |
-| 事件与响应 | 事件工作台 · AI 中心 · 响应剧本 · 封堵清单 · 规则管理 · 集成应用 | 五节点状态机、批量 AI 研判、剧本编排与审批、IP 封禁闭环、检测/关联规则、外部渠道对接 |
-| 资产与漏洞 | 资产清单 · 扫描任务 · 漏洞管理 · 评级配置 | 资产指纹与攻击面拓扑、漏洞全生命周期、六因子配置驱动重评 |
-| 数据接入 | 数据采集 · 存储表 · 资源中心 · 告警过滤 | Kafka 纳管、解析管道（标准化/过滤/去重）、字段模板、分流规则 |
-| 运营与系统 | 运营 KPI · 系统管理（RBAC）· 备份与还原 | 运营指标总览、4 系统角色 × 29 权限、AD 域认证、审计、全局配置、数据备份恢复 |
+| 业务域     | 核心页面                                      | 关键能力                                           |
+| ------- | ----------------------------------------- | ---------------------------------------------- |
+| 态势感知与检测 | 仪表盘 · 安全告警 · 威胁狩猎                         | 态势总览（指标/趋势/Top5）、告警检索与 AI 研判、交互式狩猎查询           |
+| 事件与响应   | 事件工作台 · AI 中心 · 响应剧本 · 封堵清单 · 规则管理 · 集成应用 | 五节点状态机、批量 AI 研判、剧本编排与审批、IP 封禁闭环、检测/关联规则、外部渠道对接 |
+| 资产与漏洞   | 资产清单 · 扫描任务 · 漏洞管理 · 评级配置                 | 资产指纹与攻击面拓扑、漏洞全生命周期、六因子配置驱动重评                   |
+| 数据接入    | 数据采集 · 存储表 · 资源中心 · 告警过滤                  | Kafka 纳管、解析管道（标准化/过滤/去重）、字段模板、分流规则             |
+| 运营与系统   | 运营 KPI · 系统管理（RBAC）· 备份与还原                | 运营指标总览、4 系统角色 × 29 权限、AD 域认证、审计、全局配置、数据备份恢复    |
 
 ## 平台截图与页面能力
 
 > 下表按业务域展示各页面真实运行效果，每图配路由与核心能力说明（完整路由见「页面路由速查」）。
 
-<table>
-  <tr>
-    <td width="50%">
-      <img src="docs/images/dashboard-overview.png"><br>
-      <b>仪表盘</b> — 态势总览：告警/事件/资产指标、24h 事件趋势、Top5 攻击源 IP 与风险资产
-    </td>
-    <td width="50%">
-      <img src="docs/images/alerts-investigation.png"><br>
-      <b>安全告警</b> — 告警检索、详情研判、聚合分析、AI 批量研判（ES 唯一真相源）
-    </td>
-  </tr>
-  <tr>
-    <td>
-      <img src="docs/images/events-workbench.png"><br>
-      <b>事件工作台</b> — 五节点状态机流转，告警↔事件状态联动，处置总结留痕
-    </td>
-    <td>
-      <img src="docs/images/threat-hunting.png"><br>
-      <b>威胁狩猎</b> — 交互式查询构建与狩猎任务
-    </td>
-  </tr>
-  <tr>
-    <td>
-      <img src="docs/images/ai-center.png"><br>
-      <b>AI 中心</b> — 模型管理、告警监控流水线、智能调查
-    </td>
-    <td>
-      <img src="docs/images/detection-rules.png"><br>
-      <b>规则管理</b> — 检测规则手动执行 + 13 条 Flink 关联分析规则（单常驻作业）
-    </td>
-  </tr>
-  <tr>
-    <td>
-      <img src="docs/images/playbook-canvas.png"><br>
-      <b>剧本编排</b> — 可视化画布、审批流、模拟运行、执行记录
-    </td>
-    <td>
-      <img src="docs/images/blocked-ips.png"><br>
-      <b>封堵清单</b> — 封禁/解封时间与时长、到期自动关闭、操作留痕
-    </td>
-  </tr>
-  <tr>
-    <td>
-      <img src="docs/images/assets-inventory.png"><br>
-      <b>资产清单</b> — 资产指纹与业务属性、开放端口、攻击面拓扑
-    </td>
-    <td>
-      <img src="docs/images/data-ingestion.png"><br>
-      <b>数据采集</b> — Kafka Topic 纳管、解析管道（标准化/过滤/去重/存储）
-    </td>
-  </tr>
-  <tr>
-    <td>
-      <img src="docs/images/vuln-host-list.png"><br>
-      <b>漏洞管理</b> — 主机/应用漏洞全生命周期、重评、附件与时间线
-    </td>
-    <td>
-      <img src="docs/images/vuln-rating-config.png"><br>
-      <b>评级配置</b> — 漏洞重评六因子权重与阈值在线调整，手动/自动统一模型
-    </td>
-  </tr>
-  <tr>
-    <td>
-      <img src="docs/images/rbac-roles.png"><br>
-      <b>RBAC 权限</b> — 4 系统角色 × 29 权限点、菜单过滤、集中式写守卫
-    </td>
-    <td></td>
-  </tr>
+<table>  
+  <tr>  
+    <td width="50%">  
+      <img src="docs/images/dashboard-overview.png">  
+  
+      <b>仪表盘</b> — 态势总览：告警/事件/资产指标、24h 事件趋势、Top5 攻击源 IP 与风险资产  
+    </td>  
+    <td width="50%">  
+      <img src="docs/images/alerts-investigation.png">  
+  
+      <b>安全告警</b> — 告警检索、详情研判、聚合分析、AI 批量研判（ES 唯一真相源）  
+    </td>  
+  </tr>  
+  <tr>  
+    <td>  
+      <img src="docs/images/events-workbench.png">  
+  
+      <b>事件工作台</b> — 五节点状态机流转，告警↔事件状态联动，处置总结留痕  
+    </td>  
+    <td>  
+      <img src="docs/images/threat-hunting.png">  
+  
+      <b>威胁狩猎</b> — 交互式查询构建与狩猎任务  
+    </td>  
+  </tr>  
+  <tr>  
+    <td>  
+      <img src="docs/images/ai-center.png">  
+  
+      <b>AI 中心</b> — 模型管理、告警监控流水线、智能调查  
+    </td>  
+    <td>  
+      <img src="docs/images/detection-rules.png">  
+  
+      <b>规则管理</b> — 检测规则手动执行 + 13 条 Flink 关联分析规则（单常驻作业）  
+    </td>  
+  </tr>  
+  <tr>  
+    <td>  
+      <img src="docs/images/playbook-canvas.png">  
+  
+      <b>剧本编排</b> — 可视化画布、审批流、模拟运行、执行记录  
+    </td>  
+    <td>  
+      <img src="docs/images/blocked-ips.png">  
+  
+      <b>封堵清单</b> — 封禁/解封时间与时长、到期自动关闭、操作留痕  
+    </td>  
+  </tr>  
+  <tr>  
+    <td>  
+      <img src="docs/images/assets-inventory.png">  
+  
+      <b>资产清单</b> — 资产指纹与业务属性、开放端口、攻击面拓扑  
+    </td>  
+    <td>  
+      <img src="docs/images/data-ingestion.png">  
+  
+      <b>数据采集</b> — Kafka Topic 纳管、解析管道（标准化/过滤/去重/存储）  
+    </td>  
+  </tr>  
+  <tr>  
+    <td>  
+      <img src="docs/images/vuln-host-list.png">  
+  
+      <b>漏洞管理</b> — 主机/应用漏洞全生命周期、重评、附件与时间线  
+    </td>  
+    <td>  
+      <img src="docs/images/vuln-rating-config.png">  
+  
+      <b>评级配置</b> — 漏洞重评六因子权重与阈值在线调整，手动/自动统一模型  
+    </td>  
+  </tr>  
+  <tr>  
+    <td>  
+      <img src="docs/images/rbac-roles.png">  
+  
+      <b>RBAC 权限</b> — 4 系统角色 × 29 权限点、菜单过滤、集中式写守卫  
+    </td>  
+    <td></td>  
+  </tr>  
 </table>
 
 ## 页面路由速查
@@ -190,8 +203,8 @@ flowchart LR
 | 存储表    | `/data/templates`        | 告警/事件字段模板与存储表                                                           |
 | 资源中心   | `/data/resources`        | IP 组、资源等共享资源                                                            |
 | 告警过滤   | `/data/alert-filters`    | 分流过滤规则与白名单                                                              |
-| 集成应用   | `/response/integrations` | 对接外部动作 / 通知渠道（SOAR、Webhook、IM），扩展响应能力                                    |
-| 备份与还原 | `/system/backup`        | 平台数据与配置的备份与恢复                                                          |
+| 集成应用   | `/response/integrations` | 对接外部动作 / 通知渠道（SOAR、Webhook、IM），扩展响应能力                                   |
+| 备份与还原  | `/system/backup`         | 平台数据与配置的备份与恢复                                                           |
 | 运营 KPI | `/operations/kpi`        | 运营指标总览                                                                  |
 | 系统管理   | `/system/*`              | 用户（含 AD 域账号）、角色、审计、备份、全局配置                                              |
 
@@ -223,13 +236,21 @@ flowchart LR
 
 ### 数据管理
 
-- **数据采集**：Kafka 统一采集入口、解析管道与字段映射（详见下方「数据采集接入」）。
+- **数据采集接入**：以 Kafka 为统一采集入口，支持 Filebeat/Winlogbeat/Logstash/Syslog 等将日志发往设备 topic，平台纳管后由解析管道自动完成标准化 → 过滤/去重 → 入库 ES，并触发 Flink 关联分析。
+  - 多采集端适配：Beats 全家桶、Logstash 汇聚、传统 Syslog / 原始文本直发均可接入。
+  - 9 种解析方式：auto / json / regex / template / syslog / cef / keyvalue / csv / grok，按样本即可完成字段映射。
+  - 可视化纳管、消费启停与告警过滤。
+  - 接入连接：Kafka 宿主机 `localhost:9092` / 容器网络 `kafka:29092`（详见上方「部署速查」）。
 - **告警过滤**：分流与白名单规则，控制哪些告警进入处置流程。
 - **资源管理 / 字段模型**：IP 组、共享资源与告警 / 事件字段模板（含字段模型中心），供各模块复用。
 
 ### 漏洞管理
 
-- 主机漏洞 / 应用漏洞全生命周期与配置驱动重评（详见下方「漏洞管理」）。
+- 主机漏洞 / 应用漏洞全生命周期管理：
+  - 双表模型：漏洞知识库与资产漏洞实例分离，CVE/CNVD/CNNVD/CWE、CVSS 向量与修复建议统一管理。
+  - 多源录入：手动录入与 Nessus 等扫描器导入共用同一实例表，自动复用漏洞定义、自动匹配资产。
+  - 状态机管控：open → in_progress → fixed → closed 主链路 + ignored / risk_accepted 旁路，流转全程留痕。
+  - 配置驱动重评：六因子权重在线可调的加权定级，支持人工覆盖与理由留痕。
 
 ### 系统管理
 
@@ -256,35 +277,36 @@ flowchart LR
 
 ### 主机与端口
 
-| 组件 | 访问地址（本机写 `localhost`，远程部署替换为服务器 IP） | 说明 |
-| --- | --- | --- |
-| 平台前端 | `http://localhost:3266` | 浏览器访问入口 |
-| 后端 API | `http://localhost:5001` | REST / JWT |
-| PostgreSQL | 宿主机 `localhost:5433` / 容器网络 `postgres:5432` | 业务库 `usop_security` |
-| Elasticsearch | `http://localhost:9200` | 告警唯一真相源（默认无鉴权） |
-| Kafka | 宿主机 `localhost:9092` / 容器网络 `kafka:29092` | 日志接入 |
-| Redis | `localhost:6379` | 去重缓存 |
-| Flink UI | `http://localhost:8081` | 关联分析作业管理 |
+| 组件            | 访问地址（本机写 `localhost`，远程部署替换为服务器 IP）         | 说明                  |
+| ------------- | ------------------------------------------- | ------------------- |
+| 平台前端          | `http://localhost:3266`                     | 浏览器访问入口             |
+| 后端 API        | `http://localhost:5001`                     | REST / JWT          |
+| PostgreSQL    | 宿主机 `localhost:5433` / 容器网络 `postgres:5432` | 业务库 `usop_security` |
+| Elasticsearch | `http://localhost:9200`                     | 告警唯一真相源（默认无鉴权）      |
+| Kafka         | 宿主机 `localhost:9092` / 容器网络 `kafka:29092`   | 日志接入                |
+| Redis         | `localhost:6379`                            | 去重缓存                |
+| Flink UI      | `http://localhost:8081`                     | 关联分析作业管理            |
 
 ### 组件连接串
 
 非容器模式（`deploy/.env.native`）或对接外部组件时使用：
 
-| 组件 | 连接串 |
-| --- | --- |
-| PostgreSQL | `postgresql://usop:usop_password@localhost:5433/usop_security` |
-| Elasticsearch | `http://localhost:9200` |
-| Kafka | `localhost:9092`（应用侧）/ `kafka:29092`（Flink 容器侧） |
-| Redis | `redis://localhost:6379/0` |
+| 组件            | 连接串                                                            |
+| ------------- | -------------------------------------------------------------- |
+| PostgreSQL    | `postgresql://usop:usop_password@localhost:5433/usop_security` |
+| Elasticsearch | `http://localhost:9200`                                        |
+| Kafka         | `localhost:9092`（应用侧）/ `kafka:29092`（Flink 容器侧）                |
+| Redis         | `redis://localhost:6379/0`                                     |
 
 > 容器内组件间一律用**服务名 + 容器端口**（如 `postgres:5432`、`kafka:29092`）；宿主机 / 外部进程访问用**映射端口**（如 `:5433`、`:9092`）。
 
+
 ### 默认账号与凭证
 
-| 账号 | 密码 | 角色 | 说明 |
-| --- | --- | --- | --- |
-| `admin` | `admin123` | 超级管理员 | 首次启动自动创建，**请登录后立即修改** |
-| 系统角色 | — | `admin` / `operator` / `analyst` / `auditor` | RBAC 四系统角色 × 29 权限点 |
+| 账号      | 密码         | 角色                                           | 说明                    |
+| ------- | ---------- | -------------------------------------------- | --------------------- |
+| `admin` | `admin123` | 超级管理员                                        | 首次启动自动创建，**请登录后立即修改** |
+| 系统角色    | —          | `admin` / `operator` / `analyst` / `auditor` | RBAC 四系统角色 × 29 权限点   |
 
 - 数据库账号：`usop` / `usop_password`（库 `usop_security`，仅后端内部使用，请勿用其登录平台）。
 - 支持 **AD 域账号登录**：在「系统管理 → 全局配置 → AD 域认证」配置 LDAP 域控后，可用域账号登录。
@@ -315,9 +337,9 @@ flowchart LR
 ./start_native.sh --no-infra      # 组件全 external，仅起应用
 ```
 
-> **地址区分（重要）**：应用侧用「宿主机可达地址」（`DATABASE_URL` / `ES_URL` / `KAFKA_BOOTSTRAP_SERVERS`）；
-> Flink 关联作业内嵌 SQL 用「组件网络内地址」（`PG_HOST` / `KAFKA_BOOTSTRAP`）。
-> 当某组件 external 且 Flink 仍跑在 Docker 时，必须填 Flink 容器可访问到的地址（宿主 IP 或 `host.docker.internal`）。
+> **地址区分（重要）**：应用侧用「宿主机可达地址」（`DATABASE_URL` / `ES_URL` / `KAFKA_BOOTSTRAP_SERVERS`）；  
+> Flink 关联作业内嵌 SQL 用「组件网络内地址」（`PG_HOST` / `KAFKA_BOOTSTRAP`）。  
+> 当某组件 external 且 Flink 仍跑在 Docker 时，必须填 Flink 容器可访问到的地址（宿主 IP 或 `host.docker.internal`）。  
 > 外部 ES 带鉴权用 `ES_USER` / `ES_PASSWORD` / `ES_USE_SSL`。纯基础设施管理：`start-bigdata.sh up|down|status|logs|init-topics`。
 
 ---
@@ -328,13 +350,13 @@ flowchart LR
 
 **3.1 自动初始化（应用首次启动即完成，无需干预）**
 
-| 初始化项 | 说明 |
-| --- | --- |
-| 数据库建表 | `db.create_all()` 创建全部业务表与索引（PostgreSQL 库 `usop_security`） |
-| 默认管理员 | 自动创建 `admin / admin123`（账号不存在时） |
-| RBAC 角色 | 种子四系统角色 `admin` / `operator` / `analyst` / `auditor`（× 29 权限点） |
-| 标准字段 / 提示词 | 标准告警字段、AI 研判提示词种子 |
-| Kafka Topic | `run.py` 启动时自动创建业务 Topic |
+| 初始化项        | 说明                                                             |
+| ----------- | -------------------------------------------------------------- |
+| 数据库建表       | `db.create_all()` 创建全部业务表与索引（PostgreSQL 库 `usop_security`）     |
+| 默认管理员       | 自动创建 `admin / admin123`（账号不存在时）                                |
+| RBAC 角色     | 种子四系统角色 `admin` / `operator` / `analyst` / `auditor`（× 29 权限点） |
+| 标准字段 / 提示词  | 标准告警字段、AI 研判提示词种子                                              |
+| Kafka Topic | `run.py` 启动时自动创建业务 Topic                                       |
 
 **3.2 手动初始化（让检测与响应能力完整）**
 
@@ -356,7 +378,7 @@ docker cp scripts/setup_block_playbooks.py usop_all:/tmp/
 docker exec -w /app -e PYTHONPATH=/app usop_all python3 /tmp/setup_block_playbooks.py
 ```
 
-> `$TOKEN` 取管理员令牌：
+> `$TOKEN` 取管理员令牌：  
 > `TOKEN=$(curl -s -X POST http://localhost:5001/api/auth/login -H 'Content-Type: application/json' -d '{"username":"admin","password":"admin123"}' | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['token'])")`
 >
 > 关联规则 / 封禁剧本脚本需在 `/app` 容器内运行（依赖 SQLAlchemy 模型与 `PYTHONPATH`）。脚本幂等，可重复执行。
@@ -399,30 +421,6 @@ usop/
 ├── start-bigdata.sh        # 仅管理基础设施（up/down/status/logs/init-topics）
 └── Dockerfile.all          # 应用镜像（nginx + Flask 二合一）
 ```
-
-## 数据采集接入
-
-平台以 **Kafka** 为统一采集入口，支持 Filebeat / Winlogbeat / Auditbeat / Metricbeat、Logstash、Syslog 及任意 JSON 生产者将日志发往**设备 topic**，平台纳管后由解析管道自动完成标准化 → 过滤/去重 → 入库 ES，并触发 Flink 关联分析。
-
-数据主链路：`日志源 → 采集端 → Kafka(设备 topic) → 标准化(ParseProfile) → 过滤/去重 → ES（valid/invalid-alerts）→ Flink 关联 → PG events`
-
-核心能力：
-
-- **多采集端适配**：Beats 全家桶、Logstash 汇聚、传统 Syslog / 原始文本直发均可接入。
-- **9 种解析方式**：`auto / json / regex / template / syslog / cef / keyvalue / csv / grok`，按样本即可完成字段映射，无需采集端预格式化。
-- **可视化纳管**：「数据采集」页面新建数据源、配置解析与分流规则，管道即自动运行；支持消费启停与告警过滤。
-- **接入连接**：Kafka 宿主机 `localhost:9092` / 容器网络 `kafka:29092`（PLAINTEXT），详见上方「部署速查（主机 / 连接 / 凭证）」。
-
-
-## 漏洞管理（主机漏洞 / 应用漏洞）
-
-参考 Tenable/Qualys RBVM 体系实现的漏洞全生命周期管理（页面 `/vulnerabilities/host`、`/vulnerabilities/application`），核心能力：
-
-- **双表模型**：漏洞知识库（`vulnerabilities`，含 CVE/CNVD/CNNVD/CWE、CVSS v3/v2 向量、修复建议）+ 资产漏洞实例（`asset_vulnerabilities`，含位置、处置、重评、时间线）。
-- **多源录入**：页面手动录入（按名称/CVE 自动复用定义、按 IP 自动匹配资产）与 Nessus 导入共用同一实例表。
-- **状态机管控**：`open → in_progress → fixed → closed` 主链路 + `ignored` / `risk_accepted` 旁路，服务端强校验，流转全程写时间线。
-- **配置驱动重评**：六因子权重加权定级（在线可调），支持单维人工覆盖与整体分数覆盖，重评理由与因子明细留痕。
-- **处置与协作**：责任人/方案/计划时间跟踪、漏洞附件（截图/报告）、详情时间线，及列表检索、等级/状态分布统计。
 
 ---
 
