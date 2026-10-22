@@ -355,110 +355,29 @@ usop/
 └── Dockerfile.all          # 应用镜像（nginx + Flask 二合一）
 ```
 
-## 数据采集接入（Beats / Logstash → Kafka）
+## 数据采集接入
 
-平台采集入口是 **Kafka**。采集端（Filebeat / Logstash / 其它生产者）把日志发到**设备 topic**，平台纳管该 topic 后经解析管道自动完成：标准化 → 过滤/去重 → 存入 ES（`valid-alerts` / `invalid-alerts`）。
+平台以 **Kafka** 为统一采集入口，支持 Filebeat / Winlogbeat / Auditbeat / Metricbeat、Logstash、Syslog 及任意 JSON 生产者将日志发往**设备 topic**，平台纳管后由解析管道自动完成标准化 → 过滤/去重 → 入库 ES，并触发 Flink 关联分析。
 
-```
-日志源 → Filebeat/Logstash → Kafka(设备topic) → 标准化(ParseProfile) → 过滤/去重 → valid/invalid-alerts → ES
-                                                                                    └→ Flink 关联分析 → PG events
-```
+数据主链路：`日志源 → 采集端 → Kafka(设备 topic) → 标准化(ParseProfile) → 过滤/去重 → ES（valid/invalid-alerts）→ Flink 关联 → PG events`
 
-### 1. Kafka 连接信息
+核心能力：
 
-| 参数      | 值                                        |
-| ------- | ---------------------------------------- |
-| 主机侧地址   | `localhost:9092`（PLAINTEXT，容器映射宿主机 9092） |
-| 容器网络内地址 | `kafka:29092`                            |
-| 协议      | PLAINTEXT（无 TLS/SASL，本地部署默认）             |
-
-### 2. Topic 约定
-
-- **设备 topic 自由命名**，建议 `<设备类型>-<数据类型>`，如 `waf-alert`、`ids-raw`、`winlogbeat-event`。
-- **系统 topic 禁止作为采集目标**（平台自用，建/写都会被拒绝）：  
-  `raw-logs`、`standardized-alerts`、`valid-alerts`、`invalid-alerts`（及 `processed-alerts`）。
-
-### 3. Filebeat 直发 Kafka
-
-`filebeat.yml` 最小可用配置（一行一条 JSON，平台可直接解析）：
-
-```yaml
-filebeat.inputs:
-  - type: filestream
-    id: waf-log
-    paths:
-      - /var/log/waf/access.log
-
-output.kafka:
-  hosts: ["localhost:9092"]        # 容器网络内部署填 kafka:29092
-  topic: "waf-alert"               # 设备 topic，需与平台纳管名一致
-  required_acks: 1
-  compression: gzip
-  worker: 2
-  max_message_bytes: 10485760      # 10MB，超长日志调大
-
-# 建议关掉自带 metadata，发裸消息，减少平台解析负担
-processors:
-  - drop_fields:
-      fields: ["agent", "ecs", "input", "log.offset"]
-```
-
-其它 Beat 同理（`winlogbeat` / `auditbeat` / `metricbeat` 都支持 `output.kafka`），改 `topic` 即可。注意：Beats 发出的消息默认带 `@timestamp`、`message` 字段，平台解析时按 JSON 提取即可。
-
-### 4. Logstash 转发（多源汇聚场景）
-
-设备多、格式杂时，用 Logstash 做汇聚层：`beats/syslog/tcp 输入 → 过滤 → kafka 输出`。
-
-```ruby
-# logstash.conf
-input {
-  beats  { port => 5044 }                 # 各类 Beat 汇聚
-  syslog { port => 5514 }                 # 传统设备 syslog 直发
-  tcp    { port => 5140  codec => json }  # 脚本/探针 JSON 直推
-}
-
-filter {
-  # 可选：补字段、打标。不要过度加工，解析交给平台 ParseProfile
-  mutate { add_field => { "[@metadata][topic]" => "ids-alert" } }
-}
-
-output {
-  kafka {
-    bootstrap_servers => "localhost:9092"
-    topic_id => "%{[@metadata][topic]}"
-    codec => json_lines                 # 一行一条 JSON，平台首选
-    compression_type => "gzip"
-  }
-}
-```
-
-> 若设备只能发 syslog/原始文本，直接发文本也可以——在平台「数据采集 → 解析配置」里按样本配置解析方式（支持 `auto / json / regex / template / syslog / cef / keyvalue / csv / grok` 9 种），无需采集端做格式化。
-
-### 5. 平台侧纳管步骤
-
-1. 「数据采集 → 数据源管理」新建数据源：协议 `kafka`，填写 topic 名（即上一步采集端发送的 topic）；保存即自动创建并纳管该 topic。
-2. 为该数据源配置**解析方式**（ParseProfile）：提供一条真实样本，选 JSON/regex/grok 等方式并映射到平台标准字段（`rule_name / severity / src_ip / dst_ip / attack_type ...`）。
-3. 保存后管道自动运行：设备 topic → 标准化 → 过滤/去重 → ES。可在「告警过滤」配置分流规则，在「安全告警」页面验证数据到达。
-4. 暂停/恢复消费：`POST /api/pipeline/topics {datasource_id, action: pause|resume}`。
-
-### 6. 消息格式建议
-
-- **首选**：一行一条 JSON 对象（`codec => json_lines` / Filebeat 默认 JSON），字段名与平台标准字段对齐时零解析成本。
-- **兼容**：原始单行文本 / syslog / CEF —— 交给 ParseProfile 解析。
-- 时间字段建议 ISO8601（`2026-10-18T19:30:00`），缺省时平台按入库时间兜底。
+- **多采集端适配**：Beats 全家桶、Logstash 汇聚、传统 Syslog / 原始文本直发均可接入。
+- **9 种解析方式**：`auto / json / regex / template / syslog / cef / keyvalue / csv / grok`，按样本即可完成字段映射，无需采集端预格式化。
+- **可视化纳管**：「数据采集」页面新建数据源、配置解析与分流规则，管道即自动运行；支持消费启停与告警过滤。
+- **接入连接**：Kafka 宿主机 `localhost:9092` / 容器网络 `kafka:29092`（PLAINTEXT），详见上方「部署速查（主机 / 连接 / 凭证）」。
 
 
 ## 漏洞管理（主机漏洞 / 应用漏洞）
 
-参考常规漏洞管理系统（Tenable/Qualys 的 RBVM 体系）实现的全生命周期管理，页面 `web/src/pages/VulnerabilityManagement.tsx`（`/vulnerabilities/host`、`/vulnerabilities/application` 两个 Tab 复用同一组件），API `app/routes/vulnerabilities_api.py`：
+参考 Tenable/Qualys RBVM 体系实现的漏洞全生命周期管理（页面 `/vulnerabilities/host`、`/vulnerabilities/application`），核心能力：
 
-- **双表模型**：`vulnerabilities`（漏洞定义/知识库：CVE/CNVD/CNNVD/CWE、CVSS v3/v2 评分与向量、漏洞类别、修复建议、参考链接）+ `asset_vulnerabilities`（资产漏洞实例：编号 VH-/VA-、位置（IP/端口/协议/URL/组件版本）、处置跟踪、重评信息、时间线）。字段迁移见 `migrations/add_vuln_fields.py`（幂等，含 `vuln_class` 列）。
-- **录入**：页面「录入漏洞」弹窗（`POST /vulnerabilities`）——按名称/CVE 自动复用或创建漏洞定义；资产按 IP 自动匹配，不存在则自动创建；`source=manual`。Nessus 导入（`/nessus/import`）走同一实例表。
-- **状态机**（`VULN_STATUS_FLOW`，服务端强校验）：`open → in_progress → fixed → closed`；旁路 `ignored` / `risk_accepted`；`fixed` 可退回 `in_progress`（复测不通过）；`closed/ignored/risk_accepted` 可重开。每次流转写时间线并记录说明；关闭记录复测人/时间/结果。批量流转走 `/batch-status`（逐条校验，失败返回原因）。
-- **重新评级（配置驱动，手动/自动统一模型）**：原始 CVSS 评级保留不动；重评按「评级配置」的六因子权重加权定级（权重/阈值在线可调），支持单维度人工覆盖与整体分数覆盖，未覆盖维度按漏洞真实属性自动挑选因子；必须填重评理由，各维度因子明细存 `assess_factors.choices`，历史重评留在 `assess_history`。
-- **防重复**：列表按「重评等级 ?? 原始等级」排序（危急→低危），服务端分页 + search（编号/CVE/名称/IP）+ severity/status 过滤；`/stats` 按类型返回等级/状态分布。
-- **处置跟踪**：责任人/处置方案/计划完成时间/备注（`PUT /vulnerabilities/<id>`），详情弹窗展示处置跟踪块 + 重评历史 + 完整时间线。
-- **附件（截图/报告）**：漏洞详情弹窗可上传多个附件（`POST /vulnerabilities/<id>/attachments`，multipart 字段 `file`）——图片（png/jpg/jpeg/gif/webp/bmp）自动归类为「截图」并生成缩略图与大图预览，其余（pdf/word/excel/csv/txt/md/log/json/zip）归为「报告」，限 20MB。落盘目录 `server-python/app/uploads/vuln_attachments/`（容器内 `/app/app/uploads/...`，bind mount 持久化），下载/预览走 `GET .../attachments/<att_id>`（带 JWT，前端 fetch+blob）。上传/删除写入处置时间线；删除漏洞时级联清理附件文件与记录（`vulnerability_attachments` 表）。
+- **双表模型**：漏洞知识库（`vulnerabilities`，含 CVE/CNVD/CNNVD/CWE、CVSS v3/v2 向量、修复建议）+ 资产漏洞实例（`asset_vulnerabilities`，含位置、处置、重评、时间线）。
+- **多源录入**：页面手动录入（按名称/CVE 自动复用定义、按 IP 自动匹配资产）与 Nessus 导入共用同一实例表。
+- **状态机管控**：`open → in_progress → fixed → closed` 主链路 + `ignored` / `risk_accepted` 旁路，服务端强校验，流转全程写时间线。
+- **配置驱动重评**：六因子权重加权定级（在线可调），支持单维人工覆盖与整体分数覆盖，重评理由与因子明细留痕。
+- **处置与协作**：责任人/方案/计划时间跟踪、漏洞附件（截图/报告）、详情时间线，及列表检索、等级/状态分布统计。
 
 ---
 
