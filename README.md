@@ -311,6 +311,17 @@ flowchart LR
 - 数据库账号：`usop` / `usop_password`（库 `usop_security`，仅后端内部使用，请勿用其登录平台）。
 - 支持 **AD 域账号登录**：在「系统管理 → 全局配置 → AD 域认证」配置 LDAP 域控后，可用域账号登录。
 
+**各组件鉴权现状（默认本地部署）**
+
+| 组件 | 默认鉴权 | 默认连接凭证 | 生产加固建议 |
+| --- | --- | --- | --- |
+| PostgreSQL | 账号密码 | `usop` / `usop_password` | 改强密码（dev 用 `POSTGRES_PASSWORD`，生产用 `PG_PASSWORD`） |
+| Elasticsearch | 无（`xpack.security.enabled=false`） | 无 | 开启安全并配置 `ES_USER` / `ES_PASSWORD` / `ES_USE_SSL` |
+| Kafka | 无（PLAINTEXT，无 SASL） | 无 | 启用 SASL_SSL 鉴权 |
+| Redis | 无 | `redis://localhost:6379/0`（无密码） | 设置 `requirepass` |
+
+> 说明：本地 / 开发部署为方便起见，ES / Kafka / Redis 默认均**不开启鉴权**，只有 PostgreSQL 与平台登录带账号密码；平台登录账号见上方表格。若这些组件改为外部实例或上生产，请按右侧建议补鉴权，并在 `deploy/.env.native`（非容器）或 `deploy/usop.env.example`（生产）中填对应连接串。
+
 ---
 
 ### 1. 环境要求
