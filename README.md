@@ -83,18 +83,21 @@ flowchart LR
 - **响应闭环**：告警关联事件 → AI 研判 / 人工研判 → 剧本编排执行（封禁 IP / 通知 / 工单）→ 封堵清单与执行记录全程留痕。
 - **单容器交付**：应用镜像 nginx + Flask 二合一，基础设施（Kafka/ES/Flink/PG/Redis）独立编排，支持全容器与原生+外部组件两种部署形态。
 
-## Features
+## 功能模块与页面能力
 
-| 能力 | 说明 |
-| --- | --- |
-| 安全告警与 AI 研判 | 告警检索、详情研判、聚合分析、AI 批量研判（自动闭环 / 误报标记 / 高危建事件） |
-| 事件工作台 | 五节点状态机流转（new → acknowledged → investigating → resolved → closed） |
-| 响应剧本与自动化 | 剧本编排、审批流、执行记录、封堵名单、通知与 HTTP 集成 |
-| 资产与漏洞管理 | 资产盘点 / 攻击面 / 扫描；主机 · 应用漏洞全生命周期、重评、附件 |
-| 数据采集与解析 | Kafka 接入、ParseProfile 映射、9 种解析方式 |
-| 权限与系统 | RBAC（4 系统角色 + 集中式写守卫）、AD 域认证、审计、全局配置 |
+平台按业务域划分为五大模块群。各页面的**真实运行截图、路由与能力说明**见下方「平台截图」章节；完整路由清单见「页面路由速查」。
 
-## 平台截图
+| 业务域 | 核心页面 | 关键能力 |
+| --- | --- | --- |
+| 态势感知与检测 | 仪表盘 · 安全告警 · 威胁狩猎 | 态势总览（指标/趋势/Top5）、告警检索与 AI 研判、交互式狩猎查询 |
+| 事件与响应 | 事件工作台 · AI 中心 · 响应剧本 · 封堵清单 · 规则管理 | 五节点状态机、批量 AI 研判、剧本编排与审批、IP 封禁闭环、检测/关联规则 |
+| 资产与漏洞 | 资产清单 · 扫描任务 · 漏洞管理 · 评级配置 | 资产指纹与攻击面拓扑、漏洞全生命周期、六因子配置驱动重评 |
+| 数据接入 | 数据采集 · 存储表 · 资源中心 · 告警过滤 | Kafka 纳管、解析管道（标准化/过滤/去重）、字段模板、分流规则 |
+| 运营与系统 | 运营 KPI · 系统管理（RBAC） | 运营指标总览、4 系统角色 × 29 权限、AD 域认证、审计、全局配置 |
+
+## 平台截图与页面能力
+
+> 下表按业务域展示各页面真实运行效果，每图配路由与核心能力说明（完整路由见「页面路由速查」）。
 
 <table>
   <tr>
@@ -166,7 +169,9 @@ flowchart LR
   </tr>
 </table>
 
-## 模块与路由
+## 页面路由速查
+
+> 与上方「平台截图」对应，这里给出完整页面路由清单（含截图未单独展示的次要页面）。
 
 | 模块     | 路由                       | 说明                                                                      |
 | ------ | ------------------------ | ----------------------------------------------------------------------- |
@@ -200,65 +205,85 @@ flowchart LR
 | 业务库 | PostgreSQL                                                                               |
 | 缓存  | Redis（去重窗口）                                                                              |
 
-## 快速开始
+## 安装、初始化与启动
 
-USOP 支持两种部署形态，按场景选择：
+### 0. 环境要求
 
-### 方式一：全容器（最省事，推荐新手 / 生产）
+- **Docker Engine + Compose v2**：全容器部署必装（推荐生产 / 新手）
+- **Node.js ≥ 16**：仅本地构建前端时需要
+- **Python 3.11**：仅非容器模式（应用原生运行）需要
 
-所有组件（含应用）都跑在 Docker。开发用根目录编排，生产用多角色编排。
+---
 
-```bash
-# 开发：一条命令拉起全栈（usop_all / postgres / redis / kafka / elasticsearch / flink*）
-./start.sh
-# 等价于：docker compose up -d
+### 1. 拉起服务
 
-# 生产：多机分角色一键部署（all-in-one | app | data | es）
-./deploy.sh all-in-one                 # 单机全栈
-./deploy.sh app  --data-host 10.0.0.12 --es-host 10.0.0.13   # 应用节点连远端数据/检索
-./deploy.sh status | logs | verify | upgrade | backup | stop  # 运维子命令
-```
-
-访问：前端 `http://localhost:3266`、后端 `http://localhost:5001`、Flink UI `:8081`、ES `:9200`。
-
-### 方式二：非容器（应用原生 + 组件按需 Docker/外部，便于开发调试）
-
-**Flask 后端与 React 前端在宿主机原生运行**（热更新、断点调试）；基础设施（PG / Redis / ES / Kafka / Flink）则**按组件自由选择**：用本地 Docker 起，或对接已有的独立部署实例（云数据库 / 自建集群等）。连接信息集中在 `deploy/.env.native`（模板 `deploy/.env.native.example`），首次运行自动生成。
-
-每个组件用一个 `*_PROVIDER` 开关控制：
+**方式一 · 全容器（推荐）**：所有组件（含应用）跑在 Docker。
 
 ```bash
-# deploy/.env.native 中
-PG_PROVIDER=docker        # docker    → 由脚本经 docker-compose.infra.yml 启动
-REDIS_PROVIDER=docker
-ES_PROVIDER=external      # external  → 已在别处独立部署，仅按下方地址连接（不启 Docker）
-KAFKA_PROVIDER=docker
-FLINK_PROVIDER=docker
-# 五个全 external 时，脚本自动等同 --no-infra
+./start.sh                                  # = docker compose up -d
+# 生产多机分角色：./deploy.sh all-in-one | app | data | es
+# 运维子命令：        ./deploy.sh status | logs | verify | upgrade | backup | stop
 ```
 
-典型混搭：ES 用云上 Elastic、其余本地 Docker —— 脚本只会 `docker compose up` 起 PG/Redis/Kafka/Flink，跳过 ES 并直接连你配的云地址。
+**方式二 · 非容器（开发调试）**：Flask 后端与 React 前端在宿主机原生运行（热更新、断点）；基础设施（PG / Redis / ES / Kafka / Flink）按组件自由选择 Docker 或外部实例，连接信息集中在 `deploy/.env.native`（`*_PROVIDER=docker|external` 开关）。
 
 ```bash
-# 默认（全 docker）：基础设施走 Docker + 应用原生启动（后端 :5001，前端 :9000）
-./start_native.sh
-
-# 变体
-./start_native.sh --no-infra   # 所有组件均按 .env 连外部（不启 Docker）
-./start_native.sh --build      # 前端改用生产构建并静态托管在 :3266
-./start_native.sh --stop       # 停止 Docker 类组件并杀掉应用进程
-./start_native.sh --status     # 查看各组件提供方式（docker/external）与就绪情况
-./start_native.sh --logs       # 跟踪 Docker 类组件日志（应用日志落本地文件）
+./start_native.sh                 # 基础设施 Docker + 应用原生（后端 :5001，前端 :9000）
+./start_native.sh --build         # 前端生产构建并托管在 :3266
+./start_native.sh --no-infra      # 组件全 external，仅起应用
 ```
 
-> **地址区分（重要）**：应用侧用「宿主机可达地址」（`DATABASE_URL` / `ES_URL` / `KAFKA_BOOTSTRAP_SERVERS` / `FLINK_*_URL`）；
+> **地址区分（重要）**：应用侧用「宿主机可达地址」（`DATABASE_URL` / `ES_URL` / `KAFKA_BOOTSTRAP_SERVERS`）；
 > Flink 关联作业内嵌 SQL 用「组件网络内地址」（`PG_HOST` / `KAFKA_BOOTSTRAP`）。
-> 当某组件是 **external 且 Flink 仍跑在 Docker** 时，这两个必须填 Flink 容器能访问到的地址
-> （通常是宿主 IP 或 `host.docker.internal`），否则关联作业回写 PG / 消费 Kafka 会连不上。
-> 外部 ES 若带鉴权，通过 `ES_USER` / `ES_PASSWORD` / `ES_USE_SSL` 配置。
-> 单纯管理 Docker 类基础设施可用 `./start-bigdata.sh up|down|status|logs|init-topics`。
+> 当某组件 external 且 Flink 仍跑在 Docker 时，必须填 Flink 容器可访问到的地址（宿主 IP 或 `host.docker.internal`）。
+> 外部 ES 带鉴权用 `ES_USER` / `ES_PASSWORD` / `ES_USE_SSL`。纯基础设施管理：`start-bigdata.sh up|down|status|logs|init-topics`。
 
-### 前端发版（全容器模式）
+---
+
+### 2. 初始化（首次部署必做）
+
+服务启动后**一部分初始化自动完成**，但数据库索引与检测 / 响应素材需手动补齐。
+
+**2.1 自动初始化（应用首次启动即完成，无需干预）**
+
+| 初始化项 | 说明 |
+| --- | --- |
+| 数据库建表 | `db.create_all()` 创建全部业务表与索引（PostgreSQL 库 `usop_security`） |
+| 默认管理员 | 自动创建 `admin / admin123`（账号不存在时） |
+| RBAC 角色 | 种子四系统角色 `admin` / `operator` / `analyst` / `auditor`（× 29 权限点） |
+| 标准字段 / 提示词 | 标准告警字段、AI 研判提示词种子 |
+| Kafka Topic | `run.py` 启动时自动创建业务 Topic |
+
+**2.2 手动初始化（让检测与响应能力完整）**
+
+```bash
+# (a) ES 索引 / ILM / 模板 —— 告警唯一真相源，必做
+bash scripts/es-setup.sh http://localhost:9200
+
+# (b) 关联分析规则种子（13 条内置规则，幂等可重跑）
+docker cp scripts/seed_correlation_base_rules.py usop_all:/tmp/
+docker exec -w /app -e PYTHONPATH=/app usop_all python3 /tmp/seed_correlation_base_rules.py
+docker cp scripts/seed_correlation_rules_extra.py usop_all:/tmp/
+docker exec -w /app -e PYTHONPATH=/app usop_all python3 /tmp/seed_correlation_rules_extra.py
+# 重新提交 Flink 关联作业使规则生效
+curl -X POST http://localhost:5001/api/pipeline/correlation/deploy \
+     -H "Authorization: Bearer $TOKEN"
+
+# (c) 封禁剧本 —— 打通「剧本 → 设备模拟器 → 回执 → 分支处置」闭环
+docker cp scripts/setup_block_playbooks.py usop_all:/tmp/
+docker exec -w /app -e PYTHONPATH=/app usop_all python3 /tmp/setup_block_playbooks.py
+```
+
+> `$TOKEN` 取管理员令牌：
+> `TOKEN=$(curl -s -X POST http://localhost:5001/api/auth/login -H 'Content-Type: application/json' -d '{"username":"admin","password":"admin123"}' | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['token'])")`
+>
+> 关联规则 / 封禁剧本脚本需在 `/app` 容器内运行（依赖 SQLAlchemy 模型与 `PYTHONPATH`）。脚本幂等，可重复执行。
+
+---
+
+### 3. 前端发版（全容器模式）
+
+容器内 `/app/static` 部署前端构建产物；**顺序务必为「构建 → 清空 → 拷贝」，仅清空不拷贝会导致 nginx 返回 403**：
 
 ```bash
 cd web && npm run build                       # 产物到 web/dist
@@ -266,7 +291,18 @@ docker exec usop_all sh -c 'rm -rf /app/static/*'
 docker cp web/dist/. usop_all:/app/static/
 ```
 
-默认登录：`admin`（本地账号）。支持 AD 域账号登录，在「全局配置 → AD 域认证」中配置 LDAP 域控。
+---
+
+### 4. 默认登录与访问
+
+| 项目 | 值 |
+| --- | --- |
+| 前端地址 | `http://localhost:3266` |
+| 后端地址 | `http://localhost:5001` |
+| 默认账号 | `admin` / `admin123`（首次启动自动创建） |
+| 端口全集 | 前端 3266 · 后端 5001 · Flink UI 8081 · ES 9200 · Kafka 9092 |
+
+支持 **AD 域账号登录**：在「系统管理 → 全局配置 → AD 域认证」配置 LDAP 域控后即可用域账号登录。
 
 ## 目录结构
 
