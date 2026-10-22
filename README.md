@@ -329,18 +329,18 @@ flowchart LR
 # 运维子命令：        ./deploy.sh status | logs | verify | upgrade | backup | stop
 ```
 
-**方式二 · 非容器（开发调试）**：Flask 后端与 React 前端在宿主机原生运行（热更新、断点）；基础设施（PG / Redis / ES / Kafka / Flink）按组件自由选择 Docker 或外部实例，连接信息集中在 `deploy/.env.native`（`*_PROVIDER=docker|external` 开关）。
+**方式二 · 非容器（开发调试）**：应用（Flask 后端 + React 前端）直接跑在宿主机，支持热更新与断点；基础设施（PG / Redis / ES / Kafka / Flink）默认由 Docker 托管。适合日常改代码调试。
 
 ```bash
-./start_native.sh                 # 基础设施 Docker + 应用原生（后端 :5001，前端 :9000）
-./start_native.sh --build         # 前端生产构建并托管在 :3266
-./start_native.sh --no-infra      # 组件全 external，仅起应用
+./start_native.sh            # 最常用：基础设施起 Docker，应用跑本机（后端 :5001，前端 :9000）
+./start_native.sh --build    # 前端改用生产构建并托管在 :3266（更接近线上效果）
+./start_native.sh --no-infra # 基础设施已在别处（云 RDS / 自建 ES 等）时，只起应用
 ```
 
-> **地址区分（重要）**：应用侧用「宿主机可达地址」（`DATABASE_URL` / `ES_URL` / `KAFKA_BOOTSTRAP_SERVERS`）；  
-> Flink 关联作业内嵌 SQL 用「组件网络内地址」（`PG_HOST` / `KAFKA_BOOTSTRAP`）。  
-> 当某组件 external 且 Flink 仍跑在 Docker 时，必须填 Flink 容器可访问到的地址（宿主 IP 或 `host.docker.internal`）。  
-> 外部 ES 带鉴权用 `ES_USER` / `ES_PASSWORD` / `ES_USE_SSL`。纯基础设施管理：`start-bigdata.sh up|down|status|logs|init-topics`。
+- **混搭组件（可选）**：想让某个基础设施改用你自己的实例，编辑 `deploy/.env.native`，把对应 `*_PROVIDER` 由 `docker` 改成 `external` 并填地址即可（默认全部 `docker`，直接跑即可）。
+- **停止 / 状态**：`./start_native.sh --stop` 停止，`--status` 查看各组件，`--logs` 跟踪日志。
+
+> **排障提示（仅混搭外部组件时才需要）**：默认全 Docker 时无需关心下面内容。若某组件改成 `external` 且 Flink 仍在 Docker，需把 `PG_HOST` / `KAFKA_BOOTSTRAP` 填成 Flink 容器能访问到的地址（宿主 IP 或 `host.docker.internal`），否则关联作业连不上；外部 ES 带鉴权用 `ES_USER` / `ES_PASSWORD` / `ES_USE_SSL`。
 
 ---
 
