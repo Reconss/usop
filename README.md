@@ -102,80 +102,67 @@ flowchart LR
 <table>  
   <tr>  
     <td width="50%">  
-      <img src="docs/images/dashboard-overview.png">  
-  
+      <img src="docs/images/dashboard-overview.png"><br>
       <b>仪表盘</b> — 态势总览：告警/事件/资产指标、24h 事件趋势、Top5 攻击源 IP 与风险资产  
     </td>  
     <td width="50%">  
-      <img src="docs/images/alerts-investigation.png">  
-  
+      <img src="docs/images/alerts-investigation.png"><br>
       <b>安全告警</b> — 告警检索、详情研判、聚合分析、AI 批量研判（ES 唯一真相源）  
     </td>  
   </tr>  
   <tr>  
     <td>  
-      <img src="docs/images/events-workbench.png">  
-  
+      <img src="docs/images/events-workbench.png"><br>
       <b>事件工作台</b> — 五节点状态机流转，告警↔事件状态联动，处置总结留痕  
     </td>  
     <td>  
-      <img src="docs/images/threat-hunting.png">  
-  
+      <img src="docs/images/threat-hunting.png"><br>
       <b>威胁狩猎</b> — 交互式查询构建与狩猎任务  
     </td>  
   </tr>  
   <tr>  
     <td>  
-      <img src="docs/images/ai-center.png">  
-  
+      <img src="docs/images/ai-center.png"><br>
       <b>AI 中心</b> — 模型管理、告警监控流水线、智能调查  
     </td>  
     <td>  
-      <img src="docs/images/detection-rules.png">  
-  
+      <img src="docs/images/detection-rules.png"><br>
       <b>规则管理</b> — 检测规则手动执行 + 13 条 Flink 关联分析规则（单常驻作业）  
     </td>  
   </tr>  
   <tr>  
     <td>  
-      <img src="docs/images/playbook-canvas.png">  
-  
+      <img src="docs/images/playbook-canvas.png"><br>
       <b>剧本编排</b> — 可视化画布、审批流、模拟运行、执行记录  
     </td>  
     <td>  
-      <img src="docs/images/blocked-ips.png">  
-  
+      <img src="docs/images/blocked-ips.png"><br>
       <b>封堵清单</b> — 封禁/解封时间与时长、到期自动关闭、操作留痕  
     </td>  
   </tr>  
   <tr>  
     <td>  
-      <img src="docs/images/assets-inventory.png">  
-  
+      <img src="docs/images/assets-inventory.png"><br>
       <b>资产清单</b> — 资产指纹与业务属性、开放端口、攻击面拓扑  
     </td>  
     <td>  
-      <img src="docs/images/data-ingestion.png">  
-  
+      <img src="docs/images/data-ingestion.png"><br>
       <b>数据采集</b> — Kafka Topic 纳管、解析管道（标准化/过滤/去重/存储）  
     </td>  
   </tr>  
   <tr>  
     <td>  
-      <img src="docs/images/vuln-host-list.png">  
-  
+      <img src="docs/images/vuln-host-list.png"><br>
       <b>漏洞管理</b> — 主机/应用漏洞全生命周期、重评、附件与时间线  
     </td>  
     <td>  
-      <img src="docs/images/vuln-rating-config.png">  
-  
+      <img src="docs/images/vuln-rating-config.png"><br>
       <b>评级配置</b> — 漏洞重评六因子权重与阈值在线调整，手动/自动统一模型  
     </td>  
   </tr>  
   <tr>  
     <td>  
-      <img src="docs/images/rbac-roles.png">  
-  
+      <img src="docs/images/rbac-roles.png"><br>
       <b>RBAC 权限</b> — 4 系统角色 × 29 权限点、菜单过滤、集中式写守卫  
     </td>  
     <td></td>  
