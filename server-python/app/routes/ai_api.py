@@ -161,7 +161,10 @@ def _deepseek_request(messages: list, **kwargs) -> dict:
         api_key = DEEPSEEK_API_KEY
         model = kwargs.get('model', DEEPSEEK_MODEL)
     else:
-        model = kwargs.get('model', model)
+        # 已配置自定义提供商：除非调用方显式指定了「非默认」模型，否则用提供商的模型，
+        # 避免遗留的 DEEPSEEK_MODEL 默认值覆盖配置的模型（如 FreeLLMAPI 的 auto）
+        caller_model = kwargs.get('model')
+        model = caller_model if (caller_model and caller_model != DEEPSEEK_MODEL) else model
 
     resp = http_requests.post(
         f"{api_base}/chat/completions",
@@ -187,7 +190,10 @@ def _deepseek_stream(messages: list, **kwargs):
     if not api_base:
         api_base = _get_api_base()
         api_key = DEEPSEEK_API_KEY
-    model = kwargs.get('model', model if model else DEEPSEEK_MODEL)
+        model = kwargs.get('model', DEEPSEEK_MODEL)
+    else:
+        caller_model = kwargs.get('model')
+        model = caller_model if (caller_model and caller_model != DEEPSEEK_MODEL) else model
     resp = http_requests.post(
         f"{api_base}/chat/completions",
         headers={
@@ -205,7 +211,23 @@ def _deepseek_stream(messages: list, **kwargs):
         timeout=kwargs.get('timeout', 60),
     )
     resp.raise_for_status()
-    return resp.iter_lines(decode_unicode=True)
+    # 兼容两种返回：标准 SSE（event-stream / 含 "data: " 行）与部分网关的「单次 JSON」
+    ct = resp.headers.get('Content-Type', '')
+    raw = resp.text
+    if 'text/event-stream' not in ct and 'data: ' not in raw:
+        try:
+            chunk = json.loads(raw)
+            choices = chunk.get('choices') or []
+            content = (choices[0].get('message', {}).get('content') if choices and isinstance(choices[0], dict) else '') or ''
+            yield 'data: ' + json.dumps({'choices': [{'delta': {'content': content}}]})
+            yield 'data: [DONE]'
+            return
+        except (ValueError, KeyError, TypeError):
+            pass
+    # 标准 SSE：逐行透传（调用方按 data: 行解析）
+    for line in raw.splitlines():
+        if line.strip():
+            yield line
 
 
 # ==================== 模型管理 ====================
@@ -406,12 +428,17 @@ def send_message(session_id):
                         break
                     try:
                         chunk = json.loads(payload)
-                        delta = chunk.get('choices', [{}])[0].get('delta', {})
+                        choices = chunk.get('choices') or [{}]
+                        if not choices or not isinstance(choices[0], dict):
+                            continue
+                        delta = choices[0].get('delta', {}) or {}
                         content = delta.get('content', '')
-                        collected_content += content
-                        yield f"data: {json.dumps({'content': content, 'done': False})}\n\n"
+                        if content:
+                            collected_content += content
+                            yield f"data: {json.dumps({'content': content, 'done': False})}\n\n"
                     except json.JSONDecodeError:
                         continue
+
 
             # 流结束，保存完整回复到数据库
             ai_message = AIChatMessage(
@@ -440,7 +467,11 @@ def send_message(session_id):
                 max_tokens=data.get('max_tokens', 4096),
             )
 
-            reply_content = result['choices'][0]['message']['content'] or ""
+            choices = result.get('choices') or []
+            if choices and isinstance(choices[0], dict):
+                reply_content = choices[0].get('message', {}).get('content') or ""
+            else:
+                reply_content = ""
 
             ai_message = AIChatMessage(
                 session_id=session_id,
