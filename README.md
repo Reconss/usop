@@ -338,13 +338,19 @@ flowchart LR
 
 ### 2. 拉起服务
 
-**方式一 · 全容器（推荐）**：所有组件（含应用）跑在 Docker。
+**方式一 · 全容器（推荐）**：所有组件（含应用 `usop_all`）跑在 Docker，由 `docker-compose.yml` 统一编排。
 
 ```bash
-./start.sh                                  # = docker compose up -d
+docker compose -f docker-compose.yml up -d --build   # 首次构建 usop_all 镜像并启动全部组件
+# 后续启动（镜像已存在）：
+docker compose -f docker-compose.yml up -d
 # 生产多机分角色：./deploy.sh all-in-one | app | data | es
 # 运维子命令：        ./deploy.sh status | logs | verify | upgrade | backup | stop
 ```
+
+> ⚠️ **`start.sh` ≠ 全容器**：`start.sh` 实际只是 `start_native.sh`（非容器开发模式）的别名，会**在宿主机原生跑 Flask + 前端、仅基础设施走 Docker**，并非「`docker compose up -d`」。想要真全容器请直接用上面的 `docker compose -f docker-compose.yml up -d` 命令。
+>
+> 全容器模式依赖 `docker-compose.yml` 里 `usop` 服务的环境变量把各组件指向容器网络主机名（如 `postgres` / `redis` / `elasticsearch` / `kafka` / `flink-jobmanager`）。注意 `server-python/.env` 是**原生模式配置**（全部指向 `localhost`），被镜像 COPY 进 `usop_all` 后**不会覆盖** compose 已设的环境变量；但凡代码读取、compose 又未显式设置的环境变量（如 `ES_URL`）会回退到 `.env` 的 `localhost` 而在容器内连不上——目前 `ES_URL` 已在 compose 中补齐，改动镜像内连接配置时请同步核对。
 
 **方式二 · 非容器（开发调试）**：应用（Flask 后端 + React 前端）直接跑在宿主机，支持热更新与断点；基础设施（PG / Redis / ES / Kafka / Flink）默认由 Docker 托管。适合日常改代码调试。
 
