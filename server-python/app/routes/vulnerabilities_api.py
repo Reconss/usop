@@ -151,6 +151,42 @@ def get_vulnerabilities():
     })
 
 
+@vulnerabilities_api_bp.route('/vulnerabilities/export', methods=['GET'])
+@login_required
+def export_vulnerabilities():
+    """导出漏洞（支持 type/severity/status/search 筛选，返回全部匹配，不分页）"""
+    vuln_type = request.args.get('type')
+    severity = request.args.get('severity')
+    status = request.args.get('status')
+    search = (request.args.get('search') or '').strip()
+
+    query = AssetVulnerability.query
+    if vuln_type in VULN_TYPES:
+        query = query.filter(AssetVulnerability.vuln_type == vuln_type)
+    if severity in SEVERITIES:
+        # 按重评等级优先过滤
+        query = query.filter(db.or_(
+            AssetVulnerability.assessed_severity == severity,
+            db.and_(AssetVulnerability.assessed_severity.is_(None),
+                    AssetVulnerability.severity == severity)))
+    if status:
+        query = query.filter(AssetVulnerability.status == status)
+    if search:
+        like = f'%{search}%'
+        query = query.join(
+            Vulnerability, AssetVulnerability.vuln_id == Vulnerability.id, isouter=True
+        ).filter(db.or_(
+            Vulnerability.name.ilike(like), Vulnerability.cve_id.ilike(like),
+            AssetVulnerability.plugin_name.ilike(like),
+            AssetVulnerability.ip_address.ilike(like),
+            AssetVulnerability.hostname.ilike(like),
+            AssetVulnerability.vuln_code.ilike(like),
+        ))
+
+    items = [v.to_dict() for v in query.all()]
+    return jsonify({'success': True, 'data': items, 'total': len(items)})
+
+
 @vulnerabilities_api_bp.route('/vulnerabilities/stats', methods=['GET'])
 @login_required
 def get_stats():

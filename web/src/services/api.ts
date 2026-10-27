@@ -546,6 +546,15 @@ export const vulnerabilitiesApi = {
   reassessVuln: (id: number, data: { factors?: Record<string, string>; reason?: string; manual_score?: number }) =>
     request(`/vulnerabilities-api/vulnerabilities/${id}/reassess`, { method: 'PUT', body: data }),
   getVulnStats: () => request('/vulnerabilities-api/vulnerabilities/stats'),
+  /** 导出漏洞（当前 type + 筛选），返回全部匹配，前端转 CSV 下载 */
+  exportVulnerabilities: (params?: { type?: string; severity?: string; status?: string; search?: string }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.type) searchParams.append('type', params.type);
+    if (params?.severity) searchParams.append('severity', params.severity);
+    if (params?.status) searchParams.append('status', params.status);
+    if (params?.search) searchParams.append('search', params.search);
+    return request(`/vulnerabilities-api/vulnerabilities/export?${searchParams.toString()}`);
+  },
 
   // 漏洞附件（截图 / 报告）
   getVulnAttachments: (id: number) => request(`/vulnerabilities-api/vulnerabilities/${id}/attachments`),
