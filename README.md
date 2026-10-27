@@ -22,7 +22,7 @@
 
 USOP（Unified Security Operations Platform）是一套前后端分离的一体化安全运营平台，覆盖从**日志接入、解析标准化、检测关联、AI 研判到事件处置闭环**的完整安全运营链路。
 
-> 核心数据流：`日志源 → Kafka → 解析管道（标准化/过滤/去重）→ Elasticsearch（告警唯一真相源）→ Flink 关联分析 → PostgreSQL（事件/业务）`
+> 核心数据流：`日志源 → Kafka(设备Topic) → 解析管道·标准izer → Kafka(standardized-alerts) → 解析管道·过滤/去重/分流 → Kafka(valid-alerts / invalid-alerts) →〔ES 存储消费者 → Elasticsearch 告警唯一真相源〕｜｜〔Flink 关联分析（从 Kafka valid-alerts 读取）→ PostgreSQL events〕`
 
 ## Why USOP?
 
@@ -41,14 +41,25 @@ flowchart LR
     end
 
     subgraph ingest["接入层"]
-        kafka[("Kafka<br/>设备 Topic")]
-        pipeline["解析管道<br/>标准化 · 过滤 · 去重"]
+        devkafka[("Kafka<br/>设备 Topic")]
     end
 
-    subgraph detect["检测层"]
+    subgraph pipeline["解析管道（常驻消费线程）"]
+        std["标准izer<br/>解析 · 字段映射 · 标准化"]
+        filt["过滤 / 去重 / 分流<br/>白名单 · Redis 去重窗口"]
+    end
+
+    subgraph kbuf["Kafka 中间缓冲"]
+        stdk[("standardized-alerts")]
+        validk[("valid-alerts")]
+        invk[("invalid-alerts")]
+    end
+
+    subgraph detect["检测与存储层"]
+        essink["ES 存储消费者<br/>告警写入"]
         es[("Elasticsearch<br/>告警唯一真相源")]
         flink["Flink 关联分析<br/>13 条内置规则 · 常驻作业"]
-        engine["检测规则引擎"]
+        engine["检测规则引擎<br/>手动执行"]
     end
 
     subgraph app["应用层（usop_all 容器：nginx + Flask 二合一）"]
@@ -63,22 +74,30 @@ flowchart LR
         redis[("Redis<br/>去重窗口")]
     end
 
-    device --> kafka
-    beat --> kafka
-    kafka --> pipeline --> es
-    es --> flink --> pg
-    es --> engine --> pg
+    device --> devkafka
+    beat --> devkafka
+    devkafka --> std
+    std --> stdk
+    stdk --> filt
+    filt --> validk
+    filt --> invk
+    validk --> essink --> es
+    invk --> essink
+    validk --> flink --> pg
+    engine --> pg
     ui -->|"REST / JWT"| api
     ai --> api
     playbook --> api
     api --> es & pg & redis
 ```
 
-**数据主链路**：`日志源 → Kafka → 解析管道（标准化/过滤/去重）→ ES（valid/invalid-alerts）→ Flink 关联 → PG events`。
+**数据主链路**：`设备日志 → Kafka(设备Topic) → 解析管道(标准izer) → Kafka(standardized-alerts) → 解析管道(过滤/去重/分流) → Kafka(valid-alerts) →〔ES 存储消费者 → ES 告警真相源〕＋〔Flink 关联作业(从 Kafka 读) → PG events〕`。
 
 架构要点：
 
-- **告警唯一真相源 = ES**：所有告警存取统一走 `es_alerts.py` 入口，PG 不存告警，避免双写不一致。
+- **解析管道走 Kafka 多跳缓冲**：标准izer 与过滤/去重/分流是两个独立的常驻消费线程，标准化结果先回写 `standardized-alerts`，再经过滤分流回写 `valid-alerts` / `invalid-alerts`，并不直接入库 ES。
+- **告警唯一真相源 = ES**：ES 存储消费者从 Kafka `valid-alerts` / `invalid-alerts` 消费并写入 `alerts-valid` / `alerts-invalid`；所有告警存取统一走 `es_alerts.py` 入口，PG 不存告警，避免双写不一致。
+- **Flink 关联分析从 Kafka 读**：常驻作业以 `valid-alerts` 为 source（JDBC sink 写 PG `events`），与 ES 存储消费者共享同一 `valid-alerts` 流，互不依赖。
 - **检测与响应双引擎**：Flink 常驻作业跑 13 条关联规则（高频 / 横向 / 暴破 / 序列等）自动生成事件；检测规则手动执行命中即建事件。
 - **响应闭环**：告警关联事件 → AI 研判 / 人工研判 → 剧本编排执行（封禁 IP / 通知 / 工单）→ 封堵清单与执行记录全程留痕。
 - **单容器交付**：应用镜像 nginx + Flask 二合一，基础设施（Kafka/ES/Flink/PG/Redis）独立编排，支持全容器与原生+外部组件两种部署形态。
@@ -223,7 +242,7 @@ flowchart LR
 
 ### 数据管理
 
-- **数据采集接入**：以 Kafka 为统一采集入口，支持 Filebeat/Winlogbeat/Logstash/Syslog 等将日志发往设备 topic，平台纳管后由解析管道自动完成标准化 → 过滤/去重 → 入库 ES，并触发 Flink 关联分析。
+- **数据采集接入**：以 Kafka 为统一采集入口，支持 Filebeat/Winlogbeat/Logstash/Syslog 等将日志发往设备 topic，平台纳管后由解析管道自动完成：标准izer 解析映射 → 回写 `standardized-alerts` → 过滤/去重/分流 → 回写 `valid-alerts` / `invalid-alerts`；`valid-alerts` 同时被 ES 存储消费者写入 ES（告警唯一真相源）并被 Flink 关联作业消费生成事件。
   - 多采集端适配：Beats 全家桶、Logstash 汇聚、传统 Syslog / 原始文本直发均可接入。
   - 9 种解析方式：auto / json / regex / template / syslog / cef / keyvalue / csv / grok，按样本即可完成字段映射。
   - 可视化纳管、消费启停与告警过滤。
