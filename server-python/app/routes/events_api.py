@@ -277,6 +277,10 @@ def create_event():
     )
     db.session.add(event)
     db.session.flush()  # 获取event.id
+
+    # 对比资源管理 IT 资源（IP 黑白名单）给事件打标签
+    from app.utils import event_ip_tags
+    event_ip_tags.enrich_event_ip_tags(event)
     
     # 创建处置记录：事件创建
     create_action_record(
@@ -325,6 +329,20 @@ def create_event():
         'success': True,
         'data': event.to_dict()
     }), 201
+
+
+@events_api_bp.route('/events/rebuild-ip-tags', methods=['POST'])
+@login_required
+def rebuild_event_ip_tags():
+    """批量补打事件 IP 黑白名单标签（覆盖存量事件与 Flink 关联作业经 JDBC sink 直写 PG 的事件）。仅管理员。"""
+    user_id, _ = _current_actor()
+    from app.models import User
+    u = User.query.get(user_id) if user_id else None
+    if not u or u.role != 'admin':
+        return jsonify({'success': False, 'error': '需要管理员权限'}), 403
+    from app.utils import event_ip_tags
+    result = event_ip_tags.rebuild_all_event_ip_tags()
+    return jsonify({'success': True, 'data': result})
 
 
 @events_api_bp.route('/events/<event_id>', methods=['PUT'])

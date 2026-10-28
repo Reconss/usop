@@ -1012,6 +1012,9 @@ class RuleEngine:
                 ip='127.0.0.1'
             )
             db.session.add(audit)
+            # 对比资源管理 IT 资源（IP 黑白名单）给事件打标签
+            from app.utils import event_ip_tags
+            event_ip_tags.enrich_event_ip_tags(event)
             db.session.commit()
 
             # 联动：命中的告警转 investigating + event_ids 回写（失败不影响事件落库）

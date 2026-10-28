@@ -547,6 +547,7 @@ export default function EventWorkspace() {
             // 由告警生成的事件：资产清单来自统计摘要（summary.assets）
             || item.extra_data?.summary?.assets || [],
           sourceIp: item.source_ip || item.src_ip || item.ip || '',
+          tags: item.tags || [],
           timestamp: item.created_at || item.timestamp || new Date().toISOString(),
           status: item.status || 'new',
           eventType: item.category || item.event_type || item.type || '其他',
@@ -1019,6 +1020,11 @@ export default function EventWorkspace() {
                       <p className="text-xs text-text-muted mt-0.5">
                         {event.eventType}
                         {event.sourceIp ? <span className="font-mono"> · {event.sourceIp}</span> : ''}
+                        {event.tags?.filter((t: string) => t === 'ip:whitelist' || t === 'ip:blacklist').map((t: string) => (
+                          <span key={t} className={`ml-1.5 px-1.5 py-0.5 rounded text-[11px] font-medium border ${t === 'ip:whitelist' ? 'bg-success/15 text-success border-success/30' : 'bg-danger/15 text-danger border-danger/30'}`}>
+                            {t === 'ip:whitelist' ? '白名单IP' : '黑名单IP'}
+                          </span>
+                        ))}
                       </p>
                     </div>
                   </td>
@@ -1359,7 +1365,13 @@ export default function EventWorkspace() {
                   </div>
                   <div className="flex justify-between">
                     <span className="text-text-secondary">源IP:</span>
-                    <span className="text-text-primary font-mono">{detailEvent.sourceIp || '-'}</span>
+                    <span className="text-text-primary font-mono">{detailEvent.sourceIp || '-'}
+                      {detailEvent.tags?.filter((t: string) => t === 'ip:whitelist' || t === 'ip:blacklist').map((t: string) => (
+                        <span key={t} className={`ml-1.5 px-1.5 py-0.5 rounded text-[11px] font-medium border align-middle ${t === 'ip:whitelist' ? 'bg-success/15 text-success border-success/30' : 'bg-danger/15 text-danger border-danger/30'}`}>
+                          {t === 'ip:whitelist' ? '白名单IP' : '黑名单IP'}
+                        </span>
+                      ))}
+                    </span>
                   </div>
                   {detailEvent.extraData?.summary?.dst_ips?.length > 0 && (
                     <div className="flex justify-between">

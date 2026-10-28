@@ -384,6 +384,9 @@ def aggregate_alerts():
     db.session.add(event)
     db.session.flush()
     event_id = event.id
+    # 对比资源管理 IT 资源（IP 黑白名单）给事件打标签
+    from app.utils import event_ip_tags
+    event_ip_tags.enrich_event_ip_tags(event)
     db.session.commit()
 
     # 统一联动：告警状态置 mark_status + event_ids 回写（事件处置完成时

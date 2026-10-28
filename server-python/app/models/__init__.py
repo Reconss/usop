@@ -82,6 +82,7 @@ class Event(db.Model):
     src_ip = db.Column(db.String(50))               # 主责源 IP（多告警事件取首条/最高危告警的源 IP）
     raw_log = db.Column(db.Text)
     extra_data = db.Column(db.JSON, default=dict)  # 扩展数据，包含附件等
+    tags = db.Column(db.JSON, default=list)        # 黑白名单标签（ip:whitelist / ip:blacklist）等
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -107,6 +108,7 @@ class Event(db.Model):
             'status': self.status,
             'src_ip': src_ip,
             'source_ip': src_ip,           # 前端历史键名兼容
+            'tags': self.tags or [],
             'raw_log': self.raw_log,
             'extra_data': extra,
             'related_alerts': related_alerts,

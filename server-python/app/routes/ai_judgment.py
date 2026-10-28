@@ -451,6 +451,9 @@ def _create_event_from_judgment(alert, judgment: dict) -> str:
     )
     db.session.add(event)
     db.session.flush()
+    # 对比资源管理 IT 资源（IP 黑白名单）给事件打标签
+    from app.utils import event_ip_tags
+    event_ip_tags.enrich_event_ip_tags(event)
     create_action_record(ec, 'created', None, 'AI研判',
                          f'AI 从告警 {alert.id} 创建事件',
                          previous_status='new',

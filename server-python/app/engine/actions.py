@@ -487,6 +487,16 @@ class IPBlockManager:
         if not ip or ip in ('0.0.0.0', '127.0.0.1', '::1'):
             return ActionResult(False, f'不允许封堵保留 IP: {ip}')
 
+        # 白名单硬拦截：命中「资源管理 / IT 资源」白名单的 IP 禁止封禁（覆盖剧本/手动/API 全部入口）
+        from app.utils import resource_match
+        try:
+            wi = resource_match.match_ip(str(ip))
+            if wi.get('matched') and any(h.get('usage') == 'whitelist' for h in wi.get('hits', [])):
+                groups = ', '.join(h.get('groupName', '') for h in wi['hits'] if h.get('usage') == 'whitelist')
+                return ActionResult(False, f'IP {ip} 命中白名单（{groups}），禁止封禁')
+        except Exception:
+            pass  # 匹配失败不阻断封禁主流程
+
         blocks = cls._purge_expired(cls._load_blocks())
         # 检查是否已封堵
         if ip in blocks:
@@ -2645,6 +2655,9 @@ class CreateEventAction(ActionHandler):
         db.session.add(event)
         db.session.flush()
         event_id = event.id
+        # 对比资源管理 IT 资源（IP 黑白名单）给事件打标签
+        from app.utils import event_ip_tags
+        event_ip_tags.enrich_event_ip_tags(event)
         db.session.commit()
         try:
             from app.utils import event_alert_link
