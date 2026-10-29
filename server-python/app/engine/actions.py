@@ -511,15 +511,18 @@ class IPBlockManager:
         if not ip or ip in ('0.0.0.0', '127.0.0.1', '::1'):
             return ActionResult(False, f'不允许封堵保留 IP: {ip}')
 
-        # 白名单硬拦截：命中「资源管理 / IT 资源」白名单的 IP 禁止封禁（覆盖剧本/手动/API 全部入口）
-        verdict, wl_groups = cls.verify_policy(ip)
+        # 名单策略校验（单一权威点）：命中白名单的 IP 禁止封禁；命中黑名单/无名单正常封禁。
+        # 结论 verdict 写入返回 data，供剧本执行 trace / 前端 / 审计展示。
+        verdict, groups = cls.verify_policy(ip)
         if verdict == 'whitelist':
-            return ActionResult(False, f'IP {ip} 命中白名单（{", ".join(wl_groups)}），禁止封禁')
+            return ActionResult(False, f'IP {ip} 命中白名单（{", ".join(groups)}），禁止封禁',
+                                 data={'ip': ip, 'verdict': 'whitelist', 'groups': groups, 'blocked': False})
 
         blocks = cls._purge_expired(cls._load_blocks())
         # 检查是否已封堵
         if ip in blocks:
-            return ActionResult(False, f'IP {ip} 已被封堵', blocks[ip])
+            return ActionResult(False, f'IP {ip} 已被封堵',
+                                 data={**(blocks[ip] or {}), 'verdict': verdict, 'groups': groups, 'blocked': True})
 
         block_entry = {
             'ip': ip,
@@ -563,9 +566,11 @@ class IPBlockManager:
         cls._record_block(ip, reason, source, block_entry.get('method'),
                           duration, exp_dt)
 
+        tag_note = '命中黑名单，确认封禁' if verdict == 'blacklist' else '未命中黑白名单，已封禁'
         return ActionResult(True, f'IP {ip} 封堵成功 [{block_entry["method"]}]'
-                            + (f'（{duration} 后自动解除）' if seconds > 0 else ''),
-                            block_entry)
+                            + (f'（{duration} 后自动解除）' if seconds > 0 else '')
+                            + f'（已校验：{tag_note}）',
+                            data={**block_entry, 'verdict': verdict, 'groups': groups, 'blocked': True})
 
     @classmethod
     def unblock_ip(cls, ip: str, reason: str = "", operator: str = None) -> ActionResult:
@@ -740,32 +745,18 @@ class BlockIPAction(ActionHandler):
         if not ip:
             return ActionResult(False, '未指定要封堵的 IP 地址')
 
-        # 剧本执行时显式校验黑白名单，结论写入执行结果（data.verdict），供前端/审计展示
-        verdict, groups = IPBlockManager.verify_policy(ip)
-        if verdict == 'whitelist':
-            return ActionResult(
-                False,
-                f'IP {ip} 命中白名单（{", ".join(groups)}），禁止封禁',
-                data={'ip': ip, 'verdict': 'whitelist', 'groups': groups, 'blocked': False},
-            )
-
         # 前端字段名为 api_url / api_token，兼容旧 device_api / device_token
         device_api = config.get('device_api') or config.get('api_url')
         device_token = config.get('device_token') or config.get('api_token')
 
-        res = IPBlockManager.block_ip(
+        # 黑白名单校验（白名单拦截 / 黑名单标注）统一由 IPBlockManager.block_ip 这一唯一封堵入口负责，
+        # 结论随执行结果 data.verdict 返回，剧本执行 trace 可直接展示，action 层无需重复硬编码
+        return IPBlockManager.block_ip(
             ip, reason,
             device_api=device_api,
             device_token=device_token,
             duration=duration,
         )
-        # 把名单校验结论附到执行结果，便于前端/审计展示
-        tag_note = '命中黑名单，确认封禁' if verdict == 'blacklist' else '未命中黑白名单，已封禁'
-        extra = {'ip': ip, 'verdict': verdict, 'groups': groups, 'blocked': res.success}
-        if res.success:
-            return ActionResult(True, f'{res.message}（已校验：{tag_note}）',
-                                data={**(res.data or {}), **extra})
-        return ActionResult(False, res.message, data={**(res.data or {}), **extra})
 
 
 class UnblockIPAction(ActionHandler):
