@@ -480,6 +480,30 @@ class IPBlockManager:
                 pass
 
     @classmethod
+    def verify_policy(cls, ip: str):
+        """验证 IP 是否命中「资源管理 / IT 资源」黑白名单。
+
+        返回 (verdict, groups)：
+          - ('whitelist', [组名...])  命中白名单 -> 禁止封禁（安全护栏）
+          - ('blacklist', [组名...])  命中黑名单 -> 明确恶意，应封禁
+          - ('none', [])              无名单记录 -> 按策略正常封禁
+        """
+        try:
+            from app.utils import resource_match
+            wi = resource_match.match_ip(str(ip))
+            if wi.get('matched'):
+                hits = wi.get('hits', [])
+                wl = [h.get('groupName', '') for h in hits if h.get('usage') == 'whitelist']
+                if wl:
+                    return 'whitelist', wl
+                bl = [h.get('groupName', '') for h in hits if h.get('usage') == 'blacklist']
+                if bl:
+                    return 'blacklist', bl
+        except Exception:
+            pass
+        return 'none', []
+
+    @classmethod
     def block_ip(cls, ip: str, reason: str = "", source: str = "playbook",
                  device_api: str = None, device_token: str = None,
                  duration: str = "") -> ActionResult:
@@ -488,14 +512,9 @@ class IPBlockManager:
             return ActionResult(False, f'不允许封堵保留 IP: {ip}')
 
         # 白名单硬拦截：命中「资源管理 / IT 资源」白名单的 IP 禁止封禁（覆盖剧本/手动/API 全部入口）
-        from app.utils import resource_match
-        try:
-            wi = resource_match.match_ip(str(ip))
-            if wi.get('matched') and any(h.get('usage') == 'whitelist' for h in wi.get('hits', [])):
-                groups = ', '.join(h.get('groupName', '') for h in wi['hits'] if h.get('usage') == 'whitelist')
-                return ActionResult(False, f'IP {ip} 命中白名单（{groups}），禁止封禁')
-        except Exception:
-            pass  # 匹配失败不阻断封禁主流程
+        verdict, wl_groups = cls.verify_policy(ip)
+        if verdict == 'whitelist':
+            return ActionResult(False, f'IP {ip} 命中白名单（{", ".join(wl_groups)}），禁止封禁')
 
         blocks = cls._purge_expired(cls._load_blocks())
         # 检查是否已封堵
@@ -721,16 +740,32 @@ class BlockIPAction(ActionHandler):
         if not ip:
             return ActionResult(False, '未指定要封堵的 IP 地址')
 
+        # 剧本执行时显式校验黑白名单，结论写入执行结果（data.verdict），供前端/审计展示
+        verdict, groups = IPBlockManager.verify_policy(ip)
+        if verdict == 'whitelist':
+            return ActionResult(
+                False,
+                f'IP {ip} 命中白名单（{", ".join(groups)}），禁止封禁',
+                data={'ip': ip, 'verdict': 'whitelist', 'groups': groups, 'blocked': False},
+            )
+
         # 前端字段名为 api_url / api_token，兼容旧 device_api / device_token
         device_api = config.get('device_api') or config.get('api_url')
         device_token = config.get('device_token') or config.get('api_token')
 
-        return IPBlockManager.block_ip(
+        res = IPBlockManager.block_ip(
             ip, reason,
             device_api=device_api,
             device_token=device_token,
-            duration=duration
+            duration=duration,
         )
+        # 把名单校验结论附到执行结果，便于前端/审计展示
+        tag_note = '命中黑名单，确认封禁' if verdict == 'blacklist' else '未命中黑白名单，已封禁'
+        extra = {'ip': ip, 'verdict': verdict, 'groups': groups, 'blocked': res.success}
+        if res.success:
+            return ActionResult(True, f'{res.message}（已校验：{tag_note}）',
+                                data={**(res.data or {}), **extra})
+        return ActionResult(False, res.message, data={**(res.data or {}), **extra})
 
 
 class UnblockIPAction(ActionHandler):
