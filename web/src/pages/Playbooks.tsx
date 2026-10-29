@@ -453,6 +453,15 @@ export default function Playbooks() {
   const nodes = editingPb?.nodes || [];
   const selectedNode = nodes.find(n => n.id === selectedNodeId) || null;
 
+  // 画布内容尺寸：覆盖所有节点的最大扩展范围（而非仅可视视口），
+  // 否则 SVG 以视口尺寸渲染、右侧/下方连线会被 overflow:hidden 裁掉，且滚动时 SVG 随内容移出可视区导致连线消失。
+  const canvasContentW = nodes.length
+    ? Math.max(1200, ...nodes.map(n => (n.position?.x || 0) + NODE_W)) + 240
+    : 1200;
+  const canvasContentH = nodes.length
+    ? Math.max(700, ...nodes.map(n => (n.position?.y || 0) + NODE_H)) + 240
+    : 700;
+
   // ===== 集成应用（Shuffle / OpenAPI 导入的动作）=====
   const [integrationApps, setIntegrationApps] = useState<IntegrationApp[]>([]);
   const [expandedAppId, setExpandedAppId] = useState<number | null>(null);
@@ -1724,7 +1733,7 @@ export default function Playbooks() {
                       </div>
                     )}
                     {/* 连线 */}
-                    <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 1 }}>
+                    <svg className="absolute inset-0 pointer-events-none" style={{ zIndex: 1, width: canvasContentW, height: canvasContentH, minWidth: '100%', minHeight: '100%' }} overflow="visible">
                       <defs>
                         <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
                           <path d="M0,0 L8,4 L0,8 Z" fill="#6366f1" />
