@@ -205,6 +205,41 @@ const NODE_TYPES: NodeType[] = [
 
 const CATEGORIES = ['基础', '控制', '动作', '集成', '数据', '分析', 'AI'];
 
+/** 节点卡片副标题：从 config 抽取一句话关键信息（Coze 节点摘要思路） */
+const nodeSummary = (node: NodeInstance): string => {
+  const c = node.config || {};
+  switch (node.typeId) {
+    case 'trigger': return c.triggerType ? `触发方式：${c.triggerType}` : '剧本入口';
+    case 'condition': return c.field ? `${c.field} ${c.operator || ''} ${c.value || ''}`.trim() : 'IF / ELSE 分支';
+    case 'script': return c.language ? `${c.language} 脚本` : '脚本执行';
+    case 'action': return c.action ? `动作：${c.action}` : '通用动作';
+    case 'api': case 'http_request': return c.method ? `${c.method} ${c.url || ''}`.trim() : 'HTTP 请求';
+    case 'block': return c.ip ? `封禁 ${c.ip}` : 'IP 封堵';
+    case 'isolate': return c.hostname ? `隔离 ${c.hostname}` : '主机隔离';
+    case 'ticket': return c.title ? `工单：${c.title}` : '创建工单';
+    case 'notify': return c.channel ? `通知 → ${c.channel}` : '发送通知';
+    case 'query': return c.source ? `查询：${c.source}` : '数据查询';
+    case 'enrich': return c.provider ? `情报：${c.provider}` : '情报补全';
+    case 'transform': return '字段整形';
+    case 'code': return '代码处理';
+    case 'filter': return c.field ? `过滤 ${c.field}` : '数据过滤';
+    case 'split': return c.field ? `拆分 ${c.field}` : '列表拆分';
+    case 'aggregate': return c.operation ? `聚合 ${c.operation}` : '聚合统计';
+    case 'merge': return c.mode ? `合并 ${c.mode}` : '数据合并';
+    case 'ai': return c.model ? `AI：${c.model}` : (c.provider ? `AI：${c.provider}` : 'AI 分析');
+    case 'recall': return '经验召回';
+    case 'email': return c.subject ? `邮件：${c.subject}` : '发送邮件';
+    case 'create_event': return c.title ? `事件：${c.title}` : '生成事件';
+    case 'update_event': return c.event_code ? `回写 ${c.event_code}` : '回写结论';
+    case 'delay': return c.duration ? `等待 ${c.duration}` : '延迟等待';
+    case 'parallel': return '并行执行';
+    case 'approval': return c.approvalType ? `审批：${c.approvalType}` : '审批节点';
+    case 'loop': return '循环执行';
+    case 'switch': return c.field ? `分支 ${c.field}` : '多分支';
+    default: return '';
+  }
+};
+
 /** 触发类型单一数据源：优先读触发器节点 config.triggerType，回退顶层字段，避免两处表示不一致 */
 const getTriggerType = (pb: { nodes?: any[]; triggerType?: string }): string => {
   const trig = (pb.nodes || []).find(n => n.typeId === 'trigger' || n.type === 'trigger');
@@ -328,6 +363,10 @@ export default function Playbooks() {
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [canvasOffset, setCanvasOffset] = useState({ x: 0, y: 0 });
+  const [scale, setScale] = useState(1);               // 画布缩放（Coze 风格：滚轮缩放 + 拖拽平移）
+  const didPanRef = useRef(false);                     // 背景是否发生平移（避免平移后误触取消选中）
+  const libMouseDown = useRef<{ x: number; y: number } | null>(null); // 节点库点击/拖拽判定
+  const [nodeSearch, setNodeSearch] = useState('');   // 左侧节点库搜索过滤
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [runningManual, setRunningManual] = useState(false);
@@ -944,7 +983,7 @@ export default function Playbooks() {
     if (selectedNodeId === id) setSelectedNodeId(null);
   };
 
-  const updateNodeConfig = (nodeId: string, key: string, value: string) => {
+  const updateNodeConfig = (nodeId: string, key: string, value: any) => {
     if (!editingPb) return;
     const node = editingPb.nodes.find(n => n.id === nodeId);
     // 触发器类型既是节点配置，也是剧本顶层 trigger_type；改此处要双向同步，
@@ -1316,8 +1355,8 @@ export default function Playbooks() {
     const origY = node.position.y;
 
     const onMove = (ev: MouseEvent) => {
-      const dx = ev.clientX - startX;
-      const dy = ev.clientY - startY;
+      const dx = (ev.clientX - startX) / scale;
+      const dy = (ev.clientY - startY) / scale;
       setEditingPb(prev => prev ? {
         ...prev,
         nodes: prev.nodes.map(n => n.id === nodeId ? { ...n, position: { x: origX + dx, y: origY + dy } } : n),
@@ -1334,9 +1373,136 @@ export default function Playbooks() {
     const typeId = e.dataTransfer.getData('nodeType');
     if (!typeId || !canvasRef.current) return;
     const rect = canvasRef.current.getBoundingClientRect();
-    const x = e.clientX - rect.left + canvasRef.current.scrollLeft - NODE_W / 2;
-    const y = e.clientY - rect.top + canvasRef.current.scrollTop - NODE_H / 2;
+    const x = (e.clientX - rect.left + canvasRef.current.scrollLeft) / scale - NODE_W / 2;
+    const y = (e.clientY - rect.top + canvasRef.current.scrollTop) / scale - NODE_H / 2;
     addNode(typeId, Math.max(10, x), Math.max(10, y));
+  };
+
+  // ===== 画布缩放 / 平移（Coze 风格）=====
+  const clampScale = (s: number) => Math.min(2, Math.max(0.4, s));
+
+  // 滚轮缩放：以光标为锚点（保持光标下的世界坐标不动）
+  const handleWheel = (e: React.WheelEvent) => {
+    if (!canvasRef.current) return;
+    e.preventDefault();
+    const rect = canvasRef.current.getBoundingClientRect();
+    const worldX = (e.clientX - rect.left + canvasRef.current.scrollLeft) / scale;
+    const worldY = (e.clientY - rect.top + canvasRef.current.scrollTop) / scale;
+    const next = clampScale(scale * (e.deltaY < 0 ? 1.1 : 0.9));
+    setScale(next);
+    requestAnimationFrame(() => {
+      if (!canvasRef.current) return;
+      canvasRef.current.scrollLeft = worldX * next - (e.clientX - rect.left);
+      canvasRef.current.scrollTop = worldY * next - (e.clientY - rect.top);
+    });
+  };
+
+  // 背景按下拖拽平移（节点/端口已阻止冒泡，不会触发）
+  const handleCanvasMouseDown = (e: React.MouseEvent) => {
+    if (!canvasRef.current) return;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const startLeft = canvasRef.current.scrollLeft;
+    const startTop = canvasRef.current.scrollTop;
+    didPanRef.current = false;
+    const onMove = (ev: MouseEvent) => {
+      const dx = ev.clientX - startX;
+      const dy = ev.clientY - startY;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) didPanRef.current = true;
+      if (canvasRef.current) {
+        canvasRef.current.scrollLeft = startLeft - dx;
+        canvasRef.current.scrollTop = startTop - dy;
+      }
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  };
+
+  // 适配视图：计算节点包围盒并缩放/滚动居中
+  const fitView = () => {
+    if (!canvasRef.current) return;
+    if (nodes.length === 0) { setScale(1); return; }
+    const xs = nodes.map(n => n.position.x);
+    const ys = nodes.map(n => n.position.y);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs) + NODE_W;
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys) + NODE_H;
+    const bw = Math.max(1, maxX - minX);
+    const bh = Math.max(1, maxY - minY);
+    const rect = canvasRef.current.getBoundingClientRect();
+    const pad = 60;
+    const next = clampScale(Math.min((rect.width - pad) / bw, (rect.height - pad) / bh));
+    setScale(next);
+    requestAnimationFrame(() => {
+      if (!canvasRef.current) return;
+      canvasRef.current.scrollLeft = minX * next - (rect.width - bw * next) / 2;
+      canvasRef.current.scrollTop = minY * next - (rect.height - bh * next) / 2;
+    });
+  };
+
+  // 按钮缩放（以画布中心为锚点）
+  const zoomBy = (factor: number) => {
+    if (!canvasRef.current) return;
+    const rect = canvasRef.current.getBoundingClientRect();
+    const cx = rect.width / 2;
+    const cy = rect.height / 2;
+    const worldX = (cx + canvasRef.current.scrollLeft) / scale;
+    const worldY = (cy + canvasRef.current.scrollTop) / scale;
+    const next = clampScale(scale * factor);
+    setScale(next);
+    requestAnimationFrame(() => {
+      if (!canvasRef.current) return;
+      canvasRef.current.scrollLeft = worldX * next - cx;
+      canvasRef.current.scrollTop = worldY * next - cy;
+    });
+  };
+
+  // 自动布局：按连线 BFS 从左到右分列（Coze「自动整理」思路）
+  const autoLayout = () => {
+    if (!editingPb || editingPb.nodes.length === 0) return;
+    const ns = editingPb.nodes;
+    const adj = new Map<string, string[]>();
+    ns.forEach(n => adj.set(n.id, (n.outputs || []).filter(o => ns.some(t => t.id === o))));
+    const visited = new Set<string>();
+    const order: string[] = [];
+    const bfs = (start: string) => {
+      const q = [start];
+      while (q.length) {
+        const cur = q.shift()!;
+        if (visited.has(cur)) continue;
+        visited.add(cur);
+        order.push(cur);
+        (adj.get(cur) || []).forEach(o => { if (!visited.has(o)) q.push(o); });
+      }
+    };
+    // 入度为 0 的作为根，依次 BFS；其余未访问到的再补
+    const indeg = new Map<string, number>();
+    ns.forEach(n => indeg.set(n.id, 0));
+    ns.forEach(n => (adj.get(n.id) || []).forEach(o => indeg.set(o, (indeg.get(o) || 0) + 1)));
+    ns.filter(n => (indeg.get(n.id) || 0) === 0).forEach(n => bfs(n.id));
+    ns.filter(n => !visited.has(n.id)).forEach(n => bfs(n.id));
+    const col = new Map<string, number>();
+    order.forEach(id => {
+      const parents = ns.filter(n => (n.outputs || []).includes(id));
+      const pcol = parents.length ? Math.max(...parents.map(p => col.get(p.id) ?? 0)) : 0;
+      col.set(id, parents.length ? pcol + 1 : 0);
+    });
+    const rowCount = new Map<number, number>();
+    const COL_GAP = 72;
+    const ROW_GAP = 26;
+    const next = ns.map(n => {
+      const c = col.get(n.id) || 0;
+      const r = rowCount.get(c) || 0;
+      rowCount.set(c, r + 1);
+      return { ...n, position: { x: 64 + c * (NODE_W + COL_GAP), y: 56 + r * (NODE_H + ROW_GAP) } };
+    });
+    setEditingPb({ ...editingPb, nodes: next });
+    setTimeout(fitView, 60);
   };
 
   // 剧本统计
@@ -1633,6 +1799,10 @@ export default function Playbooks() {
                     </label>
                   </div>
                   <div className="flex items-center gap-2">
+                    <button onClick={autoLayout} title="按连线从左到右自动整理布局"
+                      className="flex items-center gap-1.5 px-3 py-1.5 border border-border-color text-text-secondary rounded-lg text-xs hover:bg-page-bg hover:text-text-primary transition-colors">
+                      <LayoutGrid className="w-3.5 h-3.5" /> 自动布局
+                    </button>
                     <button onClick={runManualEditor} disabled={runningManual || isEventTriggered(editingPb)}
                       title={isEventTriggered(editingPb) ? '事件触发剧本需由安全事件/告警提供数据，请在事件工作台执行' : '手动运行该剧本'}
                       className="flex items-center gap-1.5 px-3 py-1.5 border border-success/50 text-success rounded-lg text-xs hover:bg-success/10 disabled:opacity-50 disabled:cursor-not-allowed">
@@ -1652,10 +1822,20 @@ export default function Playbooks() {
 
                 <div className="flex-1 flex overflow-hidden">
                   {/* 左侧：节点面板 */}
-                  <div className="w-52 border-r border-border-color bg-page-bg/30 p-3 overflow-y-auto flex-shrink-0">
-                    <h3 className="text-[10px] font-semibold text-text-muted uppercase tracking-wider mb-2">节点组件</h3>
+                  <div className="w-56 border-r border-border-color bg-page-bg/30 flex flex-col flex-shrink-0">
+                    <div className="p-3 pb-2 border-b border-border-color">
+                      <h3 className="text-[10px] font-semibold text-text-muted uppercase tracking-wider mb-2">节点组件</h3>
+                      <div className="relative">
+                        <Search className="w-3.5 h-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-text-muted" />
+                        <input value={nodeSearch} onChange={e => setNodeSearch(e.target.value)}
+                          placeholder="搜索节点…"
+                          className="w-full pl-7 pr-2 py-1.5 bg-card-bg border border-border-color rounded-lg text-[11px] text-text-primary placeholder:text-text-muted focus:border-primary focus:outline-none" />
+                      </div>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-3">
                     {CATEGORIES.map(cat => {
-                      const items = NODE_TYPES.filter(n => n.category === cat);
+                      const kw = nodeSearch.trim().toLowerCase();
+                      const items = NODE_TYPES.filter(n => n.category === cat && (kw === '' || (n.name + n.desc).toLowerCase().includes(kw)));
                       if (items.length === 0) return null;
                       return (
                         <div key={cat} className="mb-3">
@@ -1663,11 +1843,25 @@ export default function Playbooks() {
                           <div className="space-y-1">
                             {items.map(nt => (
                               <div key={nt.id} draggable onDragStart={e => e.dataTransfer.setData('nodeType', nt.id)}
+                                onMouseDown={(e) => { libMouseDown.current = { x: e.clientX, y: e.clientY }; }}
+                                onMouseUp={(e) => {
+                                  const s = libMouseDown.current; libMouseDown.current = null;
+                                  if (s && Math.abs(e.clientX - s.x) < 4 && Math.abs(e.clientY - s.y) < 4 && canvasRef.current) {
+                                    const rect = canvasRef.current.getBoundingClientRect();
+                                    const x = (rect.width / 2 + canvasRef.current.scrollLeft) / scale - NODE_W / 2;
+                                    const y = (rect.height / 2 + canvasRef.current.scrollTop) / scale - NODE_H / 2;
+                                    addNode(nt.id, Math.max(10, x), Math.max(10, y));
+                                  }
+                                }}
+                                title={`${nt.desc}（拖拽或点击添加到画布）`}
                                 className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-white/5 cursor-grab active:cursor-grabbing transition-colors border border-transparent hover:border-border-color">
                                 <div className="w-6 h-6 rounded flex items-center justify-center flex-shrink-0" style={{ background: nt.bg }}>
                                   <nt.icon className="w-3.5 h-3.5" style={{ color: nt.color }} />
                                 </div>
-                                <span className="text-[11px] text-text-primary">{nt.name}</span>
+                                <div className="min-w-0 flex-1">
+                                  <span className="text-[11px] text-text-primary block truncate">{nt.name}</span>
+                                  <span className="text-[9px] text-text-muted block truncate">{nt.desc}</span>
+                                </div>
                               </div>
                             ))}
                           </div>
@@ -1716,22 +1910,37 @@ export default function Playbooks() {
                         </div>
                       )}
                     </div>
+                    </div>
                   </div>
 
                   {/* 中间：画布 */}
                   <div ref={canvasRef} className="flex-1 relative overflow-auto bg-page-bg/20"
                     onDragOver={e => e.preventDefault()}
                     onDrop={handleCanvasDrop}
-                    onClick={() => { if (connectingFrom) setConnectingFrom(null); else setSelectedNodeId(null); }}>
+                    onWheel={handleWheel}
+                    onMouseDown={handleCanvasMouseDown}
+                    onClick={() => {
+                      if (didPanRef.current) { didPanRef.current = false; return; }
+                      if (connectingFrom) setConnectingFrom(null); else setSelectedNodeId(null);
+                    }}>
                     {/* 空状态 */}
                     {nodes.length === 0 && (
                       <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                         <div className="text-center text-text-muted">
                           <LayoutGrid className="w-12 h-12 mx-auto mb-3 opacity-15" />
-                          <p className="text-sm">拖拽左侧节点到此画布</p>
+                          <p className="text-sm">从左侧拖拽或点击节点添加到画布</p>
                         </div>
                       </div>
                     )}
+                    {/* 缩放内容层：world 坐标，整体随 scale 变换；点阵网格背景随缩放同步 */}
+                    <div className="relative origin-top-left"
+                      style={{
+                        width: canvasContentW, height: canvasContentH,
+                        minWidth: '100%', minHeight: '100%',
+                        transform: `scale(${scale})`, transformOrigin: '0 0',
+                        backgroundImage: 'radial-gradient(circle, rgba(120,130,160,0.16) 1px, transparent 1px)',
+                        backgroundSize: '22px 22px',
+                      }}>
                     {/* 连线 */}
                     <svg className="absolute inset-0 pointer-events-none" style={{ zIndex: 1, width: canvasContentW, height: canvasContentH, minWidth: '100%', minHeight: '100%' }} overflow="visible">
                       <defs>
@@ -1749,11 +1958,13 @@ export default function Playbooks() {
                       const mx = (x1 + x2) / 2;
                       return (
                         <g key={`${node.id}-${outId}`} style={{ cursor: 'pointer', pointerEvents: 'stroke' }}
-                          onClick={(e) => { e.stopPropagation(); removeConnection(node.id, outId); }}>
+                          onClick={(e) => { e.stopPropagation(); removeConnection(node.id, outId); }}
+                          className="group">
                           <path d={`M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`}
-                            stroke="#6366f1" strokeWidth="2" fill="none" markerEnd="url(#arrow)" strokeDasharray="6,3" />
+                            stroke="#6366f1" strokeWidth="2" fill="none" markerEnd="url(#arrow)"
+                            className="transition-[stroke,stroke-width] group-hover:stroke-[#818cf8] group-hover:[stroke-width:3]" />
                           <path d={`M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`}
-                            stroke="transparent" strokeWidth="10" fill="none" />
+                            stroke="transparent" strokeWidth="12" fill="none" />
                         </g>
                       );
                     }))}
@@ -1764,8 +1975,8 @@ export default function Playbooks() {
                       if (!fromNode) return null;
                       const x1 = fromNode.position.x + NODE_W;
                       const y1 = fromNode.position.y + NODE_H / 2;
-                      const x2 = dragLine.x - rect.left + canvasRef.current.scrollLeft;
-                      const y2 = dragLine.y - rect.top + canvasRef.current.scrollTop;
+                      const x2 = (dragLine.x - rect.left + canvasRef.current.scrollLeft) / scale;
+                      const y2 = (dragLine.y - rect.top + canvasRef.current.scrollTop) / scale;
                       return (
                         <path d={`M${x1},${y1} L${x2},${y2}`} stroke="#6366f1" strokeWidth="2"
                           strokeDasharray="5,3" fill="none" opacity="0.85" pointerEvents="none" />
@@ -1784,13 +1995,19 @@ export default function Playbooks() {
                           className={`rounded-lg border-2 transition-all cursor-pointer select-none ${isConnecting ? 'border-dashed border-primary shadow-panel shadow-primary/20' : isSelected ? 'border-primary shadow-panel shadow-primary/10' : 'border-border-color hover:border-primary/40'}`}
                           onClick={e => { e.stopPropagation(); handleNodeClick(node.id); }}
                           onMouseDown={e => handleNodeDrag(node.id, e)}>
-                          <div className="h-full flex flex-col justify-center px-3" style={{ background: nt?.bg || '#fff' }}>
-                            <div className="flex items-center gap-2">
-                              {nt && <nt.icon className="w-4 h-4 flex-shrink-0" style={{ color: nt.color }} />}
-                              <span className="text-xs font-medium text-text-primary truncate">{node.name}</span>
+                          <div className="h-full flex flex-col justify-center pl-3.5 pr-3 py-1.5" style={{ background: nt?.bg || '#fff' }}>
+                            <div className="flex items-center gap-2 min-w-0">
+                              {nt && (
+                                <span className="w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0" style={{ background: (nt.color || '#94a3b8') + '24' }}>
+                                  <nt.icon className="w-3.5 h-3.5" style={{ color: nt.color }} />
+                                </span>
+                              )}
+                              <span className="text-xs font-semibold text-text-primary truncate leading-tight">{node.name}</span>
                             </div>
-                            <p className="text-[10px] text-text-muted mt-0.5 truncate">{node.typeId === 'trigger' ? (node.config.triggerType || nt?.desc) : nt?.desc}</p>
+                            <p className="text-[10px] text-text-muted mt-0.5 truncate pl-8">{nodeSummary(node) || nt?.desc}</p>
                           </div>
+                          {/* 左侧类型色条 */}
+                          <div className="absolute left-0 top-0 bottom-0 w-1 rounded-l-lg" style={{ background: nt?.color || '#94a3b8' }} />
                           {/* 输出连接点：支持拖拽连线（按住拖出预览线）与点击连线两种手势 */}
                           <div
                             className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 w-3.5 h-3.5 rounded-full bg-primary border-2 border-white cursor-crosshair hover:scale-125 transition-transform z-20"
@@ -1812,6 +2029,7 @@ export default function Playbooks() {
                         </div>
                       );
                     })}
+                    </div>{/* ===== 缩放内容层结束 ===== */}
                     {/* 连线模式提示 / 拖拽提示 / 操作反馈 */}
                     {dragLine && (
                       <div className="absolute top-3 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-primary/90 text-white text-xs rounded-full z-50 shadow-panel">
@@ -1828,6 +2046,26 @@ export default function Playbooks() {
                         {canvasFlash.text}
                       </div>
                     )}
+                    {/* 缩放控制条（Coze 风格，右下角） */}
+                    <div className="absolute bottom-4 right-4 z-40 flex items-center gap-0.5 px-1 py-1 rounded-xl bg-card-bg/90 border border-border-color shadow-panel backdrop-blur">
+                      <button onClick={() => zoomBy(1 / 1.2)} title="缩小"
+                        className="w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:bg-page-bg hover:text-text-primary transition-colors">
+                        <Minus className="w-3.5 h-3.5" />
+                      </button>
+                      <button onClick={() => { setScale(1); setTimeout(fitView, 0); }} title="点击适配视图"
+                        className="min-w-[44px] h-7 px-1 flex items-center justify-center rounded-lg text-[11px] font-medium text-text-secondary hover:bg-page-bg hover:text-text-primary transition-colors">
+                        {Math.round(scale * 100)}%
+                      </button>
+                      <button onClick={() => zoomBy(1.2)} title="放大"
+                        className="w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:bg-page-bg hover:text-text-primary transition-colors">
+                        <Plus className="w-3.5 h-3.5" />
+                      </button>
+                      <div className="w-px h-4 bg-border-color mx-0.5" />
+                      <button onClick={fitView} title="适配视图"
+                        className="w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:bg-page-bg hover:text-text-primary transition-colors">
+                        <RotateCcw className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
 
                   {/* 右侧：配置面板 */}
